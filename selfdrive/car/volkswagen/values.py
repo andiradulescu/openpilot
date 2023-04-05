@@ -1074,6 +1074,7 @@ FW_VERSIONS = {
       b'\xf1\x872Q0907572Q \xf1\x890342',
       b'\xf1\x872Q0907572R \xf1\x890372',
       b'\xf1\x872Q0907572AA\xf1\x890396',
+      b'\xf1\x872Q0907572AB\xf1\x890397',
     ],
   },
   CAR.SKODA_OCTAVIA_MK3: {
