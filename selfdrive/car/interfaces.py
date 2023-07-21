@@ -244,6 +244,13 @@ class CarInterfaceBase(ABC):
     if Params().get_bool("EnforceTorqueLateral") and ret.steerControlType != car.CarParams.SteerControlType.angle:
       ret = CarInterfaceBase.sp_configure_torque_tune(candidate, ret)
     
+    if ret.lateralTuning.which() == 'torque':
+      eps_firmware = str(next((fw.fwVersion for fw in car_fw if fw.ecu == "eps"), ""))
+      model, similarity_score = get_nn_model_path(candidate, eps_firmware)
+      if model is not None:
+        ret.lateralTuning.torque.nnModelName = os.path.splitext(os.path.basename(model))[0]
+        ret.lateralTuning.torque.nnModelFuzzyMatch = (similarity_score < 0.99)
+    
 
     # Set common params using fields set by the car interface
     # TODO: get actual value, for now starting with reasonable value for

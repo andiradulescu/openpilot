@@ -151,6 +151,7 @@ class LatControlTorque(LatControl):
                               + past_lateral_accels_desired + future_planned_lateral_accels \
                               + past_rolls + future_rolls
         ff = self.torque_from_nn(nn_input)
+        nn_log = nn_input + nn_error_input
       else:
         gravity_adjusted_lateral_accel = desired_lateral_accel - params.roll * ACCELERATION_DUE_TO_GRAVITY
         torque_from_setpoint = self.torque_from_lateral_accel(setpoint, self.torque_params, setpoint,
@@ -177,6 +178,8 @@ class LatControlTorque(LatControl):
       pid_log.actualLateralAccel = actual_lateral_accel
       pid_log.desiredLateralAccel = desired_lateral_accel
       pid_log.saturated = self._check_saturation(self.steer_max - abs(output_torque) < 1e-3, CS, steer_limited)
+      if self.use_nn:
+        pid_log.nnLog = nn_log
 
     # TODO left is positive in this convention
     return -output_torque, 0.0, pid_log
