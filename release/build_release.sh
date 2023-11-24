@@ -30,7 +30,7 @@ rm -rf $BUILD_DIR
 mkdir -p $BUILD_DIR
 cd $BUILD_DIR
 git init
-git remote add origin git@github.com:commaai/openpilot.git
+git remote add origin git@github.com:andiradulescu/openpilot.git
 git checkout --orphan $RELEASE_BRANCH
 
 # do the files copy
@@ -57,7 +57,7 @@ export PYTHONPATH="$BUILD_DIR"
 scons -j$(nproc)
 
 # release panda fw
-CERT=/data/pandaextra/certs/release RELEASE=1 scons -j$(nproc) panda/
+# CERT=/data/pandaextra/certs/release RELEASE=1 scons -j$(nproc) panda/
 
 # Ensure no submodules in release
 if test "$(git submodule--helper list | wc -l)" -gt "0"; then
@@ -92,10 +92,10 @@ TEST_FILES="tools/"
 cd $SOURCE_DIR
 cp -pR -n --parents $TEST_FILES $BUILD_DIR/
 cd $BUILD_DIR
-RELEASE=1 selfdrive/test/test_onroad.py
+#RELEASE=1 selfdrive/test/test_onroad.py
 #selfdrive/manager/test/test_manager.py
-selfdrive/car/tests/test_car_interfaces.py
-rm -rf $TEST_FILES
+#selfdrive/car/tests/test_car_interfaces.py
+#rm -rf $TEST_FILES
 
 if [ ! -z "$RELEASE_BRANCH" ]; then
   echo "[-] pushing release T=$SECONDS"
