@@ -48,7 +48,7 @@ def create_ort_session(path, fp16_to_fp32):
     options.intra_op_num_threads = 2
     options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    provider = 'CPUExecutionProvider'
+    provider = 'TvmExecutionProvider'
 
   model_data = convert_fp16_to_fp32(path) if fp16_to_fp32 else path
   print("Onnx selected provider: ", [provider], file=sys.stderr)
