@@ -87,7 +87,9 @@ json-rpc = "*"
 libusb1 = "*"
 numpy = "*"
 onnx = ">=1.14.0"
-onnxruntime = { version = ">=1.15.1", platform = "linux", markers = "platform_machine == 'aarch64'" }
+#onnxruntime = { version = ">=1.15.1", platform = "linux", markers = "platform_machine == 'aarch64'" }
+onnxruntime-tvm = { path = "third_party/onnxruntime-tvm/onnxruntime_tvm-1.17.0-cp311-cp311-linux_aarch64.whl", platform = "linux", markers = "platform_machine == 'aarch64'" }
+tvm = { path = "third_party/onnxruntime-tvm/tvm-0.11.dev60+g237991798-cp311-cp311-linux_aarch64.whl", platform = "linux", markers = "platform_machine == 'aarch64'" }
 onnxruntime-gpu = { version = ">=1.15.1", platform = "linux", markers = "platform_machine == 'x86_64'" }
 psutil = "*"
 pyaudio = "*"
@@ -125,7 +127,7 @@ inputs = "*"
 Jinja2 = "*"
 lru-dict = "*"
 matplotlib = "*"
-metadrive-simulator = { git = "https://github.com/metadriverse/metadrive.git", rev ="main", markers = "platform_machine != 'aarch64'" } # no linux/aarch64 wheels for certain dependencies
+#metadrive-simulator = { git = "https://github.com/metadriverse/metadrive.git", rev ="main", markers = "platform_machine != 'aarch64'" } # no linux/aarch64 wheels for certain dependencies
 mpld3 = "*"
 mypy = "*"
 myst-parser = "*"
