@@ -22,9 +22,9 @@ thneed_src = thneed_src_qcom if arch == "larch64" else thneed_src_pc
 
 # SNPE except on Mac and ARM Linux
 snpe_lib = []
-if arch != "Darwin" and arch != "aarch64":
-  common_src += ['runners/snpemodel.cc']
-  snpe_lib += ['SNPE']
+#if arch != "Darwin" and arch != "aarch64":
+#  common_src += ['runners/snpemodel.cc']
+#  snpe_lib += ['SNPE']
 
 # OpenCL is a framework on Mac
 if arch == "Darwin":
