@@ -30,10 +30,11 @@ class Priority(IntEnum):
 
 # Event types
 class ET:
-  ENABLE = 'enable'
-  PRE_ENABLE = 'preEnable'
-  OVERRIDE_LATERAL = 'overrideLateral'
-  OVERRIDE_LONGITUDINAL = 'overrideLongitudinal'
+  ENABLE = 'enable' # enable
+  PRE_ENABLE = 'preEnable' # temporary override ?
+  OVERRIDE_LATERAL = 'overrideLateral' # overriding lateral
+  OVERRIDE_LONGITUDINAL = 'overrideLongitudinal' # overriding longitudinal
+
   NO_ENTRY = 'noEntry'
   WARNING = 'warning'
   USER_DISABLE = 'userDisable'
@@ -600,7 +601,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
 
   EventName.buttonEnable: {
-    ET.ENABLE: EngagementAlert(AudibleAlert.engage),
+    ET.ENABLE: EngagementAlert(AudibleAlert.none),
   },
 
   EventName.pcmDisable: {
@@ -623,7 +624,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
 
   EventName.pedalPressed: {
-    ET.USER_DISABLE: EngagementAlert(AudibleAlert.disengage),
+    ET.USER_DISABLE: EngagementAlert(AudibleAlert.none),
     ET.NO_ENTRY: NoEntryAlert("Pedal Pressed",
                               visual_alert=VisualAlert.brakePressed),
   },
