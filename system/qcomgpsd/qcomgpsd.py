@@ -330,6 +330,7 @@ def main() -> NoReturn:
           else:
             setattr(sv, k, v)
       pm.send('qcomGnss', msg)
+
     elif log_type == LOG_GNSS_POSITION_REPORT:
       report = unpack_position(log_payload)
       if report["u_PosSource"] != 2:
@@ -344,7 +345,7 @@ def main() -> NoReturn:
       gps.altitude = report["q_FltFinalPosAlt"]
       gps.speed = math.sqrt(sum([x**2 for x in vNED]))
       gps.bearingDeg = report["q_FltHeadingRad"] * 180/math.pi
-
+      gps.accuracy = report["q_FltHdop"]
       # TODO needs update if there is another leap second, after june 2024?
       dt_timestamp = (datetime.datetime(1980, 1, 6, 0, 0, 0, 0, datetime.timezone.utc) +
                       datetime.timedelta(weeks=report['w_GpsWeekNumber']) +
