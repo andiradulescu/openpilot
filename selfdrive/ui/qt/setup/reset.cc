@@ -13,8 +13,8 @@
 
 void Reset::doErase() {
   // best effort to wipe nvme
-  std::system("sudo umount " NVME);
-  std::system("yes | sudo mkfs.ext4 " NVME);
+  // std::system("sudo umount " NVME);
+  // std::system("yes | sudo mkfs.ext4 " NVME);
 
   int rm = std::system("sudo rm -rf /data/*");
   std::system("sudo umount " USERDATA);
