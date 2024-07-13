@@ -1,0 +1,9 @@
+7c7
+< # 288 Supported Cars
+---
+> # 287 Supported Cars
+28,29c28
+< |Chrysler|Pacifica Hybrid 2017|Adaptive Cruise Control (ACC)|Stock|0 mph|9 mph|[![star](assets/icon-star-full.svg)](##)|[![star](assets/icon-star-full.svg)](##)|<details><summary>Parts</summary><sub>- 1 FCA connector<br>- 1 RJ45 cable (7 ft)<br>- 1 comma 3X<br>- 1 comma power v2<br>- 1 harness box<br>- 1 mount<br>- 1 right angle OBD-C cable (1.5 ft)<br><a href="https://comma.ai/shop/comma-3x.html?make=Chrysler&model=Pacifica Hybrid 2017">Buy Here</a></sub></details>||
+< |Chrysler|Pacifica Hybrid 2018|Adaptive Cruise Control (ACC)|Stock|0 mph|9 mph|[![star](assets/icon-star-full.svg)](##)|[![star](assets/icon-star-full.svg)](##)|<details><summary>Parts</summary><sub>- 1 FCA connector<br>- 1 RJ45 cable (7 ft)<br>- 1 comma 3X<br>- 1 comma power v2<br>- 1 harness box<br>- 1 mount<br>- 1 right angle OBD-C cable (1.5 ft)<br><a href="https://comma.ai/shop/comma-3x.html?make=Chrysler&model=Pacifica Hybrid 2018">Buy Here</a></sub></details>||
+---
+> |Chrysler|Pacifica Hybrid 2017-18|Adaptive Cruise Control (ACC)|Stock|0 mph|9 mph|[![star](assets/icon-star-full.svg)](##)|[![star](assets/icon-star-full.svg)](##)|<details><summary>Parts</summary><sub>- 1 FCA connector<br>- 1 RJ45 cable (7 ft)<br>- 1 comma 3X<br>- 1 comma power v2<br>- 1 harness box<br>- 1 mount<br>- 1 right angle OBD-C cable (1.5 ft)<br><a href="https://comma.ai/shop/comma-3x.html?make=Chrysler&model=Pacifica Hybrid 2017-18">Buy Here</a></sub></details>||

@@ -66,8 +66,12 @@ def print_car_docs_diff(path):
   for car in get_all_car_docs():
     new_car_docs[car.car_fingerprint].append(car)
 
+  # print("print_car_docs_diff", next(iter(base_car_docs.items())))
+
   # Add new platforms to base cars so we can detect additions and removals in one pass
   base_car_docs.update({car: [] for car in new_car_docs if car not in base_car_docs})
+
+  # exit()
 
   changes = defaultdict(list)
   for base_car_model, base_cars in base_car_docs.items():
@@ -96,6 +100,12 @@ def print_car_docs_diff(path):
                                  f"  - {base_car.detail_sentence}\n" +
                                  f"  + {new_car.detail_sentence}\n" +
                                  "  ```")
+
+  print("changes[\"removals\"]", changes["removals"])
+  print("changes[\"additions\"]", changes["additions"])
+  print("changes[\"column\"]", changes["column"])
+  print("changes[\"detail\"]", changes["detail"])
+  exit()
 
   # Print diff
   if any(len(c) for c in changes.values()):
