@@ -1,13 +1,28 @@
 [
   {
     "name": "boot",
-    "url": "https://commadist.azureedge.net/agnosupdate/boot-5674ea6767e7198cf1e7def3de66a57061f001ed76d43dc4b4f84de545c53c6f.img.xz",
-    "hash": "5674ea6767e7198cf1e7def3de66a57061f001ed76d43dc4b4f84de545c53c6f",
-    "hash_raw": "5674ea6767e7198cf1e7def3de66a57061f001ed76d43dc4b4f84de545c53c6f",
-    "size": 16029696,
+    "url": "https://openpilot.blob.core.windows.net/agnosupdate-ci/10254682889/boot-80ffa9f9ee04af2cb9579b30d82415d1869bb7a7e685ebd2bcf4af7c26145e88.img.xz",
+    "hash": "80ffa9f9ee04af2cb9579b30d82415d1869bb7a7e685ebd2bcf4af7c26145e88",
+    "hash_raw": "80ffa9f9ee04af2cb9579b30d82415d1869bb7a7e685ebd2bcf4af7c26145e88",
+    "size": 16119808,
     "sparse": false,
     "full_check": true,
     "has_ab": true
+  },
+  {
+    "name": "system",
+    "url": "https://openpilot.blob.core.windows.net/agnosupdate-ci/10254682889/system-b968ac72cfa62f9355561d26c1533e5dd603a0ece1d872bbd372e1c0510b50e4.img.xz",
+    "hash": "b187d0ea38adff0e68e494b3b76ba5f083f42af52dcd37b4e3ed7d2683326674",
+    "hash_raw": "b968ac72cfa62f9355561d26c1533e5dd603a0ece1d872bbd372e1c0510b50e4",
+    "size": 10737418240,
+    "sparse": true,
+    "full_check": false,
+    "has_ab": true,
+    "alt": {
+      "hash": "9deafc09a0e3956d7dbbb5e84a4ce1cf0e4a62a8e59f321a4ee8db5e9da1b03e",
+      "url": "https://openpilot.blob.core.windows.net/agnosupdate-ci/10254682889/system-skip-chunks-b968ac72cfa62f9355561d26c1533e5dd603a0ece1d872bbd372e1c0510b50e4.img.xz",
+      "size": 4260141264
+    }
   },
   {
     "name": "abl",
@@ -58,20 +73,5 @@
     "sparse": false,
     "full_check": true,
     "has_ab": true
-  },
-  {
-    "name": "system",
-    "url": "https://commadist.azureedge.net/agnosupdate/system-1badfe72851628d6cf9200a53a6151bb4e797b49c717141409fc57138eae388a.img.xz",
-    "hash": "328e90c62068222dfd98f71dd3f6251fcb962f082b49c6be66ab2699f5db6f4f",
-    "hash_raw": "1badfe72851628d6cf9200a53a6151bb4e797b49c717141409fc57138eae388a",
-    "size": 10737418240,
-    "sparse": true,
-    "full_check": false,
-    "has_ab": true,
-    "alt": {
-      "hash": "bc11d2148f29862ee1326aca2af1cf6bbf5fed831e3f8f6b8f7a0f110dfe8d26",
-      "url": "https://commadist.azureedge.net/agnosupdate/system-skip-chunks-1badfe72851628d6cf9200a53a6151bb4e797b49c717141409fc57138eae388a.img.xz",
-      "size": 4548070000
-    }
   }
 ]
