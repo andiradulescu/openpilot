@@ -7,6 +7,7 @@ import struct
 import subprocess
 import time
 from collections.abc import Generator
+import psutil
 
 import requests
 
@@ -160,13 +161,18 @@ def extract_compressed_image(target_slot_number: int, partition: dict, cloudlog)
     last_p = 0
     raw_hash = hashlib.sha256()
     f = unsparsify if partition['sparse'] else noop
+    total_written = 0
     for chunk in f(downloader):
+      chunk_size = len(chunk)
       raw_hash.update(chunk)
       out.write(chunk)
+      total_written += chunk_size
       p = int(out.tell() / partition['size'] * 100)
       if p != last_p:
         last_p = p
+        mem_usage = psutil.virtual_memory().percent
         print(f"Installing {partition['name']}: {p}", flush=True)
+        cloudlog.info(f"Installing {partition['name']}: {p} - Total written: {total_written} - Chunk size: {chunk_size} - Memory usage: {mem_usage}%")
 
     if raw_hash.hexdigest().lower() != partition['hash_raw'].lower():
       raise Exception(f"Raw hash mismatch '{raw_hash.hexdigest().lower()}'")
