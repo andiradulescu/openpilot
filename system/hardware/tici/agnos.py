@@ -23,22 +23,29 @@ class StreamingDecompressor:
     self.buf = b""
 
     self.req = requests.get(url, stream=True, headers={'Accept-Encoding': None}, timeout=60)
-    self.it = self.req.iter_content(chunk_size=1024 * 1024)
+    self.it = self.req.iter_content(chunk_size=4 * 1024 * 1024)
     self.decompressor = lzma.LZMADecompressor(format=lzma.FORMAT_AUTO)
     self.eof = False
     self.sha256 = hashlib.sha256()
 
   def read(self, length: int) -> bytes:
     while len(self.buf) < length:
-      self.req.raise_for_status()
+      if self.decompressor.needs_input:
+        self.req.raise_for_status()
+        try:
+          compressed = next(self.it)
+        except StopIteration:
+          self.eof = True
+          break
+      else:
+        compressed = b''
 
-      try:
-        compressed = next(self.it)
-      except StopIteration:
+      out = self.decompressor.decompress(compressed, max_length=256 * 1024 * 1024)
+      self.buf += out
+
+      if self.decompressor.eof:
         self.eof = True
         break
-      out = self.decompressor.decompress(compressed)
-      self.buf += out
 
     result = self.buf[:length]
     self.buf = self.buf[length:]
@@ -84,7 +91,7 @@ def unsparsify(f: StreamingDecompressor) -> Generator[bytes, None, None]:
 # noop wrapper with same API as unsparsify() for non sparse images
 def noop(f: StreamingDecompressor) -> Generator[bytes, None, None]:
   while not f.eof:
-    yield f.read(1024 * 1024)
+    yield f.read(256 * 1024 * 1024)
 
 
 def get_target_slot_number() -> int:
