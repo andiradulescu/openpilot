@@ -1,12 +1,22 @@
 [
   {
     "name": "boot",
-    "url": "https://commadist.azureedge.net/agnosupdate/boot-5674ea6767e7198cf1e7def3de66a57061f001ed76d43dc4b4f84de545c53c6f.img.xz",
-    "hash": "5674ea6767e7198cf1e7def3de66a57061f001ed76d43dc4b4f84de545c53c6f",
-    "hash_raw": "5674ea6767e7198cf1e7def3de66a57061f001ed76d43dc4b4f84de545c53c6f",
-    "size": 16029696,
+    "url": "https://gitlab.com/commaai/ci-artifacts/-/raw/agnos-builder/pr-275/boot-5d1eeaddd529e7c8376485155af023532e98a54674b9842b8608861b00a477a6.img.xz",
+    "hash": "5d1eeaddd529e7c8376485155af023532e98a54674b9842b8608861b00a477a6",
+    "hash_raw": "5d1eeaddd529e7c8376485155af023532e98a54674b9842b8608861b00a477a6",
+    "size": 16119808,
     "sparse": false,
     "full_check": true,
+    "has_ab": true
+  },
+  {
+    "name": "system",
+    "url": "https://gitlab.com/commaai/ci-artifacts/-/raw/agnos-builder/pr-275/system-8fe23aaf5180235e466a1f2cff7f6c8e696474af77954a34e8dfcb398c7d9e2b.img.xz",
+    "hash": "8fe23aaf5180235e466a1f2cff7f6c8e696474af77954a34e8dfcb398c7d9e2b",
+    "hash_raw": "8fe23aaf5180235e466a1f2cff7f6c8e696474af77954a34e8dfcb398c7d9e2b",
+    "size": 10737418240,
+    "sparse": false,
+    "full_check": false,
     "has_ab": true
   },
   {
@@ -58,20 +68,5 @@
     "sparse": false,
     "full_check": true,
     "has_ab": true
-  },
-  {
-    "name": "system",
-    "url": "https://commadist.azureedge.net/agnosupdate/system-1badfe72851628d6cf9200a53a6151bb4e797b49c717141409fc57138eae388a.img.xz",
-    "hash": "328e90c62068222dfd98f71dd3f6251fcb962f082b49c6be66ab2699f5db6f4f",
-    "hash_raw": "1badfe72851628d6cf9200a53a6151bb4e797b49c717141409fc57138eae388a",
-    "size": 10737418240,
-    "sparse": true,
-    "full_check": false,
-    "has_ab": true,
-    "alt": {
-      "hash": "bc11d2148f29862ee1326aca2af1cf6bbf5fed831e3f8f6b8f7a0f110dfe8d26",
-      "url": "https://commadist.azureedge.net/agnosupdate/system-skip-chunks-1badfe72851628d6cf9200a53a6151bb4e797b49c717141409fc57138eae388a.img.xz",
-      "size": 4548070000
-    }
   }
 ]
