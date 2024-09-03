@@ -1,13 +1,28 @@
 [
   {
     "name": "boot",
-    "url": "https://commadist.azureedge.net/agnosupdate/boot-5674ea6767e7198cf1e7def3de66a57061f001ed76d43dc4b4f84de545c53c6f.img.xz",
-    "hash": "5674ea6767e7198cf1e7def3de66a57061f001ed76d43dc4b4f84de545c53c6f",
-    "hash_raw": "5674ea6767e7198cf1e7def3de66a57061f001ed76d43dc4b4f84de545c53c6f",
-    "size": 16029696,
+    "url": "https://gitlab.com/commaai/ci-artifacts/-/raw/agnos-builder/pr-333/boot-c1af5e488694e050784ac45a16c67bb35fdd2f036f1d64de25b7ba2d9705e221.img.xz",
+    "hash": "c1af5e488694e050784ac45a16c67bb35fdd2f036f1d64de25b7ba2d9705e221",
+    "hash_raw": "c1af5e488694e050784ac45a16c67bb35fdd2f036f1d64de25b7ba2d9705e221",
+    "size": 16119808,
     "sparse": false,
     "full_check": true,
     "has_ab": true
+  },
+  {
+    "name": "system",
+    "url": "https://gitlab.com/commaai/ci-artifacts/-/raw/agnos-builder/pr-333/system-f9a7417049542b7292352fbb752e52a73af1085b4b97ab12ffe1819a735b47c0.img.xz",
+    "hash": "f9a7417049542b7292352fbb752e52a73af1085b4b97ab12ffe1819a735b47c0",
+    "hash_raw": "f9a7417049542b7292352fbb752e52a73af1085b4b97ab12ffe1819a735b47c0",
+    "size": 5368709120,
+    "sparse": false,
+    "full_check": false,
+    "has_ab": true,
+    "alt": {
+      "hash": "0b5049aeb91517a8733438b906857e6cc8093d0db703decdf6810816524abece",
+      "url": "https://gitlab.com/commaai/ci-artifacts/-/raw/agnos-builder/pr-333/system-skip-chunks-f9a7417049542b7292352fbb752e52a73af1085b4b97ab12ffe1819a735b47c0.img.xz",
+      "size": 4571970416
+    }
   },
   {
     "name": "abl",
@@ -58,20 +73,5 @@
     "sparse": false,
     "full_check": true,
     "has_ab": true
-  },
-  {
-    "name": "system",
-    "url": "https://commadist.azureedge.net/agnosupdate/system-1badfe72851628d6cf9200a53a6151bb4e797b49c717141409fc57138eae388a.img.xz",
-    "hash": "328e90c62068222dfd98f71dd3f6251fcb962f082b49c6be66ab2699f5db6f4f",
-    "hash_raw": "1badfe72851628d6cf9200a53a6151bb4e797b49c717141409fc57138eae388a",
-    "size": 10737418240,
-    "sparse": true,
-    "full_check": false,
-    "has_ab": true,
-    "alt": {
-      "hash": "bc11d2148f29862ee1326aca2af1cf6bbf5fed831e3f8f6b8f7a0f110dfe8d26",
-      "url": "https://commadist.azureedge.net/agnosupdate/system-skip-chunks-1badfe72851628d6cf9200a53a6151bb4e797b49c717141409fc57138eae388a.img.xz",
-      "size": 4548070000
-    }
   }
 ]
