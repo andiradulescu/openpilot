@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 import os
+import platform
 from openpilot.system.hardware import TICI
 from tinygrad.tensor import Tensor
 from tinygrad.dtype import dtypes
 if TICI:
   from openpilot.selfdrive.modeld.runners.tinygrad_helpers import qcom_tensor_from_opencl_address
   os.environ['QCOM'] = '1'
-# TODO: switch to Metal on macOS
-# elif platform.system() == "Darwin":
-#   os.environ['METAL'] = '1'
+elif platform.system() == "Darwin":
+  os.environ['METAL'] = '1'
 else:
   os.environ['GPU'] = '1'
 import math
