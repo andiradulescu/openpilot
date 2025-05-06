@@ -44,7 +44,7 @@ pythonpath_string = 'PYTHONPATH="${PYTHONPATH}:' + env.Dir("#tinygrad_repo").abs
 if arch == 'larch64':
   device_string = 'QCOM=1'
 elif arch == 'Darwin':
-  device_string = 'METAL=1'
+  device_string = 'METAL=1 IMAGE=0 NOLOCALS=0'
   # Fix for Error: $HOME must be set to run brew.
   lenv['ENV']['HOME'] = os.environ['HOME']
 else:
