@@ -40,17 +40,20 @@ for model_name in ['driving_vision', 'driving_policy']:
   lenv.Command(fn + "_metadata.pkl", [fn + ".onnx"] + tinygrad_files + script_files, cmd)
 
 # Compile tinygrad model
+models = ['driving_vision', 'driving_policy', 'dmonitoring_model']
 pythonpath_string = 'PYTHONPATH="${PYTHONPATH}:' + env.Dir("#tinygrad_repo").abspath + '"'
 if arch == 'larch64':
   device_string = 'QCOM=1'
 elif arch == 'Darwin':
   device_string = 'METAL=1 IMAGE=0 NOLOCALS=0'
+  # TODO: remove this once dmonitoring_model compiles
+  models = ['driving_vision', 'driving_policy']
   # Fix for Error: $HOME must be set to run brew.
   lenv['ENV']['HOME'] = os.environ['HOME']
 else:
   device_string = 'GPU=1'
 
-for model_name in ['driving_vision', 'driving_policy', 'dmonitoring_model']:
+for model_name in models:
   fn = File(f"models/{model_name}").abspath
   cmd = f'{pythonpath_string} {device_string} python3 {Dir("#tinygrad_repo").abspath}/examples/openpilot/compile3.py {fn}.onnx {fn}_tinygrad.pkl'
   lenv.Command(fn + "_tinygrad.pkl", [fn + ".onnx"] + tinygrad_files, cmd)
