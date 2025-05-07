@@ -90,6 +90,8 @@ jobs:
     - uses: actions/checkout@v4
       with:
         submodules: true
+    - name: Print tinygrad_repo HEAD
+      run: '(cd tinygrad_repo && echo "tinygrad_repo HEAD: $(git rev-parse HEAD)")'
     - run: echo "CACHE_COMMIT_DATE=$(git log -1 --pretty='format:%cd' --date=format:'%Y-%m-%d-%H:%M')" >> $GITHUB_ENV
     - name: Homebrew cache
       uses: ./.github/workflows/auto-cache
