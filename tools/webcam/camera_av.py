@@ -14,7 +14,7 @@ class Camera:
     if platform.system() == "Darwin":
       self.container = av.open(str(camera_id), format='avfoundation', container_options={"framerate": "30"})
     else:
-      self.container = av.open(camera_id)
+      self.container = av.open(f"/dev/video{camera_id}")
 
     assert self.container.streams.video, f"Can't open video stream for camera {camera_id}"
     self.video_stream = self.container.streams.video[0]
