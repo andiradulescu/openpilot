@@ -11,8 +11,11 @@ class Camera:
     self.stream_type = stream_type
     self.cur_frame_id = 0
 
+    self.fps = "30"
+
     if platform.system() == "Darwin":
-      self.container = av.open(str(camera_id), format='avfoundation', container_options={"framerate": "30"})
+      self.container = av.open(str(camera_id), format='avfoundation',
+                              container_options={"framerate": self.fps, "video_size": "1920x1080"})
     else:
       self.container = av.open(f"/dev/video{camera_id}")
 
@@ -20,6 +23,11 @@ class Camera:
     self.video_stream = self.container.streams.video[0]
     self.W = self.video_stream.codec_context.width
     self.H = self.video_stream.codec_context.height
+
+    # Print PyAV configuration
+    print("PyAV Configuration:")
+    print(f"  Resolution: {self.W}x{self.H}")
+    print(f"  Frame Rate: {self.fps} FPS")
 
   @classmethod
   def bgr2nv12(self, bgr):

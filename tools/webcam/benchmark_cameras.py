@@ -90,14 +90,14 @@ class PerformanceMetrics:
 def benchmark_camera_implementation(camera_class, camera_id: int, duration: float = 30.0,
                                    cam_type: str = "webcam") -> dict:
     """Benchmark a camera implementation for the specified duration."""
-    print(f"Benchmarking {camera_class.__module__} for {duration} seconds...")
+    print(f"\nBenchmarking {camera_class.__module__} for {duration} seconds...")
 
     metrics = PerformanceMetrics()
 
     try:
         # Initialize camera
         camera = camera_class(cam_type, "road", camera_id)
-        print(f"Camera initialized: {camera.W}x{camera.H}")
+        print(f"Camera initialized: {camera.W}x{camera.H} @ {camera.fps} FPS")
 
         metrics.start_monitoring()
 
@@ -191,7 +191,7 @@ def format_benchmark_results(results: dict, implementation: str) -> str:
     output += f"Average FPS: {results.get('avg_fps', 0):.2f}\n"
     output += f"Frame Interval: {results.get('frame_interval_avg', 0)*1000:.2f}ms (±{results.get('frame_interval_std', 0)*1000:.2f}ms)\n"
     output += f"Memory Usage: {results.get('memory_avg_mb', 0):.1f}MB avg, {results.get('memory_max_mb', 0):.1f}MB max\n"
-    output += f"CPU Usage: {results.get('cpu_avg_percent', 0):.1f}% avg, {results.get('cpu_max_percent', 0):.1f}% max\n"
+    output += f"CPU Usage: {results.get('cpu_avg_percent', 0):.1f}% avg, {results.get('cpu_max_percent', 0):.1f}% max"
 
     return output
 
