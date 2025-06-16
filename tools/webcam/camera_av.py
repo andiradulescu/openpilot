@@ -35,8 +35,15 @@ class Camera:
     return frame.reformat(format='nv12').to_ndarray()
 
   def read_frames(self):
-    for frame in self.container.decode(self.video_stream):
-      img = frame.to_rgb().to_ndarray()[:,:, ::-1] # convert to bgr24
-      yuv = Camera.bgr2nv12(img)
-      yield yuv.data.tobytes()
-    self.container.close()
+    # https://pyav.basswood-io.com/docs/stable/cookbook/basics.html#recording-a-facecam
+    try:
+      while True:
+        try:
+          for frame in self.container.decode(self.video_stream):
+            img = frame.to_rgb().to_ndarray()[:,:, ::-1] # convert to bgr24
+            yuv = Camera.bgr2nv12(img)
+            yield yuv.data.tobytes()
+        except av.BlockingIOError:
+            pass
+    finally:
+      self.container.close()
