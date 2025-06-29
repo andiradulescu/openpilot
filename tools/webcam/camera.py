@@ -1,6 +1,9 @@
 import av
 import cv2 as cv
 
+# print(cv.getBuildInformation())
+# print (cv.__version__)
+
 class Camera:
   def __init__(self, cam_type_state, stream_type, camera_id):
     try:
@@ -11,13 +14,17 @@ class Camera:
     self.stream_type = stream_type
     self.cur_frame_id = 0
 
-    self.cap = cv.VideoCapture(camera_id)
-    if not self.cap.isOpened():
-        raise IOError(f"Unable to open camera {camera_id}")
+    print(f"Opening {cam_type_state} at {camera_id}")
 
-    self.configure_camera_format("MJPG")
-    actual_format = self.get_current_format()
-    print("format: ", actual_format)
+    self.cap = cv.VideoCapture(camera_id)
+
+    # self.configure_camera_format()
+    # actual_format = self.get_current_format()
+    # print("format: ", actual_format)
+
+    self.cap.set(cv.CAP_PROP_FRAME_WIDTH, 1920.0)
+    self.cap.set(cv.CAP_PROP_FRAME_HEIGHT, 1080.0)
+    self.cap.set(cv.CAP_PROP_FPS, 30.0)
 
     self.fps = self.cap.get(cv.CAP_PROP_FPS)
     print(f"fps: {self.fps}")
@@ -26,14 +33,13 @@ class Camera:
     self.H = self.cap.get(cv.CAP_PROP_FRAME_HEIGHT)
     print(f"width: {self.W}, height: {self.H}")
 
-  def configure_camera_format(self, target_fourcc):
-    print(f"target_fourcc: {target_fourcc}")
-    # fourcc = cv.VideoWriter_fourcc(*target_fourcc)
+  # def configure_camera_format(self):
+    # fourcc = cv.VideoWriter_fourcc(*"MJPG")
     # self.cap.set(cv.CAP_PROP_FOURCC, fourcc)
-    # self.cap.set(cv.CAP_PROP_FOURCC, fourcc)
-    # self.cap.set(cv.CAP_PROP_FRAME_WIDTH, 1280)
-    # self.cap.set(cv.CAP_PROP_FRAME_HEIGHT, 720)
-    # self.cap.set(cv.CAP_PROP_FPS, 20)
+    # self.cap.set(cv.CAP_PROP_FOURCC, cv.VideoWriter.fourcc('m','j','p','g'))
+    # self.cap.set(cv.CAP_PROP_FOURCC, cv.VideoWriter.fourcc('M','J','P','G'))
+    # self.cap.set(cv.CAP_PROP_FOURCC, cv.VideoWriter.fourcc('j', 'p', 'e', 'g'))
+    # self.cap.set(cv.CAP_PROP_FOURCC, cv.VideoWriter.fourcc(*"avc1"))
 
   def get_current_format(self):
     fourcc_code = int(self.cap.get(cv.CAP_PROP_FOURCC))
