@@ -120,13 +120,13 @@ def main() -> None:
       for serial in panda_serials:
         pandas.append(flash_panda(serial))
 
-      # Ensure internal panda is present if expected
-      internal_pandas = [panda for panda in pandas if panda.is_internal()]
-      if HARDWARE.has_internal_panda() and len(internal_pandas) == 0:
-        cloudlog.error("Internal panda is missing, trying again")
-        no_internal_panda_count += 1
-        continue
-      no_internal_panda_count = 0
+      # # Ensure internal panda is present if expected
+      # internal_pandas = [panda for panda in pandas if panda.is_internal()]
+      # if HARDWARE.has_internal_panda() and len(internal_pandas) == 0:
+      #   cloudlog.error("Internal panda is missing, trying again")
+      #   no_internal_panda_count += 1
+      #   continue
+      # no_internal_panda_count = 0
 
       # sort pandas to have deterministic order
       # * the internal one is always first
