@@ -5,7 +5,7 @@ import numpy as np
 from abc import ABC, abstractmethod
 from collections import namedtuple
 
-W, H = 1920, 1080
+W, H = 1280, 720
 
 
 vec3 = namedtuple("vec3", ["x", "y", "z"])
