@@ -131,9 +131,21 @@ class ModelState:
       self.policy_run = pickle.load(f)
 
     if not TICI and not USBGPU:
-      backend = backend_from_jit(self.vision_run)
-      os.environ[backend] = '1'
-      cloudlog.warning(f"modeld backend set to {backend}")
+      try:
+        backend = backend_from_jit(self.vision_run)
+        os.environ[backend] = '1'
+        cloudlog.warning(f"modeld backend set to {backend}")
+        # Test backend by trying to run a dummy operation
+        test_input = {name: Tensor.zeros(*shape, dtype=dtypes.uint8).realize() 
+                     for name, shape in self.vision_input_shapes.items()}
+        self.vision_run(**test_input)
+      except Exception as e:
+        cloudlog.warning(f"modeld backend detection or test failed: {e}, falling back to CPU")
+        # Clear any previously set backend environment variables
+        for backend_env in ['QCOM', 'METAL', 'GPU', 'LLVM', 'AMD']:
+          if backend_env in os.environ:
+            del os.environ[backend_env]
+        os.environ['CPU'] = '1'
 
   def slice_outputs(self, model_outputs: np.ndarray, output_slices: dict[str, slice]) -> dict[str, np.ndarray]:
     parsed_model_outputs = {k: model_outputs[np.newaxis, v] for k,v in output_slices.items()}
@@ -167,15 +179,33 @@ class ModelState:
     if prepare_only:
       return None
 
-    self.vision_output = self.vision_run(**self.vision_inputs).numpy().flatten()
-    vision_outputs_dict = self.parser.parse_vision_outputs(self.slice_outputs(self.vision_output, self.vision_output_slices))
+    try:
+      self.vision_output = self.vision_run(**self.vision_inputs).numpy().flatten()
+      vision_outputs_dict = self.parser.parse_vision_outputs(self.slice_outputs(self.vision_output, self.vision_output_slices))
 
-    self.full_features_buffer[0,:-1] = self.full_features_buffer[0,1:]
-    self.full_features_buffer[0,-1] = vision_outputs_dict['hidden_state'][0, :]
-    self.numpy_inputs['features_buffer'][:] = self.full_features_buffer[0, self.temporal_idxs]
+      self.full_features_buffer[0,:-1] = self.full_features_buffer[0,1:]
+      self.full_features_buffer[0,-1] = vision_outputs_dict['hidden_state'][0, :]
+      self.numpy_inputs['features_buffer'][:] = self.full_features_buffer[0, self.temporal_idxs]
 
-    self.policy_output = self.policy_run(**self.policy_inputs).numpy().flatten()
-    policy_outputs_dict = self.parser.parse_policy_outputs(self.slice_outputs(self.policy_output, self.policy_output_slices))
+      self.policy_output = self.policy_run(**self.policy_inputs).numpy().flatten()
+      policy_outputs_dict = self.parser.parse_policy_outputs(self.slice_outputs(self.policy_output, self.policy_output_slices))
+    except Exception as e:
+      cloudlog.error(f"modeld runtime execution failed: {e}, falling back to CPU")
+      # Clear any previously set backend environment variables and force CPU
+      for backend_env in ['QCOM', 'METAL', 'GPU', 'LLVM', 'AMD']:
+        if backend_env in os.environ:
+          del os.environ[backend_env]
+      os.environ['CPU'] = '1'
+      # Retry execution with CPU backend
+      self.vision_output = self.vision_run(**self.vision_inputs).numpy().flatten()
+      vision_outputs_dict = self.parser.parse_vision_outputs(self.slice_outputs(self.vision_output, self.vision_output_slices))
+
+      self.full_features_buffer[0,:-1] = self.full_features_buffer[0,1:]
+      self.full_features_buffer[0,-1] = vision_outputs_dict['hidden_state'][0, :]
+      self.numpy_inputs['features_buffer'][:] = self.full_features_buffer[0, self.temporal_idxs]
+
+      self.policy_output = self.policy_run(**self.policy_inputs).numpy().flatten()
+      policy_outputs_dict = self.parser.parse_policy_outputs(self.slice_outputs(self.policy_output, self.policy_output_slices))
 
     # TODO model only uses last value now
     self.full_prev_desired_curv[0,:-1] = self.full_prev_desired_curv[0,1:]

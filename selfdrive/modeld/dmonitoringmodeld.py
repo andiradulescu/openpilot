@@ -80,9 +80,21 @@ class ModelState:
       self.model_run = pickle.load(f)
 
     if not TICI:
-      backend = backend_from_jit(self.model_run)
-      os.environ[backend] = '1'
-      cloudlog.warning(f"dmonitoringmodeld backend set to {backend}")
+      try:
+        backend = backend_from_jit(self.model_run)
+        os.environ[backend] = '1'
+        cloudlog.warning(f"dmonitoringmodeld backend set to {backend}")
+        # Test backend by trying to run a dummy operation
+        test_input = {**self.tensor_inputs, 
+                     'input_img': Tensor.zeros(1, MODEL_WIDTH*MODEL_HEIGHT, dtype=dtypes.uint8).realize()}
+        self.model_run(**test_input)
+      except Exception as e:
+        cloudlog.warning(f"dmonitoringmodeld backend detection or test failed: {e}, falling back to CPU")
+        # Clear any previously set backend environment variables
+        for backend_env in ['QCOM', 'METAL', 'GPU', 'LLVM', 'AMD']:
+          if backend_env in os.environ:
+            del os.environ[backend_env]
+        os.environ['CPU'] = '1'
 
   def run(self, buf: VisionBuf, calib: np.ndarray, transform: np.ndarray) -> tuple[np.ndarray, float]:
     self.numpy_inputs['calib'][0,:] = calib
@@ -97,8 +109,17 @@ class ModelState:
     else:
       self.tensor_inputs['input_img'] = Tensor(self.frame.buffer_from_cl(input_img_cl).reshape((1, MODEL_WIDTH*MODEL_HEIGHT)), dtype=dtypes.uint8).realize()
 
-
-    output = self.model_run(**self.tensor_inputs).numpy().flatten()
+    try:
+      output = self.model_run(**self.tensor_inputs).numpy().flatten()
+    except Exception as e:
+      cloudlog.error(f"dmonitoringmodeld runtime execution failed: {e}, falling back to CPU")
+      # Clear any previously set backend environment variables and force CPU
+      for backend_env in ['QCOM', 'METAL', 'GPU', 'LLVM', 'AMD']:
+        if backend_env in os.environ:
+          del os.environ[backend_env]
+      os.environ['CPU'] = '1'
+      # Retry execution with CPU backend
+      output = self.model_run(**self.tensor_inputs).numpy().flatten()
 
     t2 = time.perf_counter()
     return output, t2 - t1
