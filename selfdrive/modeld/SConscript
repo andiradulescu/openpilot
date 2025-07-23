@@ -51,19 +51,57 @@ def tg_compile(flags, model_name):
 
 # because tg doesn't support multi-process
 import subprocess
-devs = subprocess.check_output('python3 -c "from tinygrad import Device; print(list(Device.get_available_devices()))"', shell=True, cwd=env.Dir('#').abspath)
-print("Available tinygrad devices:", devs)
 
-if b"QCOM" in devs:
-  flags = 'QCOM=1'
-elif b"METAL" in devs:
-  flags = 'METAL=1 IMAGE=0 NOLOCALS=0'
-elif b"GPU" in devs:
-  flags = 'GPU=1'
-elif b"LLVM" in devs:
-  flags = 'LLVM=1 LLVMOPT=1 BEAM=0 IMAGE=0 JIT=2'
-else:
-  flags = 'CPU=1 IMAGE=0 JIT=2'
+def get_backend_flags():
+  try:
+    devs = subprocess.check_output('python3 -c "from tinygrad import Device; print(list(Device.get_available_devices()))"', shell=True, cwd=env.Dir('#').abspath)
+    print("Available tinygrad devices:", devs)
+    
+    # Try to detect and test backend capabilities
+    if b"QCOM" in devs:
+      try:
+        # Test QCOM backend compilation
+        test_cmd = 'python3 -c "import os; os.environ[\'QCOM\']=\'1\'; from tinygrad import Tensor; Tensor.zeros(1).realize()"'
+        subprocess.check_output(test_cmd, shell=True, cwd=env.Dir('#').abspath, stderr=subprocess.STDOUT)
+        return 'QCOM=1'
+      except subprocess.CalledProcessError as e:
+        print(f"QCOM backend test failed: {e}, falling back to CPU")
+        
+    elif b"METAL" in devs:
+      try:
+        # Test METAL backend compilation  
+        test_cmd = 'python3 -c "import os; os.environ[\'METAL\']=\'1\'; os.environ[\'IMAGE\']=\'0\'; os.environ[\'NOLOCALS\']=\'0\'; from tinygrad import Tensor; Tensor.zeros(1).realize()"'
+        subprocess.check_output(test_cmd, shell=True, cwd=env.Dir('#').abspath, stderr=subprocess.STDOUT)
+        return 'METAL=1 IMAGE=0 NOLOCALS=0'
+      except subprocess.CalledProcessError as e:
+        print(f"METAL backend test failed: {e}, falling back to CPU")
+        
+    elif b"GPU" in devs:
+      try:
+        # Test GPU backend compilation
+        test_cmd = 'python3 -c "import os; os.environ[\'GPU\']=\'1\'; from tinygrad import Tensor; Tensor.zeros(1).realize()"'
+        subprocess.check_output(test_cmd, shell=True, cwd=env.Dir('#').abspath, stderr=subprocess.STDOUT)
+        return 'GPU=1'
+      except subprocess.CalledProcessError as e:
+        print(f"GPU backend test failed: {e}, falling back to CPU")
+        
+    elif b"LLVM" in devs:
+      try:
+        # Test LLVM backend compilation
+        test_cmd = 'python3 -c "import os; os.environ[\'LLVM\']=\'1\'; os.environ[\'LLVMOPT\']=\'1\'; os.environ[\'BEAM\']=\'0\'; os.environ[\'IMAGE\']=\'0\'; os.environ[\'JIT\']=\'2\'; from tinygrad import Tensor; Tensor.zeros(1).realize()"'
+        subprocess.check_output(test_cmd, shell=True, cwd=env.Dir('#').abspath, stderr=subprocess.STDOUT)
+        return 'LLVM=1 LLVMOPT=1 BEAM=0 IMAGE=0 JIT=2'
+      except subprocess.CalledProcessError as e:
+        print(f"LLVM backend test failed: {e}, falling back to CPU")
+        
+  except Exception as e:
+    print(f"Backend detection failed: {e}, falling back to CPU")
+  
+  # Always fallback to CPU if any detection or testing fails
+  print("Using CPU backend as fallback")
+  return 'CPU=1 IMAGE=0 JIT=2'
+
+flags = get_backend_flags()
 
 print(f"Compiling models with flags: '{flags}'")
 
