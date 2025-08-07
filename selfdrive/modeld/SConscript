@@ -25,7 +25,7 @@ else:
 # Set path definitions
 for pathdef, fn in {'TRANSFORM': 'transforms/transform.cl', 'LOADYUV': 'transforms/loadyuv.cl'}.items():
   for xenv in (lenv, lenvCython):
-    xenv['CXXFLAGS'].append(f'-D{pathdef}_PATH=\"{File(fn).abspath}\"')
+    xenv['CXXFLAGS'].append(f'-D{pathdef}_PATH=\\"{File(fn).abspath}\\"')
 
 # Compile cython
 cython_libs = envCython["LIBS"] + libs
@@ -62,17 +62,15 @@ print(f"Compiling models with flags: '{flags}'")
 
 def tg_compile(flags, model_name):
   fn = File(f"models/{model_name}").abspath
-  helper = File(Dir("#selfdrive/modeld").File("tg_compile_with_fallback.py").abspath)
+  helper = File(Dir("#selfdrive/modeld").File("tg_compile.py").abspath)
   tinygrad_dir = Dir("#tinygrad_repo").abspath
+  # pass flags as VAR=VALUE prefix so they land in the env of the helper
   cmd = (
-    f'python3 {helper} '
-    f'--tinygrad-dir {tinygrad_dir} '
-    f'--onnx {fn}.onnx '
-    f'--out {fn}_tinygrad.pkl '
-    f'--flags "{flags}" '
-    f'--cpu-flags "CPU=1 IMAGE=0 JIT=2"'
+    f'{flags} python3 {helper} '
+    f'{tinygrad_dir} '
+    f'{fn}.onnx '
+    f'{fn}_tinygrad.pkl'
   )
-  # Include helper and tinygrad as dependencies so changes re-trigger builds
   return lenv.Command(
     fn + "_tinygrad.pkl",
     [fn + ".onnx"] + tinygrad_files + [helper],
