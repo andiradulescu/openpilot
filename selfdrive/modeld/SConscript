@@ -41,12 +41,17 @@ for model_name in ['driving_vision', 'driving_policy']:
   lenv.Command(fn + "_metadata.pkl", [fn + ".onnx"] + tinygrad_files + script_files, cmd)
 
 def tg_compile(flags, model_name):
-  pythonpath_string = 'PYTHONPATH="${PYTHONPATH}:' + env.Dir("#tinygrad_repo").abspath + '"'
   fn = File(f"models/{model_name}").abspath
+  tinygrad_path = Dir("#tinygrad_repo").abspath
+  wrapper_path = Dir("#selfdrive/modeld").File("tg_compile.py").abspath
+
+  quoted_flags = f'"{flags}"'
+  script_files = tinygrad_files + [wrapper_path]
+
   return lenv.Command(
     fn + "_tinygrad.pkl",
-    [fn + ".onnx"] + tinygrad_files,
-    f'{pythonpath_string} {flags} python3 {Dir("#tinygrad_repo").abspath}/examples/openpilot/compile3.py {fn}.onnx {fn}_tinygrad.pkl'
+    [fn + ".onnx"] + script_files,
+    f'python3 {wrapper_path} {quoted_flags} {fn}.onnx {fn}_tinygrad.pkl {tinygrad_path}'
   )
 
 # because tg doesn't support multi-process
