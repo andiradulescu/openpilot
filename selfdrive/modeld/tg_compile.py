@@ -7,6 +7,8 @@ def compile_model(backend_flags, onnx_file, output_file, tinygrad_path):
   env = os.environ.copy()
   env["PYTHONPATH"] = f"{env.get('PYTHONPATH', '')}:{tinygrad_path}"
 
+  print(f"Compiling model with flags: '{backend_flags}'")
+
   # Parse backend_flags and add to env
   for flag in backend_flags.split():
     try:
@@ -31,10 +33,8 @@ if __name__ == "__main__":
   ret = compile_model(backend_flags, onnx_file, output_file, tinygrad_path)
 
   if ret != 0 and "CPU=1" not in backend_flags:
-    print("="*80)
-    print(f"Compilation with '{backend_flags}' failed, falling back to CPU")
-    print("="*80)
     cpu_flags = "CPU=1 IMAGE=0 JIT=2"
+    print(f"Compilation with '{backend_flags}' failed, falling back to '{cpu_flags}'")
     ret = compile_model(cpu_flags, onnx_file, output_file, tinygrad_path)
 
   sys.exit(ret)

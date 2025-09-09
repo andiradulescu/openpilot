@@ -42,22 +42,13 @@ for model_name in ['driving_vision', 'driving_policy']:
 
 def tg_compile(flags, model_name):
   fn = File(f"models/{model_name}").abspath
-  tinygrad_path = Dir("#tinygrad_repo").abspath
-  wrapper_path = Dir("#selfdrive/modeld").File("tg_compile.py").abspath
-
-  quoted_flags = f'"{flags}"'
-  script_files = tinygrad_files + [wrapper_path]
-
-  return lenv.Command(
-    fn + "_tinygrad.pkl",
-    [fn + ".onnx"] + script_files,
-    f'python3 {wrapper_path} {quoted_flags} {fn}.onnx {fn}_tinygrad.pkl {tinygrad_path}'
-  )
+  script_files = [File(Dir("#selfdrive/modeld").File("tg_compile.py").abspath)]
+  cmd = f'python3 {Dir("#selfdrive/modeld").abspath}/tg_compile.py {f'"{flags}"'} {fn}.onnx {fn}_tinygrad.pkl {Dir("#tinygrad_repo").abspath}'
+  return lenv.Command(fn + "_tinygrad.pkl", [fn + ".onnx"] + tinygrad_files + script_files, cmd)
 
 # because tg doesn't support multi-process
 import subprocess
 devs = subprocess.check_output('python3 -c "from tinygrad import Device; print(list(Device.get_available_devices()))"', shell=True, cwd=env.Dir('#').abspath)
-print("Available tinygrad devices:", devs)
 
 if b"QCOM" in devs:
   flags = 'QCOM=1'
@@ -69,8 +60,6 @@ elif b"LLVM" in devs:
   flags = 'LLVM=1 LLVMOPT=1 BEAM=0 IMAGE=0 JIT=2'
 else:
   flags = 'CPU=1 IMAGE=0 JIT=2'
-
-print(f"Compiling models with flags: '{flags}'")
 
 # Compile small models
 for model_name in ['driving_vision', 'driving_policy', 'dmonitoring_model']:
