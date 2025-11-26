@@ -179,17 +179,20 @@ class TestMonitoring:
     events, _ = self._run_seq(always_distracted, always_false, always_false, always_false)
     assert sum(len(event) for event in events) == 0
 
-  # engaged, car stops at traffic light, down to orange, no action, then car starts moving
-  #  - should only reach green when stopped, but continues counting down on launch
+  # engaged, car stops at traffic light, no action, then car starts moving
+  #  - no alerts at standstill (countdown paused), countdown resumes on launch
   def test_long_traffic_light_victim(self):
     _redlight_time = 60  # seconds
     standstill_vector = always_true[:]
     standstill_vector[int(_redlight_time/DT_DMON):] = [False] * int((TEST_TIMESPAN-_redlight_time)/DT_DMON)
     events, d_status = self._run_seq(always_distracted, always_false, always_true, standstill_vector)
-    assert events[int((d_status.settings._DISTRACTED_TIME-d_status.settings._DISTRACTED_PRE_TIME_TILL_TERMINAL+1)/DT_DMON)].names[0] == \
+    # no alerts during standstill - countdown is paused and alerts are suppressed
+    self._assert_no_events(events[:int(_redlight_time/DT_DMON)])
+    # countdown resumes after car starts moving, reaches green then orange
+    assert events[int((_redlight_time + d_status.settings._DISTRACTED_TIME - d_status.settings._DISTRACTED_PRE_TIME_TILL_TERMINAL + 0.5)/DT_DMON)].names[0] == \
                                                                                                                     EventName.preDriverDistracted
-    assert events[int((_redlight_time-0.1)/DT_DMON)].names[0] == EventName.preDriverDistracted
-    assert events[int((_redlight_time+0.5)/DT_DMON)].names[0] == EventName.promptDriverDistracted
+    assert events[int((_redlight_time + d_status.settings._DISTRACTED_TIME - d_status.settings._DISTRACTED_PROMPT_TIME_TILL_TERMINAL + 0.5)/DT_DMON)].names[0] == \
+                                                                                                                    EventName.promptDriverDistracted
 
   # engaged, model is somehow uncertain and driver is distracted
   #  - should fall back to wheel touch after uncertain alert

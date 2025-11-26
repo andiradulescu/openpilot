@@ -361,7 +361,7 @@ class DriverMonitoring:
 
     _reaching_audible = self.awareness - self.step_change <= self.threshold_prompt
     _reaching_terminal = self.awareness - self.step_change <= 0
-    standstill_orange_exemption = standstill and _reaching_audible
+    standstill_exemption = standstill  # pause countdown entirely when stopped
     always_on_red_exemption = always_on_valid and not op_engaged and _reaching_terminal
     always_on_lowspeed_exemption = always_on_valid and not op_engaged and car_speed < self.settings._ALWAYS_ON_ALERT_MIN_SPEED
 
@@ -369,9 +369,9 @@ class DriverMonitoring:
     maybe_distracted = self.hi_stds > self.settings._HI_STD_FALLBACK_TIME or not self.face_detected
 
     if certainly_distracted or maybe_distracted:
-      # should always be counting if distracted unless at standstill (lowspeed for always-on) and reaching orange
+      # should always be counting if distracted unless at standstill (lowspeed for always-on)
       # also will not be reaching 0 if DM is active when not engaged
-      if not (standstill_orange_exemption or always_on_red_exemption or (always_on_lowspeed_exemption and _reaching_audible)):
+      if not (standstill_exemption or always_on_red_exemption or (always_on_lowspeed_exemption and _reaching_audible)):
         self.awareness = max(self.awareness - self.step_change, -0.1)
 
     alert = None
@@ -382,11 +382,13 @@ class DriverMonitoring:
       if awareness_prev > 0.:
         self.terminal_alert_cnt += 1
     elif self.awareness <= self.threshold_prompt:
-      # prompt orange alert
-      alert = EventName.promptDriverDistracted if self.active_monitoring_mode else EventName.promptDriverUnresponsive
+      # prompt orange alert: suppress at standstill since there's no immediate danger
+      if not standstill:
+        alert = EventName.promptDriverDistracted if self.active_monitoring_mode else EventName.promptDriverUnresponsive
     elif self.awareness <= self.threshold_pre and not always_on_lowspeed_exemption:
-      # pre green alert
-      alert = EventName.preDriverDistracted if self.active_monitoring_mode else EventName.preDriverUnresponsive
+      # pre green alert: suppress at standstill since there's no immediate danger
+      if not standstill:
+        alert = EventName.preDriverDistracted if self.active_monitoring_mode else EventName.preDriverUnresponsive
 
     if alert is not None:
       self.current_events.add(alert)
