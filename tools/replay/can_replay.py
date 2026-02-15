@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import signal
 import time
 import usb1
 import threading
@@ -65,7 +66,7 @@ def connect():
     for s in PandaJungle.list():
       if s not in serials:
         print("starting send thread for", s)
-        serials[s] = threading.Thread(target=send_thread, args=(PandaJungle(s), flashing_lock))
+        serials[s] = threading.Thread(target=send_thread, args=(PandaJungle(s), flashing_lock), daemon=True)
         serials[s].start()
 
     # try to join all send threads
@@ -104,4 +105,5 @@ if __name__ == "__main__":
   if ENABLE_IGN:
     print(f"Cycling ignition: on for {IGN_ON}s, off for {IGN_OFF}s")
 
+  signal.signal(signal.SIGINT, signal.SIG_DFL)
   connect()
