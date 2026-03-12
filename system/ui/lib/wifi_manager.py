@@ -312,6 +312,11 @@ class _GsmManager:
 # wpa_supplicant.conf generation
 # ---------------------------------------------------------------------------
 
+def _sanitize_for_conf(value: str) -> str:
+  """Remove characters that could break wpa_supplicant.conf quoting."""
+  return value.replace('"', '').replace('\n', '').replace('\r', '').replace('\\', '')
+
+
 def _generate_wpa_conf(store: NetworkStore, path: str = WPA_SUPPLICANT_CONF):
   """Write wpa_supplicant.conf from NetworkStore (STA networks only)."""
   lines = [
@@ -324,10 +329,14 @@ def _generate_wpa_conf(store: NetworkStore, path: str = WPA_SUPPLICANT_CONF):
   for ssid, entry in store.get_all().items():
     psk = entry.get("psk", "")
     hidden = entry.get("hidden", False)
+    safe_ssid = _sanitize_for_conf(ssid)
+    safe_psk = _sanitize_for_conf(psk)
+    if not safe_ssid:
+      continue
     lines.append("network={")
-    lines.append(f'  ssid="{ssid}"')
-    if psk:
-      lines.append(f'  psk="{psk}"')
+    lines.append(f'  ssid="{safe_ssid}"')
+    if safe_psk:
+      lines.append(f'  psk="{safe_psk}"')
       lines.append("  key_mgmt=WPA-PSK")
     else:
       lines.append("  key_mgmt=NONE")
@@ -783,9 +792,11 @@ class WifiManager:
 
         # Add network via wpa_supplicant control commands (works even if NM started wpa_supplicant)
         net_id = self._ctrl.request("ADD_NETWORK").strip()
-        self._ctrl.request(f'SET_NETWORK {net_id} ssid "{ssid}"')
-        if password:
-          self._ctrl.request(f'SET_NETWORK {net_id} psk "{password}"')
+        safe_ssid = _sanitize_for_conf(ssid)
+        safe_psk = _sanitize_for_conf(password)
+        self._ctrl.request(f'SET_NETWORK {net_id} ssid "{safe_ssid}"')
+        if safe_psk:
+          self._ctrl.request(f'SET_NETWORK {net_id} psk "{safe_psk}"')
         else:
           self._ctrl.request(f"SET_NETWORK {net_id} key_mgmt NONE")
         if hidden:
@@ -844,10 +855,12 @@ class WifiManager:
           entry = self._store.get(ssid)
           if entry:
             net_id = self._ctrl.request("ADD_NETWORK").strip()
-            self._ctrl.request(f'SET_NETWORK {net_id} ssid "{ssid}"')
+            safe_ssid = _sanitize_for_conf(ssid)
+            self._ctrl.request(f'SET_NETWORK {net_id} ssid "{safe_ssid}"')
             psk = entry.get("psk", "")
-            if psk:
-              self._ctrl.request(f'SET_NETWORK {net_id} psk "{psk}"')
+            safe_psk = _sanitize_for_conf(psk)
+            if safe_psk:
+              self._ctrl.request(f'SET_NETWORK {net_id} psk "{safe_psk}"')
             else:
               self._ctrl.request(f"SET_NETWORK {net_id} key_mgmt NONE")
             if entry.get("hidden"):
@@ -942,9 +955,11 @@ class WifiManager:
     time.sleep(0.5)
 
     # Write AP config
+    safe_tether_ssid = _sanitize_for_conf(self._tethering_ssid)
+    safe_tether_psk = _sanitize_for_conf(psk)
     lines = ["ctrl_interface=/var/run/wpa_supplicant", "ap_scan=2", "",
-             "network={", f'  ssid="{self._tethering_ssid}"', "  mode=2",
-             "  frequency=2437", "  key_mgmt=WPA-PSK", f'  psk="{psk}"', "}", ""]
+             "network={", f'  ssid="{safe_tether_ssid}"', "  mode=2",
+             "  frequency=2437", "  key_mgmt=WPA-PSK", f'  psk="{safe_tether_psk}"', "}", ""]
     ap_conf = "\n".join(lines)
     with open(WPA_AP_CONF, "w") as f:
       f.write(ap_conf)

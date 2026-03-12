@@ -165,7 +165,7 @@ def parse_scan_results(raw: str) -> list[ScanResult]:
     return results
   for line in lines[1:]:
     parts = line.split("\t")
-    if len(parts) < 5:
+    if len(parts) < 4:
       continue
     try:
       results.append(ScanResult(

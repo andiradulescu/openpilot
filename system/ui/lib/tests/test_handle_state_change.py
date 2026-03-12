@@ -58,7 +58,6 @@ class TestConnected:
     assert wm._wifi_state.status == ConnectStatus.CONNECTED
     assert wm._wifi_state.ssid == "MyNet"
     wm._dhcp.start.assert_called_once()
-    assert len(wm._callback_queue) == 1  # activated
 
   def test_connected_fires_activated_callback(self, mocker):
     wm = _make_wm(mocker)
