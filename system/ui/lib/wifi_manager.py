@@ -413,11 +413,12 @@ class WifiManager:
 
       self._wait_for_wpa_supplicant()
 
-      self._init_wifi_state()
-
-      # Pre-populate network list from cached scan results so the UI
-      # doesn't flash "Scanning..." when the panel first opens.
+      # Populate networks before wifi state so the connected network's
+      # strength is available when the UI first renders (avoids the
+      # "disconnected icon" flash for the connected SSID).
       self._update_networks(block=True)
+
+      self._init_wifi_state()
 
       self._scan_thread.start()
       self._state_thread.start()
@@ -513,6 +514,8 @@ class WifiManager:
         return
 
       self._wifi_state = WifiState(ssid=ssid, status=new_status)
+      if new_status == ConnectStatus.CONNECTED:
+        self._update_active_connection_info()
 
     if block:
       worker()
