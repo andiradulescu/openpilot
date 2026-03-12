@@ -9,6 +9,20 @@ function agnos_init {
   sudo rm -f /data/etc/NetworkManager/system-connections/*.nmmeta
   rm -f /data/scons_cache/config.lock
 
+  # Tell NetworkManager to ignore wlan0 (we manage WiFi via wpa_supplicant directly)
+  NM_UNMANAGED_CONF="/etc/NetworkManager/conf.d/99-unmanaged-wifi.conf"
+  if [ ! -f "$NM_UNMANAGED_CONF" ]; then
+    echo -e "[keyfile]\nunmanaged-devices=interface-name:wlan0" | sudo tee "$NM_UNMANAGED_CONF" > /dev/null
+    sudo nmcli general reload conf 2>/dev/null || true
+  fi
+
+  # Start wpa_supplicant for WiFi (direct control, not via NM)
+  sudo killall -q wpa_supplicant 2>/dev/null || true
+  if [ ! -f /data/wpa_supplicant.conf ]; then
+    echo -e "ctrl_interface=/var/run/wpa_supplicant\nupdate_config=0\np2p_disabled=1\n" | sudo tee /data/wpa_supplicant.conf > /dev/null
+  fi
+  sudo wpa_supplicant -B -i wlan0 -c /data/wpa_supplicant.conf -D nl80211
+
   # set success flag for current boot slot
   sudo abctl --set_success
 

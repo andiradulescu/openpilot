@@ -19,9 +19,7 @@ from openpilot.system.hardware.tici.amplifier import Amplifier
 NM = 'org.freedesktop.NetworkManager'
 NM_CON_ACT = NM + '.Connection.Active'
 NM_DEV = NM + '.Device'
-NM_DEV_WL = NM + '.Device.Wireless'
 NM_DEV_STATS = NM + '.Device.Statistics'
-NM_AP = NM + '.AccessPoint'
 DBUS_PROPS = 'org.freedesktop.DBus.Properties'
 
 MM = 'org.freedesktop.ModemManager1'
@@ -138,28 +136,26 @@ class Tici(HardwareBase):
 
   def get_network_type(self):
     try:
-      primary_connection = self.nm.Get(NM, 'PrimaryConnection', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-      primary_connection = self.bus.get_object(NM, primary_connection)
-      primary_type = primary_connection.Get(NM_CON_ACT, 'Type', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-
-      if primary_type == '802-3-ethernet':
-        return NetworkType.ethernet
-      elif primary_type == '802-11-wireless':
-        return NetworkType.wifi
-      else:
-        active_connections = self.nm.Get(NM, 'ActiveConnections', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-        for conn in active_connections:
-          c = self.bus.get_object(NM, conn)
-          tp = c.Get(NM_CON_ACT, 'Type', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-          if tp == 'gsm':
-            modem = self.get_modem()
-            access_t = modem.Get(MM_MODEM, 'AccessTechnologies', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-            if access_t >= MM_MODEM_ACCESS_TECHNOLOGY_LTE:
-              return NetworkType.cell4G
-            elif access_t >= MM_MODEM_ACCESS_TECHNOLOGY_UMTS:
-              return NetworkType.cell3G
-            else:
-              return NetworkType.cell2G
+      result = subprocess.run(["ip", "route", "show", "default"], capture_output=True, text=True, timeout=2)
+      for line in result.stdout.strip().split("\n"):
+        if "dev" not in line:
+          continue
+        parts = line.split()
+        dev_idx = parts.index("dev")
+        dev = parts[dev_idx + 1]
+        if dev == "wlan0":
+          return NetworkType.wifi
+        elif dev in ("eth0", "usb0"):
+          return NetworkType.ethernet
+        elif dev in ("wwan0", "rmnet_data0"):
+          modem = self.get_modem()
+          access_t = modem.Get(MM_MODEM, 'AccessTechnologies', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+          if access_t >= MM_MODEM_ACCESS_TECHNOLOGY_LTE:
+            return NetworkType.cell4G
+          elif access_t >= MM_MODEM_ACCESS_TECHNOLOGY_UMTS:
+            return NetworkType.cell3G
+          else:
+            return NetworkType.cell2G
     except Exception:
       pass
 
@@ -171,8 +167,8 @@ class Tici(HardwareBase):
     return self.bus.get_object(MM, modem_path)
 
   def get_wlan(self):
-    wlan_path = self.nm.GetDeviceByIpIface('wlan0', dbus_interface=NM, timeout=TIMEOUT)
-    return self.bus.get_object(NM, wlan_path)
+    # Stub: callers rewritten to use wpa_cli/ip directly
+    return None
 
   def get_wwan(self):
     wwan_path = self.nm.GetDeviceByIpIface('wwan0', dbus_interface=NM, timeout=TIMEOUT)
@@ -258,12 +254,14 @@ class Tici(HardwareBase):
       if network_type == NetworkType.none:
         pass
       elif network_type == NetworkType.wifi:
-        wlan = self.get_wlan()
-        active_ap_path = wlan.Get(NM_DEV_WL, 'ActiveAccessPoint', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-        if active_ap_path != "/":
-          active_ap = self.bus.get_object(NM, active_ap_path)
-          strength = int(active_ap.Get(NM_AP, 'Strength', dbus_interface=DBUS_PROPS, timeout=TIMEOUT))
-          network_strength = self.parse_strength(strength)
+        result = subprocess.run(["wpa_cli", "-i", "wlan0", "signal_poll"],
+                                capture_output=True, text=True, timeout=2)
+        for line in result.stdout.strip().split("\n"):
+          if line.startswith("RSSI="):
+            rssi = int(line.split("=")[1])
+            strength = max(0, min(100, 2 * (rssi + 100)))
+            network_strength = self.parse_strength(strength)
+            break
       else:  # Cellular
         modem = self.get_modem()
         strength = int(modem.Get(MM_MODEM, 'SignalQuality', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)[0])
@@ -275,18 +273,35 @@ class Tici(HardwareBase):
 
   def get_network_metered(self, network_type) -> bool:
     try:
-      primary_connection = self.nm.Get(NM, 'PrimaryConnection', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-      primary_connection = self.bus.get_object(NM, primary_connection)
-      primary_devices = primary_connection.Get(NM_CON_ACT, 'Devices', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-
-      for dev in primary_devices:
-        dev_obj = self.bus.get_object(NM, str(dev))
-        metered_prop = dev_obj.Get(NM_DEV, 'Metered', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
-
-        if network_type == NetworkType.wifi:
-          if metered_prop in [NMMetered.NM_METERED_YES, NMMetered.NM_METERED_GUESS_YES]:
-            return True
-        elif network_type in [NetworkType.cell2G, NetworkType.cell3G, NetworkType.cell4G, NetworkType.cell5G]:
+      if network_type == NetworkType.wifi:
+        # Read metered status from wifi_networks.json + current SSID from wpa_cli
+        result = subprocess.run(["wpa_cli", "-i", "wlan0", "status"],
+                                capture_output=True, text=True, timeout=2)
+        ssid = None
+        for line in result.stdout.strip().split("\n"):
+          if line.startswith("ssid="):
+            ssid = line.split("=", 1)[1]
+            break
+        if ssid:
+          import json
+          try:
+            with open("/data/wifi_networks.json") as f:
+              networks = json.load(f)
+            metered = networks.get(ssid, {}).get("metered", 0)
+            if metered == 1:  # MeteredType.YES
+              return True
+            elif metered == 2:  # MeteredType.NO
+              return False
+          except (FileNotFoundError, json.JSONDecodeError):
+            pass
+      elif network_type in [NetworkType.cell2G, NetworkType.cell3G, NetworkType.cell4G, NetworkType.cell5G]:
+        # Cellular metered check still via NM (NM still manages cellular)
+        primary_connection = self.nm.Get(NM, 'PrimaryConnection', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+        primary_connection = self.bus.get_object(NM, primary_connection)
+        primary_devices = primary_connection.Get(NM_CON_ACT, 'Devices', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
+        for dev in primary_devices:
+          dev_obj = self.bus.get_object(NM, str(dev))
+          metered_prop = dev_obj.Get(NM_DEV, 'Metered', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
           if metered_prop == NMMetered.NM_METERED_NO:
             return False
     except Exception:
