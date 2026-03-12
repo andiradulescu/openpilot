@@ -299,6 +299,10 @@ class WifiManagerUI(Widget):
     super().show_event()
     # start/stop scanning when widget is visible
     self._wifi_manager.set_active(True)
+    # Populate immediately from cached data to avoid "Scanning..." flash
+    cached = self._wifi_manager.networks
+    if cached:
+      self._on_network_updated(cached)
 
   def hide_event(self):
     super().hide_event()
