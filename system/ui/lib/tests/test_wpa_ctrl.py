@@ -1,6 +1,4 @@
 """Tests for wpa_ctrl.py parsing helpers and NetworkStore."""
-import json
-import tempfile
 import pytest
 
 from openpilot.system.ui.lib.wpa_ctrl import (
@@ -15,12 +13,11 @@ from openpilot.system.ui.lib.wifi_manager import NetworkStore, MeteredType
 # ---------------------------------------------------------------------------
 
 class TestParseScanResults:
+  HEADER = "bssid / frequency / signal level / flags / ssid\n"
+
   def test_basic(self):
-    raw = (
-      "bssid / frequency / signal level / flags / ssid\n"
-      "aa:bb:cc:dd:ee:ff\t2437\t-50\t[WPA2-PSK-CCMP][ESS]\tMyNetwork\n"
-      "11:22:33:44:55:66\t5180\t-70\t[WPA-PSK-TKIP][ESS]\tOtherNet\n"
-    )
+    raw = self.HEADER + "aa:bb:cc:dd:ee:ff\t2437\t-50\t[WPA2-PSK-CCMP][ESS]\tMyNetwork\n" + \
+                        "11:22:33:44:55:66\t5180\t-70\t[WPA-PSK-TKIP][ESS]\tOtherNet\n"
     results = parse_scan_results(raw)
     assert len(results) == 2
     assert results[0].bssid == "aa:bb:cc:dd:ee:ff"
@@ -31,25 +28,18 @@ class TestParseScanResults:
 
   def test_empty(self):
     assert parse_scan_results("") == []
-    assert parse_scan_results("bssid / frequency / signal level / flags / ssid\n") == []
+    assert parse_scan_results(self.HEADER) == []
 
   def test_malformed_line_skipped(self):
-    raw = (
-      "bssid / frequency / signal level / flags / ssid\n"
-      "aa:bb:cc:dd:ee:ff\t2437\t-50\t[WPA2-PSK-CCMP][ESS]\tGood\n"
-      "bad line\n"
-      "11:22:33:44:55:66\t5180\t-70\t[ESS]\tAlsoGood\n"
-    )
+    raw = self.HEADER + "aa:bb:cc:dd:ee:ff\t2437\t-50\t[WPA2-PSK-CCMP][ESS]\tGood\n" + \
+                        "bad line\n" + \
+                        "11:22:33:44:55:66\t5180\t-70\t[ESS]\tAlsoGood\n"
     results = parse_scan_results(raw)
     assert len(results) == 2
 
   def test_hidden_network_empty_ssid(self):
-    raw = (
-      "bssid / frequency / signal level / flags / ssid\n"
-      "aa:bb:cc:dd:ee:ff\t2437\t-50\t[WPA2-PSK-CCMP][ESS]\t\n"
-    )
+    raw = self.HEADER + "aa:bb:cc:dd:ee:ff\t2437\t-50\t[WPA2-PSK-CCMP][ESS]\t\n"
     results = parse_scan_results(raw)
-    # The fifth field is empty string
     assert len(results) == 1
     assert results[0].ssid == ""
 

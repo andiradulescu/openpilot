@@ -5,10 +5,9 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
-from typing import Any
 
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.ui.lib.wpa_ctrl import (WpaCtrl, WpaCtrlMonitor, SecurityType,
@@ -188,9 +187,7 @@ class _GsmManager:
     if self._router is not None:
       return True
     try:
-      from jeepney import DBusAddress, new_method_call
       from jeepney.io.threading import DBusRouter, open_dbus_connection
-      from jeepney.wrappers import Properties
       self._router = DBusRouter(open_dbus_connection(bus="SYSTEM"))
       return True
     except Exception:
@@ -203,15 +200,9 @@ class _GsmManager:
     try:
       from jeepney import DBusAddress, new_method_call
       from jeepney.low_level import MessageType
-      from jeepney.wrappers import Properties
 
       NM = "org.freedesktop.NetworkManager"
-      NM_PATH = '/org/freedesktop/NetworkManager'
-      NM_IFACE = 'org.freedesktop.NetworkManager'
-      NM_SETTINGS_PATH = '/org/freedesktop/NetworkManager/Settings'
-      NM_SETTINGS_IFACE = 'org.freedesktop.NetworkManager.Settings'
       NM_CONNECTION_IFACE = 'org.freedesktop.NetworkManager.Settings.Connection'
-      NM_DEVICE_TYPE_MODEM = 8
 
       lte_path = self._get_lte_connection_path()
       if not lte_path:
@@ -647,7 +638,7 @@ class WifiManager:
       self._current_network_metered = MeteredType.UNKNOWN
       self._enqueue_callbacks(self._disconnected)
 
-    elif "CTRL-EVENT-TEMP-DISABLED" in event and "reason=WRONG_KEY" in event:
+    elif "TEMP-DISABLED" in event and "reason=WRONG_KEY" in event:
       if self._wifi_state.ssid:
         self._enqueue_callbacks(self._need_auth, self._wifi_state.ssid)
         self._set_connecting(None)
@@ -739,19 +730,27 @@ class WifiManager:
     metered = MeteredType.UNKNOWN
 
     if self._wifi_state.status == ConnectStatus.CONNECTED:
-      # Get IP from ip command
-      try:
-        result = subprocess.run(["ip", "-4", "-o", "addr", "show", "wlan0"],
-                                capture_output=True, text=True, timeout=2)
-        for line in result.stdout.strip().split("\n"):
-          if "inet " in line:
-            # Format: "2: wlan0    inet 192.168.1.100/24 ..."
-            parts = line.split()
-            inet_idx = parts.index("inet")
-            ipv4_address = parts[inet_idx + 1].split("/")[0]
-            break
-      except Exception:
-        pass
+      # Try wpa_cli STATUS for ip_address first (works regardless of network namespace)
+      if self._ctrl:
+        try:
+          status = parse_status(self._ctrl.request("STATUS"))
+          ipv4_address = status.get("ip_address", "")
+        except Exception:
+          pass
+
+      # Fallback to ip command
+      if not ipv4_address:
+        try:
+          result = subprocess.run(["ip", "-4", "-o", "addr", "show", "wlan0"],
+                                  capture_output=True, text=True, timeout=2)
+          for line in result.stdout.strip().split("\n"):
+            if "inet " in line:
+              parts = line.split()
+              inet_idx = parts.index("inet")
+              ipv4_address = parts[inet_idx + 1].split("/")[0]
+              break
+        except Exception:
+          pass
 
       # Metered from store
       ssid = self._wifi_state.ssid
@@ -769,7 +768,7 @@ class WifiManager:
     self._set_connecting(ssid)
 
     def worker():
-      # Save to store and regenerate conf
+      # Save to persistent store and regenerate conf (for next boot)
       self._store.save_network(ssid, psk=password, hidden=hidden)
       _generate_wpa_conf(self._store)
 
@@ -779,18 +778,20 @@ class WifiManager:
         return
 
       try:
-        # Reconfigure wpa_supplicant to pick up new network
-        self._ctrl.request("RECONFIGURE")
-        time.sleep(0.5)
+        # Remove any existing network entry for this SSID
+        self._remove_wpa_network(ssid)
 
-        # Find the network id for this SSID
-        net_id = self._find_network_id(ssid)
-        if net_id is not None:
-          # SELECT_NETWORK disables all others and connects
-          self._ctrl.request(f"SELECT_NETWORK {net_id}")
+        # Add network via wpa_supplicant control commands (works even if NM started wpa_supplicant)
+        net_id = self._ctrl.request("ADD_NETWORK").strip()
+        self._ctrl.request(f'SET_NETWORK {net_id} ssid "{ssid}"')
+        if password:
+          self._ctrl.request(f'SET_NETWORK {net_id} psk "{password}"')
         else:
-          cloudlog.warning(f"Network {ssid} not found after RECONFIGURE")
-          self._init_wifi_state()
+          self._ctrl.request(f"SET_NETWORK {net_id} key_mgmt NONE")
+        if hidden:
+          self._ctrl.request(f"SET_NETWORK {net_id} scan_ssid 1")
+
+        self._ctrl.request(f"SELECT_NETWORK {net_id}")
       except Exception:
         cloudlog.exception(f"Failed to connect to {ssid}")
         self._init_wifi_state()
@@ -804,18 +805,19 @@ class WifiManager:
       removed = self._store.remove(ssid)
       if not removed:
         cloudlog.warning(f"Trying to forget unknown connection: {ssid}")
-      else:
-        _generate_wpa_conf(self._store)
 
-        if self._ctrl:
-          try:
-            if was_connected:
-              self._ctrl.request("DISCONNECT")
-            self._ctrl.request("RECONFIGURE")
-            # Re-enable all networks so auto-connect works
-            self._ctrl.request("ENABLE_NETWORK all")
-          except Exception:
-            cloudlog.exception(f"Failed to reconfigure after forgetting {ssid}")
+      _generate_wpa_conf(self._store)
+
+      if self._ctrl:
+        try:
+          if was_connected:
+            self._ctrl.request("DISCONNECT")
+          self._remove_wpa_network(ssid)
+          self._ctrl.request("ENABLE_NETWORK all")
+          if not was_connected:
+            self._ctrl.request("REASSOCIATE")
+        except Exception:
+          cloudlog.exception(f"Failed to reconfigure after forgetting {ssid}")
 
       self._enqueue_callbacks(self._forgotten, ssid)
 
@@ -838,8 +840,22 @@ class WifiManager:
         if net_id is not None:
           self._ctrl.request(f"SELECT_NETWORK {net_id}")
         else:
-          cloudlog.warning(f"Network {ssid} not found for activation")
-          self._init_wifi_state()
+          # Network not in wpa_supplicant's runtime list — add from store
+          entry = self._store.get(ssid)
+          if entry:
+            net_id = self._ctrl.request("ADD_NETWORK").strip()
+            self._ctrl.request(f'SET_NETWORK {net_id} ssid "{ssid}"')
+            psk = entry.get("psk", "")
+            if psk:
+              self._ctrl.request(f'SET_NETWORK {net_id} psk "{psk}"')
+            else:
+              self._ctrl.request(f"SET_NETWORK {net_id} key_mgmt NONE")
+            if entry.get("hidden"):
+              self._ctrl.request(f"SET_NETWORK {net_id} scan_ssid 1")
+            self._ctrl.request(f"SELECT_NETWORK {net_id}")
+          else:
+            cloudlog.warning(f"Network {ssid} not found for activation")
+            self._init_wifi_state()
       except Exception:
         cloudlog.exception(f"Failed to activate {ssid}")
         self._init_wifi_state()
@@ -862,6 +878,19 @@ class WifiManager:
     except Exception:
       cloudlog.exception("Failed to list networks")
     return None
+
+  def _remove_wpa_network(self, ssid: str):
+    """Remove all wpa_supplicant network entries matching SSID."""
+    if self._ctrl is None:
+      return
+    try:
+      raw = self._ctrl.request("LIST_NETWORKS")
+      for line in raw.strip().split("\n")[1:]:
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[1] == ssid:
+          self._ctrl.request(f"REMOVE_NETWORK {parts[0]}")
+    except Exception:
+      cloudlog.exception(f"Failed to remove network {ssid}")
 
   def is_tethering_active(self) -> bool:
     return self._tethering_active
@@ -913,18 +942,10 @@ class WifiManager:
     time.sleep(0.5)
 
     # Write AP config
-    ap_conf = (
-      f"ctrl_interface=/var/run/wpa_supplicant\n"
-      f"ap_scan=2\n"
-      f"\n"
-      f"network={{\n"
-      f'  ssid="{self._tethering_ssid}"\n'
-      f"  mode=2\n"
-      f"  frequency=2437\n"
-      f"  key_mgmt=WPA-PSK\n"
-      f'  psk="{psk}"\n'
-      f"}}\n"
-    )
+    lines = ["ctrl_interface=/var/run/wpa_supplicant", "ap_scan=2", "",
+             "network={", f'  ssid="{self._tethering_ssid}"', "  mode=2",
+             "  frequency=2437", "  key_mgmt=WPA-PSK", f'  psk="{psk}"', "}", ""]
+    ap_conf = "\n".join(lines)
     with open(WPA_AP_CONF, "w") as f:
       f.write(ap_conf)
 
@@ -943,7 +964,7 @@ class WifiManager:
       "sudo", "dnsmasq",
       "--interface=wlan0",
       "--bind-interfaces",
-      f"--dhcp-range=192.168.43.2,192.168.43.254,24h",
+      "--dhcp-range=192.168.43.2,192.168.43.254,24h",
       "--no-daemon", "--log-queries",
     ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
       start_new_session=True)

@@ -3,7 +3,6 @@
 Tests the state machine in isolation by constructing a WifiManager with mocked
 wpa_supplicant, then calling _handle_event directly with wpa_supplicant events.
 """
-import pytest
 from pytest_mock import MockerFixture
 
 from openpilot.system.ui.lib.wifi_manager import WifiManager, WifiState, ConnectStatus
@@ -124,7 +123,7 @@ class TestWrongPassword:
     wm.add_callbacks(need_auth=cb)
     wm._set_connecting("SecNet")
 
-    fire(wm, "CTRL-EVENT-TEMP-DISABLED id=0 ssid=\"SecNet\" auth_failures=1 duration=10 reason=WRONG_KEY")
+    fire(wm, "CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid=\"SecNet\" auth_failures=1 duration=10 reason=WRONG_KEY")
 
     assert wm._wifi_state.status == ConnectStatus.DISCONNECTED
     wm.process_callbacks()
@@ -135,7 +134,7 @@ class TestWrongPassword:
     cb = mocker.MagicMock()
     wm.add_callbacks(need_auth=cb)
 
-    fire(wm, "CTRL-EVENT-TEMP-DISABLED id=0 ssid=\"Net\" auth_failures=1 duration=10 reason=WRONG_KEY")
+    fire(wm, "CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid=\"Net\" auth_failures=1 duration=10 reason=WRONG_KEY")
 
     assert len(wm._callback_queue) == 0
 
@@ -170,10 +169,7 @@ class TestScanResults:
     wm._tethering_ssid = "weedle"
     wm._networks = []
     # Mock scan results
-    wm._ctrl.request.return_value = (
-      "bssid / frequency / signal level / flags / ssid\n"
-      "aa:bb:cc:dd:ee:ff\t2437\t-50\t[WPA2-PSK-CCMP][ESS]\tTestNet\n"
-    )
+    wm._ctrl.request.return_value = "bssid / frequency / signal level / flags / ssid\naa:bb:cc:dd:ee:ff\t2437\t-50\t[WPA2-PSK-CCMP][ESS]\tTestNet\n"
     wm._update_networks = mocker.MagicMock()
 
     fire(wm, "CTRL-EVENT-SCAN-RESULTS")
@@ -246,7 +242,7 @@ class TestFullSequences:
     wm.add_callbacks(need_auth=cb)
 
     wm._set_connecting("Sec")
-    fire(wm, "CTRL-EVENT-TEMP-DISABLED id=0 ssid=\"Sec\" auth_failures=1 duration=10 reason=WRONG_KEY")
+    fire(wm, "CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid=\"Sec\" auth_failures=1 duration=10 reason=WRONG_KEY")
 
     assert wm._wifi_state.status == ConnectStatus.DISCONNECTED
     wm.process_callbacks()
