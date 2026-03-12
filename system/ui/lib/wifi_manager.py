@@ -415,6 +415,10 @@ class WifiManager:
 
       self._init_wifi_state()
 
+      # Pre-populate network list from cached scan results so the UI
+      # doesn't flash "Scanning..." when the panel first opens.
+      self._update_networks(block=True)
+
       self._scan_thread.start()
       self._state_thread.start()
 
@@ -631,7 +635,7 @@ class WifiManager:
       self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTED)
       self._dhcp.start()
       self._enqueue_callbacks(self._activated)
-      self._update_active_connection_info()
+      self._poll_for_ip()
 
     elif "CTRL-EVENT-DISCONNECTED" in event:
       if self._tethering_active:
@@ -733,6 +737,18 @@ class WifiManager:
       worker()
     else:
       threading.Thread(target=worker, daemon=True).start()
+
+  def _poll_for_ip(self):
+    """Poll for IP address after DHCP starts, then update connection info."""
+    def worker():
+      for _ in range(50):  # 10 seconds max
+        if self._wifi_state.status != ConnectStatus.CONNECTED:
+          return
+        self._update_active_connection_info()
+        if self._ipv4_address:
+          return
+        time.sleep(0.2)
+    threading.Thread(target=worker, daemon=True).start()
 
   def _update_active_connection_info(self):
     ipv4_address = ""

@@ -27,6 +27,7 @@ def _make_wm(mocker: MockerFixture, saved_networks=None):
   wm._ipv4_address = ""
   wm._current_network_metered = 0
   wm._update_active_connection_info = mocker.MagicMock()
+  wm._poll_for_ip = mocker.MagicMock()
 
   # Mock store
   wm._store = mocker.MagicMock()
