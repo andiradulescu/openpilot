@@ -9,9 +9,7 @@ from enum import IntEnum
 class SecurityType(IntEnum):
   OPEN = 0
   WPA = 1
-  WPA2 = 2
-  WPA3 = 3
-  UNSUPPORTED = 4
+  UNSUPPORTED = 2
 
 
 @dataclass(frozen=True)

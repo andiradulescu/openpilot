@@ -10,6 +10,7 @@ from enum import IntEnum
 from pathlib import Path
 
 from openpilot.common.swaglog import cloudlog
+from openpilot.common.utils import atomic_write
 from openpilot.system.ui.lib.wpa_ctrl import (WpaCtrl, WpaCtrlMonitor, SecurityType,
                                                parse_scan_results, flags_to_security_type,
                                                parse_status, dbm_to_percent)
@@ -84,10 +85,8 @@ class NetworkStore:
       self._networks = {}
 
   def _save(self):
-    tmp = self._path + ".tmp"
-    with open(tmp, "w") as f:
+    with atomic_write(self._path, overwrite=True) as f:
       json.dump(self._networks, f, indent=2)
-    os.replace(tmp, self._path)
 
   def get_all(self) -> dict[str, dict]:
     with self._lock:
@@ -192,6 +191,14 @@ class DhcpClient:
 class _GsmManager:
   """Manages cellular/GSM via NetworkManager DBus (unchanged from NM era)."""
 
+  NM = "org.freedesktop.NetworkManager"
+  NM_PATH = '/org/freedesktop/NetworkManager'
+  NM_SETTINGS_PATH = '/org/freedesktop/NetworkManager/Settings'
+  NM_SETTINGS_IFACE = NM + '.Settings'
+  NM_CONNECTION_IFACE = NM + '.Settings.Connection'
+  NM_DEVICE_IFACE = NM + '.Device'
+  NM_DEVICE_TYPE_MODEM = 8
+
   def __init__(self):
     self._router = None
 
@@ -213,15 +220,12 @@ class _GsmManager:
       from jeepney import DBusAddress, new_method_call
       from jeepney.low_level import MessageType
 
-      NM = "org.freedesktop.NetworkManager"
-      NM_CONNECTION_IFACE = 'org.freedesktop.NetworkManager.Settings.Connection'
-
       lte_path = self._get_lte_connection_path()
       if not lte_path:
         cloudlog.warning("No LTE connection found")
         return
 
-      conn_addr = DBusAddress(lte_path, bus_name=NM, interface=NM_CONNECTION_IFACE)
+      conn_addr = DBusAddress(lte_path, bus_name=self.NM, interface=self.NM_CONNECTION_IFACE)
       reply = self._router.send_and_get_reply(new_method_call(conn_addr, 'GetSettings'))
       if reply.header.message_type == MessageType.error:
         cloudlog.warning(f'Failed to get connection settings: {reply}')
@@ -267,16 +271,11 @@ class _GsmManager:
       from jeepney import DBusAddress, new_method_call
       from jeepney.low_level import MessageType
 
-      NM = "org.freedesktop.NetworkManager"
-      NM_SETTINGS_PATH = '/org/freedesktop/NetworkManager/Settings'
-      NM_SETTINGS_IFACE = 'org.freedesktop.NetworkManager.Settings'
-      NM_CONNECTION_IFACE = 'org.freedesktop.NetworkManager.Settings.Connection'
-
-      settings_addr = DBusAddress(NM_SETTINGS_PATH, bus_name=NM, interface=NM_SETTINGS_IFACE)
+      settings_addr = DBusAddress(self.NM_SETTINGS_PATH, bus_name=self.NM, interface=self.NM_SETTINGS_IFACE)
       known = self._router.send_and_get_reply(new_method_call(settings_addr, 'ListConnections')).body[0]
 
       for conn_path in known:
-        conn_addr = DBusAddress(conn_path, bus_name=NM, interface=NM_CONNECTION_IFACE)
+        conn_addr = DBusAddress(conn_path, bus_name=self.NM, interface=self.NM_CONNECTION_IFACE)
         reply = self._router.send_and_get_reply(new_method_call(conn_addr, 'GetSettings'))
         if reply.header.message_type == MessageType.error:
           continue
@@ -292,18 +291,12 @@ class _GsmManager:
       from jeepney import DBusAddress, new_method_call
       from jeepney.wrappers import Properties
 
-      NM = "org.freedesktop.NetworkManager"
-      NM_PATH = '/org/freedesktop/NetworkManager'
-      NM_IFACE = 'org.freedesktop.NetworkManager'
-      NM_DEVICE_IFACE = 'org.freedesktop.NetworkManager.Device'
-      NM_DEVICE_TYPE_MODEM = 8
-
-      nm = DBusAddress(NM_PATH, bus_name=NM, interface=NM_IFACE)
+      nm = DBusAddress(self.NM_PATH, bus_name=self.NM, interface=self.NM)
       device_paths = self._router.send_and_get_reply(new_method_call(nm, 'GetDevices')).body[0]
       for device_path in device_paths:
-        dev_addr = DBusAddress(device_path, bus_name=NM, interface=NM_DEVICE_IFACE)
+        dev_addr = DBusAddress(device_path, bus_name=self.NM, interface=self.NM_DEVICE_IFACE)
         dev_type = self._router.send_and_get_reply(Properties(dev_addr).get('DeviceType')).body[0][1]
-        if dev_type == NM_DEVICE_TYPE_MODEM:
+        if dev_type == self.NM_DEVICE_TYPE_MODEM:
           self._router.send_and_get_reply(new_method_call(nm, 'ActivateConnection', 'ooo',
                                                           (connection_path, str(device_path), "/")))
           return
@@ -357,10 +350,8 @@ def _generate_wpa_conf(store: NetworkStore, path: str = WPA_SUPPLICANT_CONF):
     lines.append("}")
     lines.append("")
 
-  tmp = path + ".tmp"
-  with open(tmp, "w") as f:
+  with atomic_write(path, overwrite=True) as f:
     f.write("\n".join(lines))
-  os.replace(tmp, path)
 
 
 # ---------------------------------------------------------------------------
@@ -627,7 +618,7 @@ class WifiManager:
       cloudlog.debug(f"[WPA EVENT] {event}")
 
     if "CTRL-EVENT-SCAN-RESULTS" in event:
-      self._update_networks()
+      self._update_networks(block=False)
 
     elif "CTRL-EVENT-CONNECTED" in event:
       # Extract SSID from "Connection to xx:xx:xx:xx:xx:xx completed [id=N id_str=]"
@@ -901,32 +892,30 @@ class WifiManager:
       self._ctrl.request(f"SET_NETWORK {net_id} scan_ssid 1")
     self._ctrl.request(f"SELECT_NETWORK {net_id}")
 
-  def _find_network_id(self, ssid: str) -> str | None:
-    """Find wpa_supplicant network id for given SSID via LIST_NETWORKS."""
+  def _list_network_ids(self, ssid: str) -> list[str]:
+    """Return all wpa_supplicant network ids matching SSID."""
     if self._ctrl is None:
-      return None
+      return []
     try:
       raw = self._ctrl.request("LIST_NETWORKS")
-      for line in raw.strip().split("\n")[1:]:  # skip header
-        parts = line.split("\t")
-        if len(parts) >= 2 and parts[1] == ssid:
-          return parts[0]
+      return [parts[0] for line in raw.strip().split("\n")[1:]
+              if len(parts := line.split("\t")) >= 2 and parts[1] == ssid]
     except Exception:
       cloudlog.exception("Failed to list networks")
-    return None
+      return []
+
+  def _find_network_id(self, ssid: str) -> str | None:
+    """Find first wpa_supplicant network id for given SSID."""
+    ids = self._list_network_ids(ssid)
+    return ids[0] if ids else None
 
   def _remove_wpa_network(self, ssid: str):
     """Remove all wpa_supplicant network entries matching SSID."""
-    if self._ctrl is None:
-      return
-    try:
-      raw = self._ctrl.request("LIST_NETWORKS")
-      for line in raw.strip().split("\n")[1:]:
-        parts = line.split("\t")
-        if len(parts) >= 2 and parts[1] == ssid:
-          self._ctrl.request(f"REMOVE_NETWORK {parts[0]}")
-    except Exception:
-      cloudlog.exception(f"Failed to remove network {ssid}")
+    for net_id in self._list_network_ids(ssid):
+      try:
+        self._ctrl.request(f"REMOVE_NETWORK {net_id}")
+      except Exception:
+        cloudlog.exception(f"Failed to remove network {ssid}")
 
   def is_tethering_active(self) -> bool:
     return self._tethering_active
@@ -960,7 +949,6 @@ class WifiManager:
 
   def _start_tethering(self):
     self._set_connecting(self._tethering_ssid)
-    self._tethering_active = True
 
     psk = self._store.get_psk(self._tethering_ssid)
     if not psk:
@@ -1019,6 +1007,7 @@ class WifiManager:
     except Exception:
       cloudlog.exception("Failed to reconnect wpa_ctrl after tethering start")
 
+    self._tethering_active = True
     self._wifi_state = WifiState(ssid=self._tethering_ssid, status=ConnectStatus.CONNECTED)
     self._ipv4_address = TETHERING_IP_ADDRESS
     self._enqueue_callbacks(self._activated)
