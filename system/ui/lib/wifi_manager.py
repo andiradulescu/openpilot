@@ -98,9 +98,22 @@ class NetworkStore:
     with self._lock:
       return self._networks.get(ssid)
 
-  def save_network(self, ssid: str, psk: str = "", metered: int = 0, hidden: bool = False):
+  def save_network(self, ssid: str, psk: str | None = None, metered: int | None = None, hidden: bool | None = None):
     with self._lock:
-      self._networks[ssid] = {"psk": psk, "metered": metered, "hidden": hidden}
+      existing = self._networks.get(ssid, {})
+      if psk is not None:
+        existing["psk"] = psk
+      elif "psk" not in existing:
+        existing["psk"] = ""
+      if metered is not None:
+        existing["metered"] = metered
+      elif "metered" not in existing:
+        existing["metered"] = 0
+      if hidden is not None:
+        existing["hidden"] = hidden
+      elif "hidden" not in existing:
+        existing["hidden"] = False
+      self._networks[ssid] = existing
       self._save()
 
   def remove(self, ssid: str) -> bool:
@@ -170,7 +183,7 @@ class DhcpClient:
         except Exception:
           pass
       self._proc = None
-    subprocess.run(["sudo", "ip", "addr", "flush", "dev", self._iface], capture_output=True, check=False)
+      subprocess.run(["sudo", "ip", "addr", "flush", "dev", self._iface], capture_output=True, check=False)
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +384,6 @@ class WifiManager:
     self._user_epoch: int = 0
     self._ipv4_address: str = ""
     self._current_network_metered: MeteredType = MeteredType.UNKNOWN
-    self._tethering_password: str = ""
     self._ipv4_forward = False
     self._tethering_active = False
 
@@ -408,8 +420,6 @@ class WifiManager:
       # Ensure tethering password is stored
       if not self._store.contains(self._tethering_ssid):
         self._store.save_network(self._tethering_ssid, psk=DEFAULT_TETHERING_PASSWORD)
-
-      self._tethering_password = self._store.get_psk(self._tethering_ssid)
 
       self._wait_for_wpa_supplicant()
 
@@ -566,7 +576,7 @@ class WifiManager:
 
   @property
   def tethering_password(self) -> str:
-    return self._tethering_password
+    return self._store.get_psk(self._tethering_ssid) or DEFAULT_TETHERING_PASSWORD
 
   def _set_connecting(self, ssid: str | None):
     self._user_epoch += 1
@@ -805,19 +815,7 @@ class WifiManager:
         # Remove any existing network entry for this SSID
         self._remove_wpa_network(ssid)
 
-        # Add network via wpa_supplicant control commands (works even if NM started wpa_supplicant)
-        net_id = self._ctrl.request("ADD_NETWORK").strip()
-        safe_ssid = _sanitize_for_conf(ssid)
-        safe_psk = _sanitize_for_conf(password)
-        self._ctrl.request(f'SET_NETWORK {net_id} ssid "{safe_ssid}"')
-        if safe_psk:
-          self._ctrl.request(f'SET_NETWORK {net_id} psk "{safe_psk}"')
-        else:
-          self._ctrl.request(f"SET_NETWORK {net_id} key_mgmt NONE")
-        if hidden:
-          self._ctrl.request(f"SET_NETWORK {net_id} scan_ssid 1")
-
-        self._ctrl.request(f"SELECT_NETWORK {net_id}")
+        self._add_and_select_network(ssid, password, hidden)
       except Exception:
         cloudlog.exception(f"Failed to connect to {ssid}")
         self._init_wifi_state()
@@ -869,18 +867,7 @@ class WifiManager:
           # Network not in wpa_supplicant's runtime list — add from store
           entry = self._store.get(ssid)
           if entry:
-            net_id = self._ctrl.request("ADD_NETWORK").strip()
-            safe_ssid = _sanitize_for_conf(ssid)
-            self._ctrl.request(f'SET_NETWORK {net_id} ssid "{safe_ssid}"')
-            psk = entry.get("psk", "")
-            safe_psk = _sanitize_for_conf(psk)
-            if safe_psk:
-              self._ctrl.request(f'SET_NETWORK {net_id} psk "{safe_psk}"')
-            else:
-              self._ctrl.request(f"SET_NETWORK {net_id} key_mgmt NONE")
-            if entry.get("hidden"):
-              self._ctrl.request(f"SET_NETWORK {net_id} scan_ssid 1")
-            self._ctrl.request(f"SELECT_NETWORK {net_id}")
+            self._add_and_select_network(ssid, entry.get("psk", ""), entry.get("hidden", False))
           else:
             cloudlog.warning(f"Network {ssid} not found for activation")
             self._init_wifi_state()
@@ -892,6 +879,20 @@ class WifiManager:
       worker()
     else:
       threading.Thread(target=worker, daemon=True).start()
+
+  def _add_and_select_network(self, ssid: str, psk: str = "", hidden: bool = False):
+    """Add a network to wpa_supplicant and select it."""
+    net_id = self._ctrl.request("ADD_NETWORK").strip()
+    safe_ssid = _sanitize_for_conf(ssid)
+    self._ctrl.request(f'SET_NETWORK {net_id} ssid "{safe_ssid}"')
+    safe_psk = _sanitize_for_conf(psk)
+    if safe_psk:
+      self._ctrl.request(f'SET_NETWORK {net_id} psk "{safe_psk}"')
+    else:
+      self._ctrl.request(f"SET_NETWORK {net_id} key_mgmt NONE")
+    if hidden:
+      self._ctrl.request(f"SET_NETWORK {net_id} scan_ssid 1")
+    self._ctrl.request(f"SELECT_NETWORK {net_id}")
 
   def _find_network_id(self, ssid: str) -> str | None:
     """Find wpa_supplicant network id for given SSID via LIST_NETWORKS."""
@@ -909,16 +910,11 @@ class WifiManager:
 
   def _remove_wpa_network(self, ssid: str):
     """Remove all wpa_supplicant network entries matching SSID."""
-    if self._ctrl is None:
-      return
-    try:
-      raw = self._ctrl.request("LIST_NETWORKS")
-      for line in raw.strip().split("\n")[1:]:
-        parts = line.split("\t")
-        if len(parts) >= 2 and parts[1] == ssid:
-          self._ctrl.request(f"REMOVE_NETWORK {parts[0]}")
-    except Exception:
-      cloudlog.exception(f"Failed to remove network {ssid}")
+    while True:
+      net_id = self._find_network_id(ssid)
+      if net_id is None:
+        break
+      self._ctrl.request(f"REMOVE_NETWORK {net_id}")
 
   def is_tethering_active(self) -> bool:
     return self._tethering_active
@@ -929,7 +925,6 @@ class WifiManager:
   def set_tethering_password(self, password: str):
     def worker():
       self._store.save_network(self._tethering_ssid, psk=password)
-      self._tethering_password = password
       if self._tethering_active:
         # Restart tethering with new password
         self._stop_tethering()
@@ -990,13 +985,13 @@ class WifiManager:
 
     # Start dnsmasq for DHCP
     subprocess.run(["sudo", "killall", "-q", "dnsmasq"], check=False)
-    subprocess.run([
+    subprocess.Popen([
       "sudo", "dnsmasq",
       "--interface=wlan0",
       "--bind-interfaces",
       "--dhcp-range=192.168.43.2,192.168.43.254,24h",
       "--no-daemon", "--log-queries",
-    ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
       start_new_session=True)
 
     # NAT

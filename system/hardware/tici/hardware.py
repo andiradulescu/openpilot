@@ -15,6 +15,8 @@ from openpilot.system.hardware.tici import iwlist
 from openpilot.system.hardware.tici.lpa import TiciLPA
 from openpilot.system.hardware.tici.pins import GPIO
 from openpilot.system.hardware.tici.amplifier import Amplifier
+from openpilot.system.ui.lib.wpa_ctrl import parse_status, dbm_to_percent
+from openpilot.system.ui.lib.wifi_manager import WIFI_NETWORKS_JSON, MeteredType
 
 NM = 'org.freedesktop.NetworkManager'
 NM_CON_ACT = NM + '.Connection.Active'
@@ -256,12 +258,9 @@ class Tici(HardwareBase):
       elif network_type == NetworkType.wifi:
         result = subprocess.run(["wpa_cli", "-i", "wlan0", "signal_poll"],
                                 capture_output=True, text=True, timeout=2)
-        for line in result.stdout.strip().split("\n"):
-          if line.startswith("RSSI="):
-            rssi = int(line.split("=")[1])
-            strength = max(0, min(100, 2 * (rssi + 100)))
-            network_strength = self.parse_strength(strength)
-            break
+        status = parse_status(result.stdout)
+        if "RSSI" in status:
+          network_strength = self.parse_strength(dbm_to_percent(int(status["RSSI"])))
       else:  # Cellular
         modem = self.get_modem()
         strength = int(modem.Get(MM_MODEM, 'SignalQuality', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)[0])
@@ -274,23 +273,18 @@ class Tici(HardwareBase):
   def get_network_metered(self, network_type) -> bool:
     try:
       if network_type == NetworkType.wifi:
-        # Read metered status from wifi_networks.json + current SSID from wpa_cli
         result = subprocess.run(["wpa_cli", "-i", "wlan0", "status"],
                                 capture_output=True, text=True, timeout=2)
-        ssid = None
-        for line in result.stdout.strip().split("\n"):
-          if line.startswith("ssid="):
-            ssid = line.split("=", 1)[1]
-            break
+        ssid = parse_status(result.stdout).get("ssid")
         if ssid:
           import json
           try:
-            with open("/data/wifi_networks.json") as f:
+            with open(WIFI_NETWORKS_JSON) as f:
               networks = json.load(f)
             metered = networks.get(ssid, {}).get("metered", 0)
-            if metered == 1:  # MeteredType.YES
+            if metered == MeteredType.YES:
               return True
-            elif metered == 2:  # MeteredType.NO
+            elif metered == MeteredType.NO:
               return False
           except (FileNotFoundError, json.JSONDecodeError):
             pass
