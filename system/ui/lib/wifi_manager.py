@@ -28,7 +28,6 @@ WIFI_NETWORKS_JSON = "/data/wifi_networks.json"
 WIFI_MIGRATED_FLAG = "/data/.wifi_migrated"
 NM_CONNECTIONS_DIR = "/data/etc/NetworkManager/system-connections"
 
-WPA_CTRL_PATH = "/var/run/wpa_supplicant/wlan0"
 WPA_AP_CONF = "/tmp/wpa_supplicant_ap.conf"
 
 DEBUG = False
@@ -386,6 +385,7 @@ class WifiManager:
     self._current_network_metered: MeteredType = MeteredType.UNKNOWN
     self._ipv4_forward = False
     self._tethering_active = False
+    self._dnsmasq_proc: subprocess.Popen | None = None
 
     self._last_network_scan: float = 0.0
     self._callback_queue: list[Callable] = []
@@ -550,7 +550,9 @@ class WifiManager:
 
   @property
   def networks(self) -> list[Network]:
-    return sorted(self._networks, key=lambda n: (n.ssid != self._wifi_state.ssid, not self.is_connection_saved(n.ssid), -n.strength, n.ssid.lower()))
+    saved = self._store.get_all()
+    current_ssid = self._wifi_state.ssid
+    return sorted(self._networks, key=lambda n: (n.ssid != current_ssid, n.ssid not in saved, -n.strength, n.ssid.lower()))
 
   @property
   def wifi_state(self) -> WifiState:
@@ -611,12 +613,13 @@ class WifiManager:
           self._handle_event(event)
       except Exception:
         cloudlog.exception("wpa_supplicant monitor error, reconnecting...")
+        time.sleep(2)
+      finally:
         if monitor is not None:
           try:
             monitor.close()
           except Exception:
             pass
-        time.sleep(2)
 
   def _handle_event(self, event: str):
     """Dispatch wpa_supplicant event to state machine."""
@@ -749,9 +752,11 @@ class WifiManager:
 
   def _poll_for_ip(self):
     """Poll for IP address after DHCP starts, then update connection info."""
+    epoch = self._user_epoch
+
     def worker():
       for _ in range(50):  # 10 seconds max
-        if self._wifi_state.status != ConnectStatus.CONNECTED:
+        if self._wifi_state.status != ConnectStatus.CONNECTED or self._user_epoch != epoch:
           return
         self._update_active_connection_info()
         if self._ipv4_address:
@@ -883,6 +888,8 @@ class WifiManager:
   def _add_and_select_network(self, ssid: str, psk: str = "", hidden: bool = False):
     """Add a network to wpa_supplicant and select it."""
     net_id = self._ctrl.request("ADD_NETWORK").strip()
+    if not net_id.isdigit():
+      raise RuntimeError(f"ADD_NETWORK failed: {net_id}")
     safe_ssid = _sanitize_for_conf(ssid)
     self._ctrl.request(f'SET_NETWORK {net_id} ssid "{safe_ssid}"')
     safe_psk = _sanitize_for_conf(psk)
@@ -910,11 +917,16 @@ class WifiManager:
 
   def _remove_wpa_network(self, ssid: str):
     """Remove all wpa_supplicant network entries matching SSID."""
-    while True:
-      net_id = self._find_network_id(ssid)
-      if net_id is None:
-        break
-      self._ctrl.request(f"REMOVE_NETWORK {net_id}")
+    if self._ctrl is None:
+      return
+    try:
+      raw = self._ctrl.request("LIST_NETWORKS")
+      for line in raw.strip().split("\n")[1:]:
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[1] == ssid:
+          self._ctrl.request(f"REMOVE_NETWORK {parts[0]}")
+    except Exception:
+      cloudlog.exception(f"Failed to remove network {ssid}")
 
   def is_tethering_active(self) -> bool:
     return self._tethering_active
@@ -985,7 +997,7 @@ class WifiManager:
 
     # Start dnsmasq for DHCP
     subprocess.run(["sudo", "killall", "-q", "dnsmasq"], check=False)
-    subprocess.Popen([
+    self._dnsmasq_proc = subprocess.Popen([
       "sudo", "dnsmasq",
       "--interface=wlan0",
       "--bind-interfaces",
@@ -1014,6 +1026,12 @@ class WifiManager:
   def _stop_tethering(self):
     # Kill dnsmasq
     subprocess.run(["sudo", "killall", "-q", "dnsmasq"], check=False)
+    if self._dnsmasq_proc is not None:
+      try:
+        self._dnsmasq_proc.wait(timeout=3)
+      except Exception:
+        pass
+      self._dnsmasq_proc = None
 
     # Remove NAT
     subprocess.run(["sudo", "iptables", "-t", "nat", "-D", "POSTROUTING", "-o", "wwan0", "-j", "MASQUERADE"], check=False)
