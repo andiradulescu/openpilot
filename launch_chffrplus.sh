@@ -18,10 +18,8 @@ function agnos_init {
 
   # Start wpa_supplicant for WiFi (direct control, not via NM)
   sudo killall -q wpa_supplicant 2>/dev/null || true
-  if [ ! -f /data/wpa_supplicant.conf ]; then
-    echo -e "ctrl_interface=/var/run/wpa_supplicant\nupdate_config=0\np2p_disabled=1\n" | sudo tee /data/wpa_supplicant.conf > /dev/null
-  fi
-  sudo wpa_supplicant -B -i wlan0 -c /data/wpa_supplicant.conf -D nl80211
+  echo -e "ctrl_interface=/var/run/wpa_supplicant\nupdate_config=0\np2p_disabled=1\n" > /tmp/wpa_supplicant.conf
+  sudo wpa_supplicant -B -i wlan0 -c /tmp/wpa_supplicant.conf -D nl80211
 
   # set success flag for current boot slot
   sudo abctl --set_success

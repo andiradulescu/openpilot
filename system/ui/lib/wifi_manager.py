@@ -25,7 +25,7 @@ DEFAULT_TETHERING_PASSWORD = "swagswagcomma"
 TETHERING_PASSWORD_FILE = "/data/tethering_password"
 SCAN_PERIOD_SECONDS = 5
 
-WPA_SUPPLICANT_CONF = "/data/wpa_supplicant.conf"
+WPA_SUPPLICANT_CONF = "/tmp/wpa_supplicant.conf"
 NM_CONNECTIONS_DIR = "/data/etc/NetworkManager/system-connections"
 
 WPA_AP_CONF = "/tmp/wpa_supplicant_ap.conf"
@@ -80,7 +80,6 @@ class NetworkStore:
     self._directory = directory
     self._lock = threading.Lock()
     self._networks: dict[str, dict] = {}
-    os.makedirs(directory, mode=0o700, exist_ok=True)
     self._load()
 
   def _load(self):
@@ -114,6 +113,7 @@ class NetworkStore:
       }
 
   def _write_nmconnection(self, ssid: str):
+    os.makedirs(self._directory, mode=0o700, exist_ok=True)
     entry = self._networks[ssid]
     file_uuid = entry.get("uuid") or str(uuid.uuid5(uuid.NAMESPACE_DNS, ssid))
     entry["uuid"] = file_uuid
@@ -205,6 +205,10 @@ class NetworkStore:
   def contains(self, ssid: str) -> bool:
     with self._lock:
       return ssid in self._networks
+
+  def saved_ssids(self) -> set[str]:
+    with self._lock:
+      return set(self._networks.keys())
 
   def get_psk(self, ssid: str) -> str:
     with self._lock:
@@ -472,11 +476,17 @@ class WifiManager:
       self._tethering_psk = DEFAULT_TETHERING_PASSWORD
 
     def worker():
-      # Ensure conf exists
-      if not os.path.exists(WPA_SUPPLICANT_CONF):
-        _generate_wpa_conf(self._store)
+      # Always regenerate conf with saved networks (conf is on /tmp, lost on reboot)
+      _generate_wpa_conf(self._store)
 
       self._wait_for_wpa_supplicant()
+
+      # Tell wpa_supplicant to re-read the conf (picks up saved networks for auto-connect)
+      if self._ctrl:
+        try:
+          self._ctrl.request("RECONFIGURE")
+        except Exception:
+          pass
 
       # Populate networks before wifi state so the connected network's
       # strength is available when the UI first renders (avoids the
@@ -557,9 +567,9 @@ class WifiManager:
 
   @property
   def networks(self) -> list[Network]:
-    is_saved = self._store.contains
+    saved = self._store.saved_ssids()
     current_ssid = self._wifi_state.ssid
-    return sorted(self._networks, key=lambda n: (n.ssid != current_ssid, not is_saved(n.ssid), -n.strength, n.ssid.lower()))
+    return sorted(self._networks, key=lambda n: (n.ssid != current_ssid, n.ssid not in saved, -n.strength, n.ssid.lower()))
 
   @property
   def wifi_state(self) -> WifiState:
