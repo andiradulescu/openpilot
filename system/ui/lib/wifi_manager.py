@@ -583,9 +583,6 @@ class WifiManager:
 
   def set_active(self, active: bool):
     self._active = active
-    if active:
-      self._init_wifi_state(block=False)
-      self._update_networks(block=False)
 
   # ---------------------------------------------------------------------------
   # Monitor thread: wpa_supplicant events
@@ -699,9 +696,6 @@ class WifiManager:
       cloudlog.exception("Failed to request scan")
 
   def _update_networks(self, block: bool = True):
-    if not self._active:
-      return
-
     def worker():
       with self._scan_lock:
         if self._ctrl is None:
@@ -732,7 +726,9 @@ class WifiManager:
           strength = 100 if is_tethering else dbm_to_percent(strongest.signal)
           networks.append(Network(ssid=ssid, strength=strength, security_type=security, is_tethering=is_tethering))
 
-        self._networks = networks
+        # Never replace with empty — stale data is better than no data
+        if networks:
+          self._networks = networks
         self._update_active_connection_info()
         self._enqueue_callbacks(self._networks_updated, self.networks)
 
