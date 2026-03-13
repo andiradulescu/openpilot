@@ -1,5 +1,6 @@
 import atexit
 import configparser
+import glob
 import os
 import subprocess
 import threading
@@ -27,6 +28,7 @@ SCAN_PERIOD_SECONDS = 5
 
 WPA_SUPPLICANT_CONF = "/tmp/wpa_supplicant.conf"
 NM_CONNECTIONS_DIR = "/data/etc/NetworkManager/system-connections"
+NM_UNMANAGED_CONF = "/etc/NetworkManager/conf.d/99-unmanaged-wifi.conf"
 
 WPA_AP_CONF = "/tmp/wpa_supplicant_ap.conf"
 
@@ -476,17 +478,8 @@ class WifiManager:
       self._tethering_psk = DEFAULT_TETHERING_PASSWORD
 
     def worker():
-      # Always regenerate conf with saved networks (conf is on /tmp, lost on reboot)
       _generate_wpa_conf(self._store)
-
-      self._wait_for_wpa_supplicant()
-
-      # Tell wpa_supplicant to re-read the conf (picks up saved networks for auto-connect)
-      if self._ctrl:
-        try:
-          self._ctrl.request("RECONFIGURE")
-        except Exception:
-          pass
+      self._ensure_wpa_supplicant()
 
       # Populate networks before wifi state so the connected network's
       # strength is available when the UI first renders (avoids the
@@ -502,8 +495,37 @@ class WifiManager:
 
     threading.Thread(target=worker, daemon=True).start()
 
-  def _wait_for_wpa_supplicant(self):
-    """Wait until wpa_supplicant control socket is available."""
+  def _ensure_wpa_supplicant(self):
+    """Start wpa_supplicant if not running, then connect to control socket."""
+    # If already running, just reconfigure to pick up saved networks
+    try:
+      ctrl = WpaCtrl()
+      ctrl.open()
+      self._ctrl = ctrl
+      self._ctrl.request("RECONFIGURE")
+      return
+    except (OSError, ConnectionRefusedError):
+      pass
+
+    # Tell NetworkManager to ignore wlan0 (we manage WiFi via wpa_supplicant)
+    if not os.path.exists(NM_UNMANAGED_CONF):
+      try:
+        subprocess.run(["sudo", "tee", NM_UNMANAGED_CONF], input=b"[keyfile]\nunmanaged-devices=interface-name:wlan0\n",
+                        stdout=subprocess.DEVNULL, check=False)
+        subprocess.run(["sudo", "nmcli", "general", "reload", "conf"], capture_output=True, check=False)
+      except Exception:
+        pass
+
+    # Clean up NM metadata files
+    for f in glob.glob(os.path.join(NM_CONNECTIONS_DIR, "*.nmmeta")):
+      try:
+        os.unlink(f)
+      except OSError:
+        subprocess.run(["sudo", "rm", "-f", f], check=False)
+
+    subprocess.run(["sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", WPA_SUPPLICANT_CONF, "-D", "nl80211"], check=False)
+
+    # Wait for it to come up
     while not self._exit:
       try:
         ctrl = WpaCtrl()
