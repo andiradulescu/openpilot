@@ -1,13 +1,13 @@
 import atexit
-import json
+import configparser
 import os
 import subprocess
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
-from pathlib import Path
 
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.utils import atomic_write
@@ -22,11 +22,10 @@ except Exception:
 
 TETHERING_IP_ADDRESS = "192.168.43.1"
 DEFAULT_TETHERING_PASSWORD = "swagswagcomma"
+TETHERING_PASSWORD_FILE = "/data/tethering_password"
 SCAN_PERIOD_SECONDS = 5
 
 WPA_SUPPLICANT_CONF = "/data/wpa_supplicant.conf"
-WIFI_NETWORKS_JSON = "/data/wifi_networks.json"
-WIFI_MIGRATED_FLAG = "/data/.wifi_migrated"
 NM_CONNECTIONS_DIR = "/data/etc/NetworkManager/system-connections"
 
 WPA_AP_CONF = "/tmp/wpa_supplicant_ap.conf"
@@ -65,36 +64,96 @@ class WifiState:
 
 
 # ---------------------------------------------------------------------------
-# Network storage: /data/wifi_networks.json
+# Network storage: .nmconnection files
 # ---------------------------------------------------------------------------
 
-class NetworkStore:
-  """Persistent storage for saved WiFi networks."""
+def _ssid_to_filename(ssid: str) -> str:
+  """Convert an SSID to a safe .nmconnection filename."""
+  safe = ssid.replace("/", "_").replace("\0", "")
+  return f"{safe}.nmconnection"
 
-  def __init__(self, path: str = WIFI_NETWORKS_JSON):
-    self._path = path
+
+class NetworkStore:
+  """Persistent storage for saved WiFi networks using .nmconnection files."""
+
+  def __init__(self, directory: str = NM_CONNECTIONS_DIR):
+    self._directory = directory
     self._lock = threading.Lock()
     self._networks: dict[str, dict] = {}
+    os.makedirs(directory, mode=0o700, exist_ok=True)
     self._load()
 
   def _load(self):
+    self._networks = {}
     try:
-      with open(self._path) as f:
-        self._networks = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-      self._networks = {}
+      filenames = os.listdir(self._directory)
+    except OSError:
+      return
+    for fname in filenames:
+      if not fname.endswith(".nmconnection"):
+        continue
+      fpath = os.path.join(self._directory, fname)
+      try:
+        cp = configparser.ConfigParser(interpolation=None)
+        cp.read(fpath)
+      except configparser.Error:
+        continue
 
-  def _save(self):
-    with atomic_write(self._path, overwrite=True) as f:
-      json.dump(self._networks, f, indent=2)
+      if not cp.has_section("wifi"):
+        continue
+      ssid = cp.get("wifi", "ssid", fallback="")
+      mode = cp.get("wifi", "mode", fallback="infrastructure")
+      if not ssid or mode == "ap":
+        continue
+
+      self._networks[ssid] = {
+        "psk": cp.get("wifi-security", "psk", fallback=""),
+        "metered": cp.getint("connection", "metered", fallback=0),
+        "hidden": cp.getboolean("wifi", "hidden", fallback=False),
+        "uuid": cp.get("connection", "uuid", fallback=""),
+      }
+
+  def _write_nmconnection(self, ssid: str):
+    entry = self._networks[ssid]
+    file_uuid = entry.get("uuid") or str(uuid.uuid5(uuid.NAMESPACE_DNS, ssid))
+    entry["uuid"] = file_uuid
+
+    cp = configparser.ConfigParser(interpolation=None)
+    cp["connection"] = {
+      "id": ssid,
+      "uuid": file_uuid,
+      "type": "wifi",
+      "metered": str(entry.get("metered", 0)),
+    }
+    cp["wifi"] = {
+      "ssid": ssid,
+      "mode": "infrastructure",
+      "hidden": str(entry.get("hidden", False)).lower(),
+    }
+
+    psk = entry.get("psk", "")
+    if psk:
+      cp["wifi-security"] = {
+        "key-mgmt": "wpa-psk",
+        "psk": psk,
+      }
+
+    cp["ipv4"] = {"method": "auto"}
+    cp["ipv6"] = {"method": "auto"}
+
+    fpath = os.path.join(self._directory, _ssid_to_filename(ssid))
+    with atomic_write(fpath, overwrite=True) as f:
+      os.fchmod(f.fileno(), 0o600)
+      cp.write(f)
 
   def get_all(self) -> dict[str, dict]:
     with self._lock:
-      return dict(self._networks)
+      return {k: dict(v) for k, v in self._networks.items()}
 
   def get(self, ssid: str) -> dict | None:
     with self._lock:
-      return self._networks.get(ssid)
+      entry = self._networks.get(ssid)
+      return dict(entry) if entry else None
 
   def save_network(self, ssid: str, psk: str | None = None, metered: int | None = None, hidden: bool | None = None):
     with self._lock:
@@ -112,13 +171,17 @@ class NetworkStore:
       elif "hidden" not in existing:
         existing["hidden"] = False
       self._networks[ssid] = existing
-      self._save()
+      self._write_nmconnection(ssid)
 
   def remove(self, ssid: str) -> bool:
     with self._lock:
       if ssid in self._networks:
         del self._networks[ssid]
-        self._save()
+        fpath = os.path.join(self._directory, _ssid_to_filename(ssid))
+        try:
+          os.unlink(fpath)
+        except FileNotFoundError:
+          pass
         return True
       return False
 
@@ -126,7 +189,7 @@ class NetworkStore:
     with self._lock:
       if ssid in self._networks:
         self._networks[ssid]["metered"] = metered
-        self._save()
+        self._write_nmconnection(ssid)
 
   def get_metered(self, ssid: str) -> MeteredType:
     with self._lock:
@@ -401,16 +464,17 @@ class WifiManager:
     atexit.register(self.stop)
 
   def _initialize(self):
-    def worker():
-      self._migrate_nm_connections()
+    # Load tethering password from file
+    try:
+      with open(TETHERING_PASSWORD_FILE) as f:
+        self._tethering_psk = f.read().strip()
+    except FileNotFoundError:
+      self._tethering_psk = DEFAULT_TETHERING_PASSWORD
 
+    def worker():
       # Ensure conf exists
       if not os.path.exists(WPA_SUPPLICANT_CONF):
         _generate_wpa_conf(self._store)
-
-      # Ensure tethering password is stored
-      if not self._store.contains(self._tethering_ssid):
-        self._store.save_network(self._tethering_ssid, psk=DEFAULT_TETHERING_PASSWORD)
 
       self._wait_for_wpa_supplicant()
 
@@ -438,54 +502,6 @@ class WifiManager:
         return
       except (OSError, ConnectionRefusedError):
         time.sleep(1)
-
-  def _migrate_nm_connections(self):
-    """One-time migration from NM .nmconnection files to NetworkStore."""
-    if os.path.exists(WIFI_MIGRATED_FLAG):
-      return
-    if not os.path.isdir(NM_CONNECTIONS_DIR):
-      # No NM connections to migrate
-      Path(WIFI_MIGRATED_FLAG).touch()
-      return
-
-    try:
-      import configparser
-      for fname in os.listdir(NM_CONNECTIONS_DIR):
-        if not fname.endswith(".nmconnection"):
-          continue
-        fpath = os.path.join(NM_CONNECTIONS_DIR, fname)
-        cp = configparser.ConfigParser(interpolation=None)
-        cp.read(fpath)
-
-        if not cp.has_section("wifi"):
-          continue
-
-        ssid = cp.get("wifi", "ssid", fallback="")
-        mode = cp.get("wifi", "mode", fallback="infrastructure")
-        if not ssid or mode == "ap":
-          continue
-
-        psk = ""
-        if cp.has_section("wifi-security"):
-          psk = cp.get("wifi-security", "psk", fallback="")
-
-        metered = 0
-        if cp.has_section("connection"):
-          metered = cp.getint("connection", "metered", fallback=0)
-
-        hidden = False
-        if cp.has_option("wifi", "hidden"):
-          hidden = cp.getboolean("wifi", "hidden", fallback=False)
-
-        if not self._store.contains(ssid):
-          self._store.save_network(ssid, psk=psk, metered=metered, hidden=hidden)
-          cloudlog.info(f"Migrated NM connection: {ssid}")
-
-      _generate_wpa_conf(self._store)
-    except Exception:
-      cloudlog.exception("Failed to migrate NM connections")
-
-    Path(WIFI_MIGRATED_FLAG).touch()
 
   def _init_wifi_state(self, block: bool = True):
     def worker():
@@ -541,9 +557,9 @@ class WifiManager:
 
   @property
   def networks(self) -> list[Network]:
-    saved = self._store.get_all()
+    is_saved = self._store.contains
     current_ssid = self._wifi_state.ssid
-    return sorted(self._networks, key=lambda n: (n.ssid != current_ssid, n.ssid not in saved, -n.strength, n.ssid.lower()))
+    return sorted(self._networks, key=lambda n: (n.ssid != current_ssid, not is_saved(n.ssid), -n.strength, n.ssid.lower()))
 
   @property
   def wifi_state(self) -> WifiState:
@@ -569,7 +585,7 @@ class WifiManager:
 
   @property
   def tethering_password(self) -> str:
-    return self._store.get_psk(self._tethering_ssid) or DEFAULT_TETHERING_PASSWORD
+    return self._tethering_psk
 
   def _set_connecting(self, ssid: str | None):
     self._user_epoch += 1
@@ -925,7 +941,9 @@ class WifiManager:
 
   def set_tethering_password(self, password: str):
     def worker():
-      self._store.save_network(self._tethering_ssid, psk=password)
+      self._tethering_psk = password
+      with atomic_write(TETHERING_PASSWORD_FILE, overwrite=True) as f:
+        f.write(password)
       if self._tethering_active:
         # Restart tethering with new password
         self._stop_tethering()
@@ -950,9 +968,7 @@ class WifiManager:
   def _start_tethering(self):
     self._set_connecting(self._tethering_ssid)
 
-    psk = self._store.get_psk(self._tethering_ssid)
-    if not psk:
-      psk = DEFAULT_TETHERING_PASSWORD
+    psk = self._tethering_psk
 
     # Close existing control socket
     if self._ctrl:

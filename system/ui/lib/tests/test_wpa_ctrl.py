@@ -1,4 +1,8 @@
 """Tests for wpa_ctrl.py parsing helpers and NetworkStore."""
+import configparser
+import os
+import stat
+
 import pytest
 
 from openpilot.system.ui.lib.wpa_ctrl import (
@@ -103,24 +107,42 @@ class TestDbmToPercent:
 
 
 # ---------------------------------------------------------------------------
-# NetworkStore
+# NetworkStore (.nmconnection directory-based)
 # ---------------------------------------------------------------------------
 
 class TestNetworkStore:
-  def test_save_load(self, tmp_path):
-    path = str(tmp_path / "networks.json")
-    store = NetworkStore(path)
+  def test_save_creates_nmconnection_file(self, tmp_path):
+    store = NetworkStore(str(tmp_path))
     store.save_network("MyNet", psk="pass123", metered=0, hidden=False)
 
+    fpath = tmp_path / "MyNet.nmconnection"
+    assert fpath.exists()
+
+    cp = configparser.ConfigParser(interpolation=None)
+    cp.read(str(fpath))
+    assert cp.get("wifi", "ssid") == "MyNet"
+    assert cp.get("wifi", "mode") == "infrastructure"
+    assert cp.get("wifi-security", "psk") == "pass123"
+    assert cp.get("wifi-security", "key-mgmt") == "wpa-psk"
+    assert cp.getint("connection", "metered") == 0
+    assert cp.get("connection", "id") == "MyNet"
+
+  def test_save_load_roundtrip(self, tmp_path):
+    d = str(tmp_path)
+    store = NetworkStore(d)
+    store.save_network("MyNet", psk="pass123", metered=1, hidden=True)
+
     # Reload from disk
-    store2 = NetworkStore(path)
+    store2 = NetworkStore(d)
     entry = store2.get("MyNet")
     assert entry is not None
     assert entry["psk"] == "pass123"
+    assert entry["metered"] == 1
+    assert entry["hidden"] is True
 
   def test_remove(self, tmp_path):
-    path = str(tmp_path / "networks.json")
-    store = NetworkStore(path)
+    d = str(tmp_path)
+    store = NetworkStore(d)
     store.save_network("A", psk="p1")
     store.save_network("B", psk="p2")
 
@@ -129,9 +151,12 @@ class TestNetworkStore:
     assert store.contains("B")
     assert not store.remove("nonexistent")
 
+    # File should be deleted
+    assert not (tmp_path / "A.nmconnection").exists()
+    assert (tmp_path / "B.nmconnection").exists()
+
   def test_metered(self, tmp_path):
-    path = str(tmp_path / "networks.json")
-    store = NetworkStore(path)
+    store = NetworkStore(str(tmp_path))
     store.save_network("Net", psk="p")
     assert store.get_metered("Net") == MeteredType.UNKNOWN
 
@@ -139,13 +164,98 @@ class TestNetworkStore:
     assert store.get_metered("Net") == MeteredType.YES
 
   def test_get_psk(self, tmp_path):
-    path = str(tmp_path / "networks.json")
-    store = NetworkStore(path)
+    store = NetworkStore(str(tmp_path))
     store.save_network("Net", psk="secret")
     assert store.get_psk("Net") == "secret"
     assert store.get_psk("nonexistent") == ""
 
-  def test_missing_file(self, tmp_path):
-    path = str(tmp_path / "nonexistent.json")
-    store = NetworkStore(path)
+  def test_empty_directory(self, tmp_path):
+    store = NetworkStore(str(tmp_path))
     assert store.get_all() == {}
+
+  def test_file_permissions(self, tmp_path):
+    store = NetworkStore(str(tmp_path))
+    store.save_network("Net", psk="secret")
+    fpath = tmp_path / "Net.nmconnection"
+    mode = stat.S_IMODE(os.stat(str(fpath)).st_mode)
+    assert mode == 0o600
+
+  def test_special_characters_in_ssid(self, tmp_path):
+    store = NetworkStore(str(tmp_path))
+    store.save_network("My/Net", psk="pass")
+    # Slash replaced with underscore in filename
+    assert (tmp_path / "My_Net.nmconnection").exists()
+    assert store.get_psk("My/Net") == "pass"
+
+    # Roundtrip
+    store2 = NetworkStore(str(tmp_path))
+    assert store2.contains("My/Net")
+    assert store2.get_psk("My/Net") == "pass"
+
+  def test_open_network_no_security_section(self, tmp_path):
+    store = NetworkStore(str(tmp_path))
+    store.save_network("OpenNet")
+
+    cp = configparser.ConfigParser(interpolation=None)
+    cp.read(str(tmp_path / "OpenNet.nmconnection"))
+    assert not cp.has_section("wifi-security")
+
+  def test_load_preexisting_nm_file(self, tmp_path):
+    """Simulate a .nmconnection file written by NetworkManager."""
+    content = """\
+[connection]
+id=CoffeeShop
+uuid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+type=wifi
+metered=2
+
+[wifi]
+ssid=CoffeeShop
+mode=infrastructure
+hidden=false
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=latte123
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+"""
+    (tmp_path / "CoffeeShop.nmconnection").write_text(content)
+
+    store = NetworkStore(str(tmp_path))
+    assert store.contains("CoffeeShop")
+    assert store.get_psk("CoffeeShop") == "latte123"
+    assert store.get_metered("CoffeeShop") == MeteredType.NO
+    # UUID should be preserved from the file
+    entry = store.get("CoffeeShop")
+    assert entry["uuid"] == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+  def test_skips_ap_mode(self, tmp_path):
+    """AP mode .nmconnection files should be ignored."""
+    content = """\
+[connection]
+id=Hotspot
+uuid=11111111-2222-3333-4444-555555555555
+type=wifi
+
+[wifi]
+ssid=Hotspot
+mode=ap
+"""
+    (tmp_path / "Hotspot.nmconnection").write_text(content)
+
+    store = NetworkStore(str(tmp_path))
+    assert not store.contains("Hotspot")
+
+  def test_uuid_preserved_on_update(self, tmp_path):
+    store = NetworkStore(str(tmp_path))
+    store.save_network("Net", psk="old")
+    uuid1 = store.get("Net")["uuid"]
+
+    store.save_network("Net", psk="new")
+    uuid2 = store.get("Net")["uuid"]
+    assert uuid1 == uuid2

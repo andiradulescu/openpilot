@@ -297,6 +297,7 @@ class WifiManagerUI(Widget):
 
   def show_event(self):
     super().show_event()
+    # start/stop scanning when widget is visible
     self._wifi_manager.set_active(True)
 
   def hide_event(self):
