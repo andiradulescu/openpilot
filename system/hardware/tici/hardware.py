@@ -16,7 +16,8 @@ from openpilot.system.hardware.tici.lpa import TiciLPA
 from openpilot.system.hardware.tici.pins import GPIO
 from openpilot.system.hardware.tici.amplifier import Amplifier
 from openpilot.system.ui.lib.wpa_ctrl import parse_status, dbm_to_percent
-from openpilot.system.ui.lib.wifi_manager import WIFI_NETWORKS_JSON, MeteredType
+
+WIFI_NETWORKS_JSON = "/data/wifi_networks.json"
 
 NM = 'org.freedesktop.NetworkManager'
 NM_CON_ACT = NM + '.Connection.Active'
@@ -282,9 +283,9 @@ class Tici(HardwareBase):
             with open(WIFI_NETWORKS_JSON) as f:
               networks = json.load(f)
             metered = networks.get(ssid, {}).get("metered", 0)
-            if metered == MeteredType.YES:
+            if metered == 1:  # YES
               return True
-            elif metered == MeteredType.NO:
+            elif metered == 2:  # NO
               return False
           except (FileNotFoundError, json.JSONDecodeError):
             pass
