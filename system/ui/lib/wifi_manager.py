@@ -3,6 +3,7 @@ import configparser
 import glob
 import os
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -11,7 +12,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 from openpilot.common.swaglog import cloudlog
-from openpilot.common.utils import atomic_write
+from openpilot.common.utils import atomic_write, sudo_read
 from openpilot.system.ui.lib.wpa_ctrl import (WpaCtrl, WpaCtrlMonitor, SecurityType,
                                                parse_scan_results, flags_to_security_type,
                                                parse_status, dbm_to_percent)
@@ -97,7 +98,11 @@ class NetworkStore:
       fpath = os.path.join(self._directory, fname)
       try:
         cp = configparser.ConfigParser(interpolation=None)
-        cp.read(fpath)
+        raw = sudo_read(fpath)
+        if raw:
+          cp.read_string(raw)
+        else:
+          cp.read(fpath)
       except configparser.Error:
         continue
 
@@ -115,10 +120,9 @@ class NetworkStore:
         "uuid": cp.get("connection", "uuid", fallback=""),
       }
 
-  def _write_nmconnection(self, ssid: str):
-    os.makedirs(self._directory, mode=0o700, exist_ok=True)
-    entry = self._networks[ssid]
+  def _render_nmconnection(self, ssid: str, entry: dict) -> tuple[str, dict]:
     file_uuid = entry.get("uuid") or str(uuid.uuid5(uuid.NAMESPACE_DNS, ssid))
+    entry = dict(entry)
     entry["uuid"] = file_uuid
 
     cp = configparser.ConfigParser(interpolation=None)
@@ -144,10 +148,22 @@ class NetworkStore:
     cp["ipv4"] = {"method": "auto"}
     cp["ipv6"] = {"method": "auto"}
 
-    fpath = os.path.join(self._directory, _ssid_to_filename(ssid))
-    with atomic_write(fpath, overwrite=True) as f:
-      os.fchmod(f.fileno(), 0o600)
+    with tempfile.NamedTemporaryFile(mode="w", dir="/tmp", delete=False) as f:
       cp.write(f)
+      temp_path = f.name
+
+    try:
+      os.chmod(temp_path, 0o600)
+      subprocess.run(["sudo", "install", "-d", "-m", "755", self._directory], check=True)
+      subprocess.run(["sudo", "install", "-o", "root", "-g", "root", "-m", "600",
+                      temp_path, os.path.join(self._directory, _ssid_to_filename(ssid))], check=True)
+    finally:
+      try:
+        os.unlink(temp_path)
+      except FileNotFoundError:
+        pass
+
+    return file_uuid, entry
 
   def get_all(self) -> dict[str, dict]:
     with self._lock:
@@ -160,7 +176,7 @@ class NetworkStore:
 
   def save_network(self, ssid: str, psk: str | None = None, metered: int | None = None, hidden: bool | None = None):
     with self._lock:
-      existing = self._networks.get(ssid, {})
+      existing = dict(self._networks.get(ssid, {}))
       if psk is not None:
         existing["psk"] = psk
       elif "psk" not in existing:
@@ -173,26 +189,30 @@ class NetworkStore:
         existing["hidden"] = hidden
       elif "hidden" not in existing:
         existing["hidden"] = False
-      self._networks[ssid] = existing
-      self._write_nmconnection(ssid)
+      file_uuid, updated = self._render_nmconnection(ssid, existing)
+      updated["uuid"] = file_uuid
+      self._networks[ssid] = updated
 
   def remove(self, ssid: str) -> bool:
     with self._lock:
       if ssid in self._networks:
-        del self._networks[ssid]
         fpath = os.path.join(self._directory, _ssid_to_filename(ssid))
         try:
-          os.unlink(fpath)
+          subprocess.run(["sudo", "rm", "-f", fpath], check=True)
         except FileNotFoundError:
           pass
+        del self._networks[ssid]
         return True
       return False
 
   def set_metered(self, ssid: str, metered: int):
     with self._lock:
       if ssid in self._networks:
-        self._networks[ssid]["metered"] = metered
-        self._write_nmconnection(ssid)
+        updated = dict(self._networks[ssid])
+        updated["metered"] = metered
+        file_uuid, updated = self._render_nmconnection(ssid, updated)
+        updated["uuid"] = file_uuid
+        self._networks[ssid] = updated
 
   def get_metered(self, ssid: str) -> MeteredType:
     with self._lock:
