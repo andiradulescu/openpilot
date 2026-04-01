@@ -462,6 +462,8 @@ class WifiManagerUI(Widget):
 
   def _on_need_auth(self, ssid):
     network = next((n for n in self._networks if n.ssid == ssid), None)
+    if network is None and self._state_network is not None and self._state_network.ssid == ssid:
+      network = self._state_network
     if network:
       self.state = UIState.NEEDS_AUTH
       self._state_network = network
