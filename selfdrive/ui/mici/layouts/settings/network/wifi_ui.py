@@ -357,11 +357,14 @@ class WifiUIMici(NavScroller):
 
   def _on_need_auth(self, ssid, incorrect_password=True):
     if incorrect_password:
+      found = False
       for btn in self._scroller.items:
         if isinstance(btn, WifiButton) and btn.network.ssid == ssid:
           btn.set_wrong_password()
+          found = True
           break
-      return
+      if found:
+        return
 
     dlg = BigInputDialog("enter password...", "", minimum_length=8,
                          confirm_callback=lambda _password: self._connect_with_password(ssid, _password))

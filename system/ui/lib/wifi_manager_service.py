@@ -302,7 +302,7 @@ class WifiManagerClient:
       self._enqueue_callbacks(self._networks_updated, self.networks)
 
     if previous_wifi_state != self._wifi_state and self._wifi_state.status == ConnectStatus.DISCONNECTED:
-      if previous_wifi_state.status == ConnectStatus.CONNECTED:
+      if previous_wifi_state.status != ConnectStatus.DISCONNECTED:
         self._enqueue_callbacks(self._disconnected)
 
   def _apply_events(self, events: list[dict]):

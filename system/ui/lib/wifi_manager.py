@@ -25,6 +25,7 @@ TETHERING_IP_ADDRESS = "192.168.43.1"
 DEFAULT_TETHERING_PASSWORD = "swagswagcomma"
 TETHERING_PASSWORD_FILE = "/data/tethering_password"
 SCAN_PERIOD_SECONDS = 5
+CONNECTING_STALE_TIMEOUT_SECONDS = 5
 
 WPA_SUPPLICANT_CONF = "/tmp/wpa_supplicant.conf"
 NM_CONNECTIONS_DIR = "/data/etc/NetworkManager/system-connections"
@@ -448,6 +449,7 @@ class WifiManager:
     self._dnsmasq_proc: subprocess.Popen | None = None
 
     self._last_network_scan: float = 0.0
+    self._last_connecting_at: float = 0.0
     self._callback_queue: list[Callable] = []
 
     self._tethering_ssid = "weedle"
@@ -621,6 +623,7 @@ class WifiManager:
 
   def _set_connecting(self, ssid: str | None):
     self._user_epoch += 1
+    self._last_connecting_at = time.monotonic() if ssid is not None else 0.0
     self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.DISCONNECTED if ssid is None else ConnectStatus.CONNECTING)
 
   def _enqueue_callbacks(self, cbs: list[Callable], *args):
@@ -684,6 +687,7 @@ class WifiManager:
       if self._user_epoch != epoch:
         return
 
+      self._last_connecting_at = 0.0
       self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTED)
       self._dhcp.start()
       self._enqueue_callbacks(self._activated)
@@ -725,6 +729,7 @@ class WifiManager:
             pass
         if self._user_epoch != epoch:
           return
+        self._last_connecting_at = time.monotonic()
         self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTING)
 
   # ---------------------------------------------------------------------------
@@ -733,6 +738,7 @@ class WifiManager:
 
   def _network_scanner(self):
     while not self._exit:
+      self._reconcile_connecting_state()
       # Keep scans running even when no UI widget is currently visible.
       # A detached service may be shared by multiple clients, and networking
       # should continue to refresh independently of any one UI lifecycle.
@@ -749,6 +755,40 @@ class WifiManager:
       self._ctrl.request("SCAN")
     except Exception:
       cloudlog.exception("Failed to request scan")
+
+  def _reconcile_connecting_state(self):
+    current_state = self._wifi_state
+    if self._ctrl is None or self._tethering_active:
+      return
+    if current_state.status != ConnectStatus.CONNECTING or current_state.ssid is None:
+      return
+    if time.monotonic() - self._last_connecting_at < CONNECTING_STALE_TIMEOUT_SECONDS:
+      return
+
+    try:
+      status = parse_status(self._ctrl.request("STATUS"))
+    except Exception:
+      cloudlog.exception("Failed to reconcile wifi state from STATUS")
+      return
+
+    wpa_state = status.get("wpa_state", "")
+    status_ssid = status.get("ssid")
+
+    if wpa_state == "COMPLETED" and status_ssid == current_state.ssid:
+      self._last_connecting_at = 0.0
+      self._wifi_state = WifiState(ssid=status_ssid, status=ConnectStatus.CONNECTED)
+      self._dhcp.start()
+      self._enqueue_callbacks(self._activated)
+      self._poll_for_ip()
+    elif wpa_state in ("DISCONNECTED", "INACTIVE", "SCANNING"):
+      network = next((n for n in self._networks if n.ssid == current_state.ssid), None)
+      if network is not None and network.security_type != SecurityType.OPEN:
+        self._enqueue_callbacks(self._need_auth, current_state.ssid)
+      self._set_connecting(None)
+      self._dhcp.stop()
+      self._ipv4_address = ""
+      self._current_network_metered = MeteredType.UNKNOWN
+      self._enqueue_callbacks(self._disconnected)
 
   def _update_networks(self, block: bool = True):
     def worker():
