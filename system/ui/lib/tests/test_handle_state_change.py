@@ -3,9 +3,11 @@
 Tests the state machine in isolation by constructing a WifiManager with mocked
 wpa_supplicant, then calling _handle_event directly with wpa_supplicant events.
 """
+
 from pytest_mock import MockerFixture
 
-from openpilot.system.ui.lib.wifi_manager import WifiManager, WifiState, ConnectStatus
+from openpilot.system.ui.lib import wifi_manager as wifi_manager_module
+from openpilot.system.ui.lib.wifi_manager import WifiManager, WifiState, ConnectStatus, PendingConnection
 
 
 def _make_wm(mocker: MockerFixture, saved_networks=None):
@@ -28,6 +30,7 @@ def _make_wm(mocker: MockerFixture, saved_networks=None):
   wm._current_network_metered = 0
   wm._update_active_connection_info = mocker.MagicMock()
   wm._poll_for_ip = mocker.MagicMock()
+  wm._pending_connection = None
 
   # Mock store
   wm._store = mocker.MagicMock()
@@ -71,6 +74,18 @@ class TestConnected:
 
     wm.process_callbacks()
     cb.assert_called_once()
+
+  def test_connected_persists_pending_connection(self, mocker):
+    wm = _make_wm(mocker)
+    wm._set_connecting("MyNet")
+    wm._set_pending_connection("MyNet", "pass1234", False)
+    wm._ctrl.request.return_value = "wpa_state=COMPLETED\nssid=MyNet\n"
+    mocker.patch.object(wifi_manager_module, "_generate_wpa_conf")
+
+    fire(wm, "CTRL-EVENT-CONNECTED - Connection to aa:bb:cc:dd:ee:ff completed [id=0 id_str=]")
+
+    wm._store.save_network.assert_called_once_with("MyNet", psk="pass1234", hidden=False)
+    assert wm._pending_connection is None
 
 
 class TestDisconnected:
@@ -137,6 +152,16 @@ class TestWrongPassword:
     fire(wm, "CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid=\"Net\" auth_failures=1 duration=10 reason=WRONG_KEY")
 
     assert len(wm._callback_queue) == 0
+
+  def test_wrong_key_clears_pending_without_saving(self, mocker):
+    wm = _make_wm(mocker)
+    wm._set_connecting("SecNet")
+    wm._set_pending_connection("SecNet", "wrongpass", False)
+
+    fire(wm, "CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid=\"SecNet\" auth_failures=1 duration=10 reason=WRONG_KEY")
+
+    wm._store.save_network.assert_not_called()
+    assert wm._pending_connection is None
 
 
 class TestAutoConnect:
@@ -305,3 +330,27 @@ class TestFullSequences:
     fire(wm, "CTRL-EVENT-CONNECTED - Connection to aa:bb:cc:dd:ee:ff completed [id=1]")
     assert wm._wifi_state.status == ConnectStatus.CONNECTED
     assert wm._wifi_state.ssid == "B"
+
+
+class TestConnectPersistence:
+  def test_connect_to_network_does_not_save_before_auth(self, mocker):
+    wm = _make_wm(mocker)
+    wm._remove_wpa_network = mocker.MagicMock()
+    wm._add_and_select_network = mocker.MagicMock()
+
+    class ImmediateThread:
+      def __init__(self, target=None, daemon=None):
+        self._target = target
+
+      def start(self):
+        if self._target is not None:
+          self._target()
+
+    mocker.patch.object(wifi_manager_module.threading, "Thread", ImmediateThread)
+    mocker.patch.object(wifi_manager_module, "_generate_wpa_conf")
+    wm.connect_to_network("SecNet", "secretpass", hidden=True)
+
+    wm._store.save_network.assert_not_called()
+    assert wm._pending_connection == PendingConnection(ssid="SecNet", password="secretpass", hidden=True, epoch=1)
+    wm._remove_wpa_network.assert_called_once_with("SecNet")
+    wm._add_and_select_network.assert_called_once_with("SecNet", "secretpass", True)

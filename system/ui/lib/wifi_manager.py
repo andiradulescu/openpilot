@@ -67,6 +67,14 @@ class WifiState:
   status: ConnectStatus = ConnectStatus.DISCONNECTED
 
 
+@dataclass(frozen=True)
+class PendingConnection:
+  ssid: str
+  password: str
+  hidden: bool
+  epoch: int
+
+
 # ---------------------------------------------------------------------------
 # Network storage: .nmconnection files
 # ---------------------------------------------------------------------------
@@ -467,6 +475,7 @@ class WifiManager:
     self._ipv4_forward = False
     self._tethering_active = False
     self._dnsmasq_proc: subprocess.Popen | None = None
+    self._pending_connection: PendingConnection | None = None
 
     self._last_network_scan: float = 0.0
     self._last_connecting_at: float = 0.0
@@ -646,6 +655,27 @@ class WifiManager:
     self._last_connecting_at = time.monotonic() if ssid is not None else 0.0
     self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.DISCONNECTED if ssid is None else ConnectStatus.CONNECTING)
 
+  def _set_pending_connection(self, ssid: str, password: str, hidden: bool):
+    self._pending_connection = PendingConnection(ssid=ssid, password=password, hidden=hidden, epoch=self._user_epoch)
+
+  def _clear_pending_connection(self, ssid: str | None = None):
+    if self._pending_connection is None:
+      return
+    if ssid is None or self._pending_connection.ssid == ssid:
+      self._pending_connection = None
+
+  def _persist_pending_connection(self, ssid: str | None):
+    pending = self._pending_connection
+    if pending is None:
+      return
+
+    self._pending_connection = None
+    if ssid != pending.ssid or pending.epoch != self._user_epoch:
+      return
+
+    self._store.save_network(ssid, psk=pending.password, hidden=pending.hidden)
+    _generate_wpa_conf(self._store)
+
   def _enqueue_callbacks(self, cbs: list[Callable], *args):
     for cb in cbs:
       self._callback_queue.append(lambda _cb=cb: _cb(*args))
@@ -709,6 +739,7 @@ class WifiManager:
 
       self._last_connecting_at = 0.0
       self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTED)
+      self._persist_pending_connection(ssid)
       self._dhcp.start()
       self._enqueue_callbacks(self._activated)
       self._poll_for_ip()
@@ -729,6 +760,7 @@ class WifiManager:
 
     elif "TEMP-DISABLED" in event and "reason=WRONG_KEY" in event:
       if self._wifi_state.ssid:
+        self._clear_pending_connection(self._wifi_state.ssid)
         self._enqueue_callbacks(self._need_auth, self._wifi_state.ssid)
         self._set_connecting(None)
 
@@ -794,9 +826,10 @@ class WifiManager:
     wpa_state = status.get("wpa_state", "")
     status_ssid = status.get("ssid")
 
-    if wpa_state == "COMPLETED" and status_ssid == current_state.ssid:
+    if wpa_state == "COMPLETED" and status_ssid:
       self._last_connecting_at = 0.0
       self._wifi_state = WifiState(ssid=status_ssid, status=ConnectStatus.CONNECTED)
+      self._persist_pending_connection(status_ssid)
       self._dhcp.start()
       self._enqueue_callbacks(self._activated)
       self._poll_for_ip()
@@ -804,6 +837,7 @@ class WifiManager:
       network = next((n for n in self._networks if n.ssid == current_state.ssid), None)
       if network is not None and network.security_type != SecurityType.OPEN:
         self._enqueue_callbacks(self._need_auth, current_state.ssid)
+      self._clear_pending_connection(current_state.ssid)
       self._set_connecting(None)
       self._dhcp.stop()
       self._ipv4_address = ""
@@ -907,14 +941,12 @@ class WifiManager:
 
   def connect_to_network(self, ssid: str, password: str, hidden: bool = False):
     self._set_connecting(ssid)
+    self._set_pending_connection(ssid, password, hidden)
 
     def worker():
-      # Save to persistent store and regenerate conf (for next boot)
-      self._store.save_network(ssid, psk=password, hidden=hidden)
-      _generate_wpa_conf(self._store)
-
       if self._ctrl is None:
         cloudlog.warning("No wpa_supplicant connection")
+        self._clear_pending_connection(ssid)
         self._init_wifi_state()
         return
 
@@ -925,12 +957,14 @@ class WifiManager:
         self._add_and_select_network(ssid, password, hidden)
       except Exception:
         cloudlog.exception(f"Failed to connect to {ssid}")
+        self._clear_pending_connection(ssid)
         self._init_wifi_state()
 
     threading.Thread(target=worker, daemon=True).start()
 
   def forget_connection(self, ssid: str, block: bool = False):
     def worker():
+      self._clear_pending_connection(ssid)
       was_connected = self._wifi_state.ssid == ssid and self._wifi_state.status == ConnectStatus.CONNECTED
 
       removed = self._store.remove(ssid)
@@ -959,6 +993,7 @@ class WifiManager:
 
   def activate_connection(self, ssid: str, block: bool = False):
     self._set_connecting(ssid)
+    self._clear_pending_connection()
 
     def worker():
       if self._ctrl is None:
