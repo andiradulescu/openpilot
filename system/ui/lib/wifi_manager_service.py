@@ -204,6 +204,7 @@ class WifiManagerClient:
   def __init__(self):
     self._exit = False
     self._callback_queue: list[Callable] = []
+    self._callback_lock = threading.Lock()
 
     self._need_auth: list[Callable[[str], None]] = []
     self._activated: list[Callable[[], None]] = []
@@ -286,8 +287,9 @@ class WifiManagerClient:
     raise RuntimeError("wifi manager daemon did not start")
 
   def _enqueue_callbacks(self, cbs: list[Callable], *args):
-    for cb in cbs:
-      self._callback_queue.append(lambda _cb=cb: _cb(*args))
+    with self._callback_lock:
+      for cb in cbs:
+        self._callback_queue.append(lambda _cb=cb: _cb(*args))
 
   def _apply_snapshot(self, snapshot: dict):
     state = _deserialize_snapshot(snapshot)
@@ -391,7 +393,8 @@ class WifiManagerClient:
     return self._tethering_password
 
   def process_callbacks(self):
-    to_run, self._callback_queue = self._callback_queue, []
+    with self._callback_lock:
+      to_run, self._callback_queue = self._callback_queue, []
     for cb in to_run:
       cb()
 

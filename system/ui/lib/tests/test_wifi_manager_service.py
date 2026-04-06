@@ -1,3 +1,4 @@
+import threading
 from unittest.mock import MagicMock
 
 from openpilot.system.ui.lib.wifi_manager import ConnectStatus, WifiState
@@ -7,6 +8,7 @@ from openpilot.system.ui.lib.wifi_manager_service import WifiManagerClient
 def _make_client():
   client = WifiManagerClient.__new__(WifiManagerClient)
   client._callback_queue = []
+  client._callback_lock = threading.Lock()
   client._need_auth = []
   client._activated = []
   client._forgotten = []
