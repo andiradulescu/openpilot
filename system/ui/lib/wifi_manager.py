@@ -698,6 +698,15 @@ class WifiManager:
           except Exception:
             pass
 
+  def _handle_connected(self, ssid: str):
+    """Transition to CONNECTED: persist credentials, start DHCP, notify UI."""
+    self._last_connecting_at = 0.0
+    self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTED)
+    self._persist_pending_connection(ssid)
+    self._dhcp.start()
+    self._enqueue_callbacks(self._activated)
+    self._poll_for_ip()
+
   def _handle_event(self, event: str):
     """Dispatch wpa_supplicant event to state machine."""
     if DEBUG:
@@ -722,12 +731,7 @@ class WifiManager:
       if self._user_epoch != epoch:
         return
 
-      self._last_connecting_at = 0.0
-      self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTED)
-      self._persist_pending_connection(ssid)
-      self._dhcp.start()
-      self._enqueue_callbacks(self._activated)
-      self._poll_for_ip()
+      self._handle_connected(ssid)
 
     elif "CTRL-EVENT-DISCONNECTED" in event:
       if self._tethering_active:
@@ -812,12 +816,7 @@ class WifiManager:
     status_ssid = status.get("ssid")
 
     if wpa_state == "COMPLETED" and status_ssid:
-      self._last_connecting_at = 0.0
-      self._wifi_state = WifiState(ssid=status_ssid, status=ConnectStatus.CONNECTED)
-      self._persist_pending_connection(status_ssid)
-      self._dhcp.start()
-      self._enqueue_callbacks(self._activated)
-      self._poll_for_ip()
+      self._handle_connected(status_ssid)
     elif wpa_state in ("DISCONNECTED", "INACTIVE", "SCANNING"):
       network = next((n for n in self._networks if n.ssid == current_state.ssid), None)
       if network is not None and network.security_type != SecurityType.OPEN:
