@@ -1213,6 +1213,8 @@ class WifiManager:
         self._scan_thread.join()
       if self._state_thread.is_alive():
         self._state_thread.join()
+      if self._tethering_active:
+        self._stop_tethering()
       if self._ctrl is not None:
         self._ctrl.close()
       self._dhcp.stop()
