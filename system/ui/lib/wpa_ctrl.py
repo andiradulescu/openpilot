@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 
+RECV_BUF_SIZE = 32768
+
+
 class SecurityType(IntEnum):
   OPEN = 0
   WPA = 1
@@ -61,7 +64,7 @@ class WpaCtrl:
     """Send command, return response string."""
     assert self._sock is not None, "WpaCtrl not opened"
     self._sock.send(cmd.encode())
-    return self._sock.recv(4096).decode("utf-8", "replace")
+    return self._sock.recv(RECV_BUF_SIZE).decode("utf-8", "replace")
 
   def __enter__(self):
     self.open()
@@ -102,7 +105,7 @@ class WpaCtrlMonitor:
   def _raw_request(self, cmd: str) -> str:
     assert self._sock is not None
     self._sock.send(cmd.encode())
-    return self._sock.recv(4096).decode("utf-8", "replace")
+    return self._sock.recv(RECV_BUF_SIZE).decode("utf-8", "replace")
 
   def pending(self, timeout: float = 0) -> bool:
     if self._sock is None:
@@ -116,7 +119,7 @@ class WpaCtrlMonitor:
     r, _, _ = select.select([self._sock], [], [], timeout)
     if not r:
       return None
-    data = self._sock.recv(4096).decode("utf-8", "replace")
+    data = self._sock.recv(RECV_BUF_SIZE).decode("utf-8", "replace")
     # Strip priority prefix like <3>
     if data.startswith("<") and ">" in data[:4]:
       data = data[data.index(">") + 1:]
