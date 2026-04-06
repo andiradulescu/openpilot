@@ -36,6 +36,10 @@ WPA_AP_CONF = "/tmp/wpa_supplicant_ap.conf"
 DEBUG = False
 
 
+def normalize_ssid(ssid: str) -> str:
+  return ssid.replace("\u2019", "'")  # for iPhone hotspots
+
+
 class MeteredType(IntEnum):
   UNKNOWN = 0
   YES = 1
