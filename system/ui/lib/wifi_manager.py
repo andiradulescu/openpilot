@@ -554,9 +554,15 @@ class WifiManager:
       except OSError:
         subprocess.run(["sudo", "rm", "-f", f], check=False)
 
-    # Kill NM's wpa_supplicant so we can take over wlan0
-    subprocess.run(["sudo", "killall", "-q", "wpa_supplicant"], check=False)
-    time.sleep(0.5)
+    # Wait for wlan0 to appear (NM or kernel may not have it ready yet)
+    while not self._exit:
+      if os.path.exists("/sys/class/net/wlan0"):
+        break
+      time.sleep(0.5)
+
+    # Tell NM to release wlan0, then start our own wpa_supplicant.
+    # NM's wpa_supplicant runs in global mode (-u) and can coexist with ours.
+    self._unmanage_wlan0()
 
     subprocess.run(["sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", WPA_SUPPLICANT_CONF, "-D", "nl80211"], check=False)
 
@@ -566,8 +572,6 @@ class WifiManager:
         ctrl = WpaCtrl()
         ctrl.open()
         self._ctrl = ctrl
-        # Now that wlan0 is up, tell NM to stop managing it
-        self._unmanage_wlan0()
         return
       except (OSError, ConnectionRefusedError):
         time.sleep(1)
