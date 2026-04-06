@@ -988,8 +988,7 @@ class WifiManager:
             self._ctrl.request("DISCONNECT")
           self._remove_wpa_network(ssid)
           self._ctrl.request("ENABLE_NETWORK all")
-          if not was_connected:
-            self._ctrl.request("REASSOCIATE")
+          self._ctrl.request("REASSOCIATE")
         except Exception:
           cloudlog.exception(f"Failed to reconfigure after forgetting {ssid}")
 
