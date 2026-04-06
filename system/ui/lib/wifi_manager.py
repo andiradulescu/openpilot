@@ -254,7 +254,7 @@ class DhcpClient:
     self.stop()
     try:
       self._proc = subprocess.Popen(
-        ["sudo", "udhcpc", "-i", self._iface, "-f", "-q", "-t", "5", "-n"],
+        ["sudo", "udhcpc", "-i", self._iface, "-f", "-t", "5", "-T", "3"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
       )
     except Exception:
