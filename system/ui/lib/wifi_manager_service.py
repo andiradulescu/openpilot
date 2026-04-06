@@ -177,7 +177,13 @@ def run_daemon():
 
   server = _WifiRPCServer(manager, broker)
 
+  cleaned_up = False
+
   def cleanup():
+    nonlocal cleaned_up
+    if cleaned_up:
+      return
+    cleaned_up = True
     stop_event.set()
     server.server_close()
     manager.stop()
