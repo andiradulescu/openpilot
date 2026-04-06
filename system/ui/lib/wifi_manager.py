@@ -200,10 +200,7 @@ class NetworkStore:
     with self._lock:
       if ssid in self._networks:
         fpath = os.path.join(self._directory, _ssid_to_filename(ssid))
-        try:
-          subprocess.run(["sudo", "rm", "-f", fpath], check=True)
-        except FileNotFoundError:
-          pass
+        subprocess.run(["sudo", "rm", "-f", fpath], check=False)
         del self._networks[ssid]
         return True
       return False
