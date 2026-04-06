@@ -558,9 +558,6 @@ class WifiManager:
     subprocess.run(["sudo", "killall", "-q", "wpa_supplicant"], check=False)
     time.sleep(0.5)
 
-    # Tell NetworkManager to stop managing wlan0
-    self._unmanage_wlan0()
-
     subprocess.run(["sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", WPA_SUPPLICANT_CONF, "-D", "nl80211"], check=False)
 
     # Wait for it to come up
@@ -569,6 +566,8 @@ class WifiManager:
         ctrl = WpaCtrl()
         ctrl.open()
         self._ctrl = ctrl
+        # Now that wlan0 is up, tell NM to stop managing it
+        self._unmanage_wlan0()
         return
       except (OSError, ConnectionRefusedError):
         time.sleep(1)
