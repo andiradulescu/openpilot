@@ -354,3 +354,31 @@ class TestConnectPersistence:
     assert wm._pending_connection == PendingConnection(ssid="SecNet", password="secretpass", hidden=True, epoch=1)
     wm._remove_wpa_network.assert_called_once_with("SecNet")
     wm._add_and_select_network.assert_called_once_with("SecNet", "secretpass", True)
+
+
+class TestStop:
+  def test_stop_calls_stop_tethering_when_active(self, mocker):
+    wm = _make_wm(mocker)
+    wm._tethering_active = True
+    wm._scan_thread = mocker.MagicMock(is_alive=mocker.MagicMock(return_value=False))
+    wm._state_thread = mocker.MagicMock(is_alive=mocker.MagicMock(return_value=False))
+    wm._gsm = mocker.MagicMock()
+    wm._stop_tethering = mocker.MagicMock()
+    wm._exit = False
+
+    wm.stop()
+
+    wm._stop_tethering.assert_called_once()
+
+  def test_stop_skips_tethering_when_not_active(self, mocker):
+    wm = _make_wm(mocker)
+    wm._tethering_active = False
+    wm._scan_thread = mocker.MagicMock(is_alive=mocker.MagicMock(return_value=False))
+    wm._state_thread = mocker.MagicMock(is_alive=mocker.MagicMock(return_value=False))
+    wm._gsm = mocker.MagicMock()
+    wm._stop_tethering = mocker.MagicMock()
+    wm._exit = False
+
+    wm.stop()
+
+    wm._stop_tethering.assert_not_called()
