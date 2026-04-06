@@ -36,10 +36,6 @@ WPA_AP_CONF = "/tmp/wpa_supplicant_ap.conf"
 DEBUG = False
 
 
-def normalize_ssid(ssid: str) -> str:
-  return ssid.replace("\u2019", "'")  # for iPhone hotspots
-
-
 class MeteredType(IntEnum):
   UNKNOWN = 0
   YES = 1
@@ -458,7 +454,6 @@ def _generate_wpa_conf(store: NetworkStore, path: str = WPA_SUPPLICANT_CONF):
 class WifiManager:
   def __init__(self):
     self._networks: list[Network] = []
-    self._active = True
     self._exit = False
 
     self._store = NetworkStore()
@@ -679,7 +674,7 @@ class WifiManager:
       cb()
 
   def set_active(self, active: bool):
-    self._active = active
+    pass
 
   # ---------------------------------------------------------------------------
   # Monitor thread: wpa_supplicant events

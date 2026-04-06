@@ -196,7 +196,6 @@ class WifiManagerClient:
   _spawn_lock = threading.Lock()
 
   def __init__(self):
-    self._active = True
     self._exit = False
     self._callback_queue: list[Callable] = []
 
@@ -391,7 +390,6 @@ class WifiManagerClient:
       cb()
 
   def set_active(self, active: bool):
-    self._active = active
     try:
       self._request("set_active", active=active)
     except Exception:
