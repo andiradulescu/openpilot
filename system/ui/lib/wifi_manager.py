@@ -526,18 +526,26 @@ class WifiManager:
     result = subprocess.run(["sudo", "nmcli", "dev", "set", "wlan0", "managed", "no"], capture_output=True)
     cloudlog.info(f"nmcli dev set wlan0 managed no: rc={result.returncode}")
 
-  def _ensure_wpa_supplicant(self):
-    """Start wpa_supplicant if not running, then connect to control socket."""
-    # If already running, just reconfigure to pick up saved networks
+  def _is_our_wpa_supplicant(self) -> bool:
+    """Check if the running wpa_supplicant was started with our config."""
     try:
-      ctrl = WpaCtrl()
-      ctrl.open()
-      self._ctrl = ctrl
-      self._ctrl.request("RECONFIGURE")
-      self._unmanage_wlan0()
-      return
-    except (OSError, ConnectionRefusedError):
-      pass
+      out = subprocess.check_output(["pgrep", "-a", "wpa_supplicant"], text=True)
+      return WPA_SUPPLICANT_CONF in out
+    except subprocess.CalledProcessError:
+      return False
+
+  def _ensure_wpa_supplicant(self):
+    """Start our own wpa_supplicant, then connect to control socket."""
+    # If our wpa_supplicant is already running (daemon restart), just reconnect
+    if self._is_our_wpa_supplicant():
+      try:
+        ctrl = WpaCtrl()
+        ctrl.open()
+        self._ctrl = ctrl
+        self._ctrl.request("RECONFIGURE")
+        return
+      except (OSError, ConnectionRefusedError):
+        pass
 
     # Clean up NM metadata files
     for f in glob.glob(os.path.join(NM_CONNECTIONS_DIR, "*.nmmeta")):
@@ -546,7 +554,13 @@ class WifiManager:
       except OSError:
         subprocess.run(["sudo", "rm", "-f", f], check=False)
 
+    # Kill NM's wpa_supplicant so we can take over wlan0
+    subprocess.run(["sudo", "killall", "-q", "wpa_supplicant"], check=False)
+    time.sleep(0.5)
+
+    # Tell NetworkManager to stop managing wlan0
     self._unmanage_wlan0()
+
     subprocess.run(["sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", WPA_SUPPLICANT_CONF, "-D", "nl80211"], check=False)
 
     # Wait for it to come up
