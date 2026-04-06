@@ -30,7 +30,6 @@ CONNECTING_STALE_TIMEOUT_SECONDS = 5
 
 WPA_SUPPLICANT_CONF = "/tmp/wpa_supplicant.conf"
 NM_CONNECTIONS_DIR = "/data/etc/NetworkManager/system-connections"
-NM_UNMANAGED_CONF = "/etc/NetworkManager/conf.d/99-unmanaged-wifi.conf"
 
 WPA_AP_CONF = "/tmp/wpa_supplicant_ap.conf"
 
@@ -538,14 +537,8 @@ class WifiManager:
     except (OSError, ConnectionRefusedError):
       pass
 
-    # Tell NetworkManager to ignore wlan0 (we manage WiFi via wpa_supplicant)
-    if not os.path.exists(NM_UNMANAGED_CONF):
-      try:
-        subprocess.run(["sudo", "tee", NM_UNMANAGED_CONF], input=b"[keyfile]\nunmanaged-devices=interface-name:wlan0\n",
-                        stdout=subprocess.DEVNULL, check=False)
-        subprocess.run(["sudo", "nmcli", "general", "reload", "conf"], capture_output=True, check=False)
-      except Exception:
-        pass
+    # Tell NetworkManager to stop managing wlan0 (we manage WiFi via wpa_supplicant)
+    subprocess.run(["sudo", "nmcli", "dev", "set", "wlan0", "managed", "no"], capture_output=True, check=False)
 
     # Clean up NM metadata files
     for f in glob.glob(os.path.join(NM_CONNECTIONS_DIR, "*.nmmeta")):
