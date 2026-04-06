@@ -521,18 +521,20 @@ class WifiManager:
 
     threading.Thread(target=worker, daemon=True).start()
 
-  def _ensure_wpa_supplicant(self):
-    """Start wpa_supplicant if not running, then connect to control socket."""
-    # Tell NetworkManager to stop managing wlan0 (we manage WiFi via wpa_supplicant)
+  def _unmanage_wlan0(self):
+    """Tell NetworkManager to stop managing wlan0."""
     result = subprocess.run(["sudo", "nmcli", "dev", "set", "wlan0", "managed", "no"], capture_output=True)
     cloudlog.info(f"nmcli dev set wlan0 managed no: rc={result.returncode}")
 
+  def _ensure_wpa_supplicant(self):
+    """Start wpa_supplicant if not running, then connect to control socket."""
     # If already running, just reconfigure to pick up saved networks
     try:
       ctrl = WpaCtrl()
       ctrl.open()
       self._ctrl = ctrl
       self._ctrl.request("RECONFIGURE")
+      self._unmanage_wlan0()
       return
     except (OSError, ConnectionRefusedError):
       pass
@@ -544,6 +546,7 @@ class WifiManager:
       except OSError:
         subprocess.run(["sudo", "rm", "-f", f], check=False)
 
+    self._unmanage_wlan0()
     subprocess.run(["sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", WPA_SUPPLICANT_CONF, "-D", "nl80211"], check=False)
 
     # Wait for it to come up
