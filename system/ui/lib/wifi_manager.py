@@ -523,6 +523,10 @@ class WifiManager:
 
   def _ensure_wpa_supplicant(self):
     """Start wpa_supplicant if not running, then connect to control socket."""
+    # Tell NetworkManager to stop managing wlan0 (we manage WiFi via wpa_supplicant)
+    result = subprocess.run(["sudo", "nmcli", "dev", "set", "wlan0", "managed", "no"], capture_output=True)
+    cloudlog.info(f"nmcli dev set wlan0 managed no: rc={result.returncode}")
+
     # If already running, just reconfigure to pick up saved networks
     try:
       ctrl = WpaCtrl()
@@ -532,9 +536,6 @@ class WifiManager:
       return
     except (OSError, ConnectionRefusedError):
       pass
-
-    # Tell NetworkManager to stop managing wlan0 (we manage WiFi via wpa_supplicant)
-    subprocess.run(["sudo", "nmcli", "dev", "set", "wlan0", "managed", "no"], capture_output=True, check=False)
 
     # Clean up NM metadata files
     for f in glob.glob(os.path.join(NM_CONNECTIONS_DIR, "*.nmmeta")):
