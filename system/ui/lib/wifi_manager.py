@@ -1100,6 +1100,7 @@ class WifiManager:
     self._ipv4_forward = enabled
 
   def set_tethering_active(self, active: bool):
+    self._tethering_active = active
     def worker():
       if active:
         self._start_tethering()
