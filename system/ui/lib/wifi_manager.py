@@ -490,6 +490,7 @@ class WifiManager:
     self._disconnected: list[Callable[[], None]] = []
 
     self._scan_lock = threading.Lock()
+    self._monitor_epoch = 0
     self._scan_thread = threading.Thread(target=self._network_scanner, daemon=True)
     self._state_thread = threading.Thread(target=self._monitor_state, daemon=True)
     self._initialize()
@@ -714,22 +715,23 @@ class WifiManager:
     while not self._exit:
       monitor = None
       try:
+        epoch = self._monitor_epoch
         monitor = WpaCtrlMonitor()
         monitor.open()
-        while not self._exit:
+        while not self._exit and self._monitor_epoch == epoch:
           event = monitor.recv(timeout=1.0)
           if event is None:
             continue
           self._handle_event(event)
       except Exception:
         cloudlog.exception("wpa_supplicant monitor error, reconnecting...")
-        time.sleep(2)
       finally:
         if monitor is not None:
           try:
             monitor.close()
           except Exception:
             pass
+        time.sleep(2)
 
   def _handle_connected(self, ssid: str):
     """Transition to CONNECTED: persist credentials, start DHCP, notify UI."""
@@ -1134,6 +1136,7 @@ class WifiManager:
       self._ctrl = None
 
     # Stop STA wpa_supplicant
+    self._monitor_epoch += 1
     subprocess.run(["sudo", "killall", "-q", "wpa_supplicant"], check=False)
     self._dhcp.stop()
     time.sleep(0.5)
@@ -1206,6 +1209,7 @@ class WifiManager:
       self._ctrl = None
 
     # Stop AP wpa_supplicant
+    self._monitor_epoch += 1
     subprocess.run(["sudo", "killall", "-q", "wpa_supplicant"], check=False)
     time.sleep(0.5)
 
