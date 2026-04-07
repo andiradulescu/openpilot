@@ -110,8 +110,8 @@ class AdvancedNetworkSettings(Widget):
     self._wifi_manager = wifi_manager
     self._wifi_manager.add_callbacks(
       networks_updated=self._on_network_updated,
-      activated=lambda: self._on_network_updated(self._wifi_manager.networks),
-      disconnected=lambda: self._on_network_updated(self._wifi_manager.networks),
+      activated=lambda: self._on_tethering_finished(),
+      disconnected=lambda: self._on_tethering_finished(),
     )
     self._params = Params()
 
@@ -163,11 +163,13 @@ class AdvancedNetworkSettings(Widget):
     metered = self._params.get_bool("GsmMetered")
     self._wifi_manager.update_gsm_settings(roaming_enabled, self._params.get("GsmApn") or "", metered)
 
-  def _on_network_updated(self, networks: list[Network]):
+  def _on_tethering_finished(self):
     self._tethering_action.set_enabled(True)
     self._tethering_action.set_state(self._wifi_manager.is_tethering_active())
     self._tethering_password_action.set_enabled(True)
+    self._on_network_updated(self._wifi_manager.networks)
 
+  def _on_network_updated(self, networks: list[Network]):
     if self._wifi_manager.is_tethering_active() or self._wifi_manager.ipv4_address == "":
       self._wifi_metered_action.set_enabled(False)
       self._wifi_metered_action.selected_button = 0
