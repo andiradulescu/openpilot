@@ -834,6 +834,17 @@ class WifiManager:
     current_state = self._wifi_state
     if self._ctrl is None or self._tethering_active:
       return
+
+    # Detect missed CONNECTED event (e.g. monitor was reconnecting after tethering stop)
+    if current_state.status == ConnectStatus.DISCONNECTED:
+      try:
+        status = parse_status(self._ctrl.request("STATUS"))
+      except Exception:
+        return
+      if status.get("wpa_state") == "COMPLETED" and status.get("ssid"):
+        self._handle_connected(status["ssid"])
+      return
+
     if current_state.status != ConnectStatus.CONNECTING or current_state.ssid is None:
       return
     if time.monotonic() - self._last_connecting_at < CONNECTING_STALE_TIMEOUT_SECONDS:

@@ -85,3 +85,49 @@ def test_reconcile_stale_secure_network_prompts_auth():
   wm.process_callbacks()
 
   need_auth.assert_called_once_with("systeam")
+
+
+def test_reconcile_disconnected_detects_missed_connected():
+  """After tethering stops, monitor may miss CONNECTED event."""
+  wm = _make_wm()
+  activated = MagicMock()
+  wm._activated.append(activated)
+  wm._wifi_state = WifiState(ssid=None, status=ConnectStatus.DISCONNECTED)
+  wm._ctrl.request.return_value = "wpa_state=COMPLETED\nssid=systeam5\n"
+
+  wm._reconcile_connecting_state()
+  wm.process_callbacks()
+
+  assert wm._wifi_state.status == ConnectStatus.CONNECTED
+  assert wm._wifi_state.ssid == "systeam5"
+  wm._dhcp.start.assert_called_once()
+  activated.assert_called_once()
+
+
+def test_reconcile_disconnected_stays_disconnected():
+  """Don't falsely connect when wpa_supplicant is also disconnected."""
+  wm = _make_wm()
+  activated = MagicMock()
+  wm._activated.append(activated)
+  wm._wifi_state = WifiState(ssid=None, status=ConnectStatus.DISCONNECTED)
+  wm._ctrl.request.return_value = "wpa_state=DISCONNECTED\n"
+
+  wm._reconcile_connecting_state()
+  wm.process_callbacks()
+
+  assert wm._wifi_state.status == ConnectStatus.DISCONNECTED
+  wm._dhcp.start.assert_not_called()
+  activated.assert_not_called()
+
+
+def test_reconcile_disconnected_skipped_during_tethering():
+  """Don't reconcile while tethering is active."""
+  wm = _make_wm()
+  wm._tethering_active = True
+  wm._wifi_state = WifiState(ssid=None, status=ConnectStatus.DISCONNECTED)
+  wm._ctrl.request.return_value = "wpa_state=COMPLETED\nssid=systeam\n"
+
+  wm._reconcile_connecting_state()
+
+  assert wm._wifi_state.status == ConnectStatus.DISCONNECTED
+  wm._ctrl.request.assert_not_called()
