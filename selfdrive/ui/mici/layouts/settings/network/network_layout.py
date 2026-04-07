@@ -20,6 +20,8 @@ class NetworkLayoutMici(NavScroller):
 
     self._wifi_manager.add_callbacks(
       networks_updated=self._on_network_updated,
+      activated=lambda: self._on_network_updated(self._wifi_manager.networks),
+      disconnected=lambda: self._on_network_updated(self._wifi_manager.networks),
     )
 
     # ******** Tethering ********
@@ -140,7 +142,6 @@ class NetworkLayoutMici(NavScroller):
   def _on_network_updated(self, networks: list[Network]):
     # Update tethering state
     tethering_active = self._wifi_manager.is_tethering_active()
-    # TODO: use real signals (like activated/settings changed, etc.) to speed up re-enabling buttons
     self._tethering_toggle_btn.set_enabled(True)
     self._tethering_password_btn.set_enabled(True)
     self._network_metered_btn.set_enabled(lambda: not tethering_active and bool(self._wifi_manager.ipv4_address))
