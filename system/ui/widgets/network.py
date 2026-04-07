@@ -442,6 +442,9 @@ class WifiManagerUI(Widget):
     rl.draw_texture_v(gui_app.texture(STRENGTH_ICONS[strength_level], ICON_SIZE, ICON_SIZE), rl.Vector2(rect.x, rect.y), rl.WHITE)
 
   def connect_to_network(self, network: Network, password=''):
+    if self._wifi_manager.is_tethering_active():
+      return
+
     self.state = UIState.CONNECTING
     self._state_network = network
     if self._wifi_manager.is_connection_saved(network.ssid) and not password:

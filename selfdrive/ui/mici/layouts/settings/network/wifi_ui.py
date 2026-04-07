@@ -340,6 +340,9 @@ class WifiUIMici(NavScroller):
     self._move_network_to_front(ssid, scroll=True)
 
   def _connect_to_network(self, ssid: str):
+    if self._wifi_manager.is_tethering_active():
+      return
+
     network = self._networks.get(ssid)
     if network is None:
       cloudlog.warning(f"Trying to connect to unknown network: {ssid}")
