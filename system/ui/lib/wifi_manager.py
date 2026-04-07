@@ -548,6 +548,12 @@ class WifiManager:
       except (OSError, ConnectionRefusedError):
         pass
 
+    # Kill stale wpa_supplicant and tethering remnants (e.g. leftover AP mode from a dirty shutdown)
+    subprocess.run(["sudo", "killall", "-q", "wpa_supplicant"], check=False)
+    subprocess.run(["sudo", "killall", "-q", "dnsmasq"], check=False)
+    subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
+    time.sleep(0.5)
+
     # Clean up NM metadata files
     for f in glob.glob(os.path.join(NM_CONNECTIONS_DIR, "*.nmmeta")):
       try:
