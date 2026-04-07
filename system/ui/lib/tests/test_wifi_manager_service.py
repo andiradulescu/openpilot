@@ -68,6 +68,27 @@ class TestApplySnapshot:
 
     disconnected.assert_called_once()
 
+  def test_disconnected_to_connected_fires_activated(self):
+    client = _make_client()
+    activated = MagicMock()
+    client._activated.append(activated)
+
+    client._apply_snapshot(_snapshot(wifi_state={"ssid": "MyNet", "status": int(ConnectStatus.CONNECTED)}))
+    client.process_callbacks()
+
+    activated.assert_called_once()
+
+  def test_connected_to_connected_does_not_fire_activated(self):
+    client = _make_client()
+    client._wifi_state = WifiState(ssid="MyNet", status=ConnectStatus.CONNECTED)
+    activated = MagicMock()
+    client._activated.append(activated)
+
+    client._apply_snapshot(_snapshot(wifi_state={"ssid": "OtherNet", "status": int(ConnectStatus.CONNECTED)}))
+    client.process_callbacks()
+
+    activated.assert_not_called()
+
   def test_disconnected_to_disconnected_does_not_fire(self):
     client = _make_client()
     client._wifi_state = WifiState(ssid=None, status=ConnectStatus.DISCONNECTED)

@@ -313,8 +313,10 @@ class WifiManagerClient:
     if previous_networks != self._networks or previous_saved_ssids != self._saved_ssids:
       self._enqueue_callbacks(self._networks_updated, self.networks)
 
-    if previous_wifi_state != self._wifi_state and self._wifi_state.status == ConnectStatus.DISCONNECTED:
-      if previous_wifi_state.status != ConnectStatus.DISCONNECTED:
+    if previous_wifi_state != self._wifi_state:
+      if self._wifi_state.status == ConnectStatus.CONNECTED and previous_wifi_state.status != ConnectStatus.CONNECTED:
+        self._enqueue_callbacks(self._activated)
+      elif self._wifi_state.status == ConnectStatus.DISCONNECTED and previous_wifi_state.status != ConnectStatus.DISCONNECTED:
         self._enqueue_callbacks(self._disconnected)
 
   def _apply_events(self, events: list[dict]):
@@ -346,6 +348,7 @@ class WifiManagerClient:
         self._sync_state()
       except Exception:
         cloudlog.exception("wifi manager client poll failed")
+        self._last_seq = 0
         try:
           self._ensure_daemon()
         except Exception:
