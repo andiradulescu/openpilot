@@ -543,6 +543,7 @@ class WifiManager:
         ctrl.open()
         self._ctrl = ctrl
         self._ctrl.request("RECONFIGURE")
+        self._ctrl.request("ENABLE_NETWORK all")
         return
       except (OSError, ConnectionRefusedError):
         pass
@@ -572,6 +573,7 @@ class WifiManager:
         ctrl = WpaCtrl()
         ctrl.open()
         self._ctrl = ctrl
+        self._ctrl.request("ENABLE_NETWORK all")
         return
       except (OSError, ConnectionRefusedError):
         time.sleep(1)
