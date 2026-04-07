@@ -1144,6 +1144,7 @@ class WifiManager:
       "--interface=wlan0",
       "--bind-interfaces",
       "--dhcp-range=192.168.43.2,192.168.43.254,24h",
+      "--dhcp-leasefile=/tmp/dnsmasq.leases",
       "--no-daemon", "--log-queries",
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
       start_new_session=True)
