@@ -20,8 +20,8 @@ class NetworkLayoutMici(NavScroller):
 
     self._wifi_manager.add_callbacks(
       networks_updated=self._on_network_updated,
-      activated=lambda: self._on_network_updated(self._wifi_manager.networks),
-      disconnected=lambda: self._on_network_updated(self._wifi_manager.networks),
+      activated=lambda: self._on_tethering_finished(),
+      disconnected=lambda: self._on_tethering_finished(),
     )
 
     # ******** Tethering ********
@@ -139,13 +139,16 @@ class NetworkLayoutMici(NavScroller):
   def _toggle_cellular_metered(self, checked: bool):
     self._wifi_manager.update_gsm_settings(ui_state.params.get_bool("GsmRoaming"), ui_state.params.get("GsmApn") or "", checked)
 
-  def _on_network_updated(self, networks: list[Network]):
-    # Update tethering state
+  def _on_tethering_finished(self):
     tethering_active = self._wifi_manager.is_tethering_active()
     self._tethering_toggle_btn.set_enabled(True)
     self._tethering_password_btn.set_enabled(True)
-    self._network_metered_btn.set_enabled(lambda: not tethering_active and bool(self._wifi_manager.ipv4_address))
     self._tethering_toggle_btn.set_checked(tethering_active)
+    self._on_network_updated(self._wifi_manager.networks)
+
+  def _on_network_updated(self, networks: list[Network]):
+    tethering_active = self._wifi_manager.is_tethering_active()
+    self._network_metered_btn.set_enabled(lambda: not tethering_active and bool(self._wifi_manager.ipv4_address))
 
     # Update network metered
     self._network_metered_btn.set_value(

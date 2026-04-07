@@ -428,6 +428,7 @@ class WifiManagerClient:
     self._request("set_ipv4_forward", enabled=enabled)
 
   def set_tethering_active(self, active: bool):
+    self._tethering_active = active
     self._request("set_tethering_active", active=active)
 
   def set_current_network_metered(self, metered: MeteredType):
