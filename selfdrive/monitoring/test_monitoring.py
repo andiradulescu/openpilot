@@ -190,7 +190,7 @@ class TestMonitoring:
     assert events[int((_redlight_time+_pre_to_prompt+0.5)/DT_DMON)].names[0] == EventName.promptDriverDistracted
 
   # engaged, distracted while moving, then car stops after reaching orange
-  #  - should downgrade to green alert when stopped, even if already in orange zone
+  #  - should reset timer to pre green at standstill
   def test_distracted_then_stops(self):
     _stop_time = DISTRACTED_SECONDS_TO_ORANGE + 1  # stop 1 second after reaching orange
     standstill_vector = always_false[:]
