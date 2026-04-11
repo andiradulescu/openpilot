@@ -83,17 +83,52 @@ class TestVCruiseHelper:
     """
 
     # NOTE: enabled is always one frame behind the result from button press in controlsd
-    for enabled, pressed in ((False, False),
-                             (False, True),
-                             (True, False)):
-      CS = car.CarState(cruiseState={"available": True})
+    for enabled, pressed, button_enable in ((False, False, False),
+                                            (False, True, False),
+                                            (True, False, True)):
+      CS = car.CarState(cruiseState={"available": True}, buttonEnable=button_enable)
       CS.buttonEvents = [ButtonEvent(type=ButtonType.decelCruise, pressed=pressed)]
       self.v_cruise_helper.update_v_cruise(CS, enabled=enabled, is_metric=False)
       if pressed:
         self.enable(V_CRUISE_INITIAL * CV.KPH_TO_MS, False)
 
       # Expected diff on enabling. Speed should not change on falling edge of pressed
-      assert not pressed == self.v_cruise_helper.v_cruise_kph == self.v_cruise_helper.v_cruise_kph_last
+      assert (not pressed) == (self.v_cruise_helper.v_cruise_kph == self.v_cruise_helper.v_cruise_kph_last)
+
+  def test_adjust_speed_disabled(self):
+    """
+    Asserts speed can be adjusted via buttons while openpilot is disabled,
+    as long as the cruise speed is initialized (e.g. VW independent +/- buttons).
+    """
+
+    self.enable(V_CRUISE_INITIAL * CV.KPH_TO_MS, False)
+
+    for btn in (ButtonType.accelCruise, ButtonType.decelCruise):
+      for pressed in (True, False):
+        CS = car.CarState(cruiseState={"available": True})
+        CS.buttonEvents = [ButtonEvent(type=btn, pressed=pressed)]
+        self.v_cruise_helper.update_v_cruise(CS, enabled=False, is_metric=False)
+        assert pressed == (self.v_cruise_helper.v_cruise_kph == self.v_cruise_helper.v_cruise_kph_last)
+
+  def test_disabled_button_enable_does_not_adjust(self):
+    """
+    When CS.buttonEnable is set while disabled, the press is an enable request
+    and the set speed should not change on the falling edge.
+    """
+
+    self.enable(V_CRUISE_INITIAL * CV.KPH_TO_MS, False)
+
+    # Press decelCruise while disabled
+    CS = car.CarState(cruiseState={"available": True})
+    CS.buttonEvents = [ButtonEvent(type=ButtonType.decelCruise, pressed=True)]
+    self.v_cruise_helper.update_v_cruise(CS, enabled=False, is_metric=False)
+
+    # Release with buttonEnable set (falling edge enables openpilot)
+    CS = car.CarState(cruiseState={"available": True}, buttonEnable=True)
+    CS.buttonEvents = [ButtonEvent(type=ButtonType.decelCruise, pressed=False)]
+    self.v_cruise_helper.update_v_cruise(CS, enabled=False, is_metric=False)
+
+    assert self.v_cruise_helper.v_cruise_kph == self.v_cruise_helper.v_cruise_kph_last
 
   def test_resume_in_standstill(self):
     """
