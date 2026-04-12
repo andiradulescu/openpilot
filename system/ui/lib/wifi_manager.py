@@ -52,6 +52,11 @@ class Network:
   is_tethering: bool
 
 
+def sort_networks(networks: list[Network], current_ssid: str | None, saved_ssids: set[str]) -> list[Network]:
+  """Sort networks: connected first, then saved, then by signal strength."""
+  return sorted(networks, key=lambda n: (n.ssid != current_ssid, n.ssid not in saved_ssids, -n.strength, n.ssid.lower()))
+
+
 class ConnectStatus(IntEnum):
   DISCONNECTED = 0
   CONNECTING = 1
@@ -571,7 +576,9 @@ class WifiManager:
     subprocess.run(["sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", WPA_SUPPLICANT_CONF, "-D", "nl80211"], check=False)
 
     # Wait for it to come up
-    while not self._exit:
+    for _ in range(30):
+      if self._exit:
+        return
       try:
         ctrl = WpaCtrl()
         ctrl.open()
@@ -580,6 +587,7 @@ class WifiManager:
         return
       except (OSError, ConnectionRefusedError):
         time.sleep(1)
+    cloudlog.error("wpa_supplicant did not start after 30 attempts")
 
   def _init_wifi_state(self, block: bool = True):
     def worker():
@@ -635,9 +643,7 @@ class WifiManager:
 
   @property
   def networks(self) -> list[Network]:
-    saved = self._store.saved_ssids()
-    current_ssid = self._wifi_state.ssid
-    return sorted(self._networks, key=lambda n: (n.ssid != current_ssid, n.ssid not in saved, -n.strength, n.ssid.lower()))
+    return sort_networks(self._networks, self._wifi_state.ssid, self._store.saved_ssids())
 
   @property
   def wifi_state(self) -> WifiState:

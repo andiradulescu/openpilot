@@ -11,7 +11,7 @@ from collections import deque
 from collections.abc import Callable
 
 from openpilot.common.swaglog import cloudlog
-from openpilot.system.ui.lib.wifi_manager import ConnectStatus, MeteredType, Network, SecurityType, WifiManager as WifiManagerBackend, WifiState
+from openpilot.system.ui.lib.wifi_manager import ConnectStatus, MeteredType, Network, SecurityType, WifiManager as WifiManagerBackend, WifiState, sort_networks
 
 WIFI_MANAGER_SOCKET = "/tmp/wifi_manager.sock"
 WIFI_MANAGER_POLL_SECONDS = 0.5
@@ -355,8 +355,7 @@ class WifiManagerClient:
 
   @property
   def networks(self) -> list[Network]:
-    current_ssid = self._wifi_state.ssid
-    return sorted(self._networks, key=lambda n: (n.ssid != current_ssid, n.ssid not in self._saved_ssids, -n.strength, n.ssid.lower()))
+    return sort_networks(self._networks, self._wifi_state.ssid, self._saved_ssids)
 
   @property
   def wifi_state(self) -> WifiState:
