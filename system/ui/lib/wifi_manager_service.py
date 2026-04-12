@@ -258,7 +258,15 @@ class WifiManagerClient:
       if self._can_connect():
         return
 
+      # Only remove a stale socket — if a daemon is listening, don't clobber it
       if os.path.exists(WIFI_MANAGER_SOCKET):
+        try:
+          with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(1.0)
+            probe.connect(WIFI_MANAGER_SOCKET)
+            return  # daemon is alive, retry will succeed
+        except (ConnectionRefusedError, FileNotFoundError, OSError):
+          pass
         try:
           os.unlink(WIFI_MANAGER_SOCKET)
         except OSError:
