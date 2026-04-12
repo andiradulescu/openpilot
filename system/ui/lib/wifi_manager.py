@@ -272,6 +272,7 @@ class DhcpClient:
       except Exception:
         try:
           self._proc.kill()
+          self._proc.wait()
         except Exception:
           pass
       self._proc = None
@@ -1122,14 +1123,21 @@ class WifiManager:
     self._ipv4_forward = enabled
 
   def set_tethering_active(self, active: bool):
-    self._tethering_active = active
+    if not active:
+      self._tethering_active = False
     def worker():
       if active:
-        self._start_tethering()
-        if not self._ipv4_forward:
-          time.sleep(5)
-          cloudlog.warning("net.ipv4.ip_forward = 0")
-          subprocess.run(["sudo", "sysctl", "net.ipv4.ip_forward=0"], check=False)
+        try:
+          self._start_tethering()
+          if not self._ipv4_forward:
+            time.sleep(5)
+            cloudlog.warning("net.ipv4.ip_forward = 0")
+            subprocess.run(["sudo", "sysctl", "net.ipv4.ip_forward=0"], check=False)
+        except Exception:
+          cloudlog.exception("Failed to start tethering")
+          self._tethering_active = False
+          self._wifi_state = WifiState()
+          self._enqueue_callbacks(self._disconnected)
       else:
         self._stop_tethering()
     threading.Thread(target=worker, daemon=True).start()
