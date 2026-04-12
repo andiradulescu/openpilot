@@ -34,9 +34,13 @@ class NetworkLayoutMici(NavScroller):
 
     def tethering_password_callback(password: str):
       if password:
-        self._tethering_toggle_btn.set_enabled(False)
-        self._tethering_password_btn.set_enabled(False)
         self._wifi_manager.set_tethering_password(password)
+        if self._wifi_manager.is_tethering_active():
+          self._tethering_toggle_btn.set_enabled(False)
+          self._tethering_password_btn.set_enabled(False)
+        else:
+          self._tethering_toggle_btn.set_enabled(True)
+          self._tethering_password_btn.set_enabled(True)
 
     def tethering_password_clicked():
       tethering_password = self._wifi_manager.tethering_password
