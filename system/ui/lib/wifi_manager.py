@@ -769,14 +769,20 @@ class WifiManager:
       if self._user_epoch != epoch:
         return
 
-      self._handle_connected(ssid)
+      if ssid:
+        self._handle_connected(ssid)
 
     elif "CTRL-EVENT-DISCONNECTED" in event:
       if self._tethering_active:
         return  # Ignore disconnects during tethering transitions
 
+      epoch = self._user_epoch
+
       # Don't clear state if we're connecting to something (user action in progress)
       if self._wifi_state.status == ConnectStatus.CONNECTING:
+        return
+
+      if self._user_epoch != epoch:
         return
 
       self._wifi_state = WifiState(ssid=None, status=ConnectStatus.DISCONNECTED)

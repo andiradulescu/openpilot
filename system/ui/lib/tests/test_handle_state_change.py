@@ -245,6 +245,36 @@ class TestThreadRaces:
     assert wm._wifi_state.ssid == "B"
     assert wm._wifi_state.status == ConnectStatus.CONNECTING
 
+  def test_disconnected_does_not_stomp_connecting(self, mocker):
+    """_set_connecting() between CONNECTING check and state write is preserved."""
+    wm = _make_wm(mocker)
+    wm._wifi_state = WifiState(ssid="A", status=ConnectStatus.CONNECTED)
+
+    original_handle = wm._handle_event.__func__
+
+    def intercept(event):
+      # Simulate: just after the CONNECTING check passes, user taps connect
+      if "CTRL-EVENT-DISCONNECTED" in event:
+        wm._set_connecting("B")
+      original_handle(wm, event)
+
+    wm._handle_event = intercept
+    fire(wm, "CTRL-EVENT-DISCONNECTED bssid=aa:bb:cc:dd:ee:ff reason=3")
+
+    assert wm._wifi_state.ssid == "B"
+    assert wm._wifi_state.status == ConnectStatus.CONNECTING
+
+  def test_connected_with_none_ssid_is_ignored(self, mocker):
+    """CONNECTED event with no SSID (STATUS parse fails) should not transition."""
+    wm = _make_wm(mocker)
+    wm._wifi_state = WifiState()  # DISCONNECTED, ssid=None
+    wm._ctrl.request.side_effect = Exception("wpa_supplicant gone")
+
+    fire(wm, "CTRL-EVENT-CONNECTED - Connection to aa:bb:cc:dd:ee:ff completed [id=0]")
+
+    assert wm._wifi_state.status == ConnectStatus.DISCONNECTED
+    wm._dhcp.start.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Full sequences
