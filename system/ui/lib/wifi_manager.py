@@ -412,8 +412,8 @@ class _GsmManager:
 # ---------------------------------------------------------------------------
 
 def _sanitize_for_conf(value: str) -> str:
-  """Remove characters that could break wpa_supplicant.conf quoting."""
-  return value.replace('"', '').replace('\n', '').replace('\r', '').replace('\\', '')
+  """Escape characters that could break wpa_supplicant.conf quoting."""
+  return value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '').replace('\r', '')
 
 
 def _generate_wpa_conf(store: NetworkStore, path: str = WPA_SUPPLICANT_CONF):
