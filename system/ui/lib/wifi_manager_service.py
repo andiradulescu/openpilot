@@ -203,8 +203,14 @@ class WifiManagerClient:
     self._tethering_password = ""
     self._last_seq = 0
 
-    self._wait_for_daemon()
-    self._sync_state()
+    # Daemon is spawned by manager.py on TICI. In non-managed contexts (tests,
+    # CI UI report, dev PC) it may not be running — degrade gracefully instead
+    # of crashing, the poll thread will pick it up if/when it becomes available.
+    try:
+      self._wait_for_daemon()
+      self._sync_state()
+    except Exception:
+      cloudlog.exception("wifi manager daemon not reachable; running in degraded mode")
 
     self._poll_thread = threading.Thread(target=self._poll_state, daemon=True)
     self._poll_thread.start()
