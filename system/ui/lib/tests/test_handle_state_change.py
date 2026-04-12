@@ -4,6 +4,8 @@ Tests the state machine in isolation by constructing a WifiManager with mocked
 wpa_supplicant, then calling _handle_event directly with wpa_supplicant events.
 """
 
+import threading
+
 from pytest_mock import MockerFixture
 
 from openpilot.system.ui.lib import wifi_manager as wifi_manager_module
@@ -21,6 +23,7 @@ def _make_wm(mocker: MockerFixture, saved_networks=None):
   wm._wifi_state = WifiState()
   wm._user_epoch = 0
   wm._callback_queue = []
+  wm._callback_lock = threading.Lock()
   wm._need_auth = []
   wm._activated = []
   wm._disconnected = []

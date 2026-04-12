@@ -1,3 +1,4 @@
+import threading
 import time
 from unittest.mock import MagicMock
 
@@ -13,6 +14,7 @@ def _make_wm():
   wm._tethering_active = False
   wm._wifi_state = WifiState()
   wm._callback_queue = []
+  wm._callback_lock = threading.Lock()
   wm._need_auth = []
   wm._disconnected = []
   wm._activated = []

@@ -475,6 +475,7 @@ class WifiManager:
     self._last_network_scan: float = 0.0
     self._last_connecting_at: float = 0.0
     self._callback_queue: list[Callable] = []
+    self._callback_lock = threading.Lock()
 
     self._tethering_ssid = "weedle"
     if Params is not None:
@@ -696,11 +697,13 @@ class WifiManager:
     _generate_wpa_conf(self._store)
 
   def _enqueue_callbacks(self, cbs: list[Callable], *args):
-    for cb in cbs:
-      self._callback_queue.append(lambda _cb=cb: _cb(*args))
+    with self._callback_lock:
+      for cb in cbs:
+        self._callback_queue.append(lambda _cb=cb: _cb(*args))
 
   def process_callbacks(self):
-    to_run, self._callback_queue = self._callback_queue, []
+    with self._callback_lock:
+      to_run, self._callback_queue = self._callback_queue, []
     for cb in to_run:
       cb()
 
