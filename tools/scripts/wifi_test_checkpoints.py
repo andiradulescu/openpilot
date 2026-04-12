@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
 
 from openpilot.system.ui.lib.wifi_manager_service import WifiManagerClient
@@ -246,7 +246,7 @@ def collect_daemon_snapshot() -> dict:
         "status": int(wifi_state.status),
       },
       "ipv4_address": client.ipv4_address,
-      "saved_ssids": sorted(list(getattr(client, "_saved_ssids", set()))),
+      "saved_ssids": sorted(getattr(client, "_saved_ssids", set())),
       "networks": [
         {
           "ssid": network.ssid,
@@ -273,7 +273,7 @@ def collect_snapshot() -> dict:
     parsed_status = {"raw": wpa_status_raw}
 
   return {
-    "timestamp": datetime.now(timezone.utc).isoformat(),
+    "timestamp": datetime.now(UTC).isoformat(),
     "wpa_status": parsed_status,
     "wpa_status_raw": wpa_status_raw,
     "wpa_networks_raw": run_command(["wpa_cli", "-i", "wlan0", "list_networks"]),
@@ -351,7 +351,7 @@ def run_checkpoint(checkpoint: Checkpoint, log_path: Path):
     "checkpoint": checkpoint.checkpoint_id,
     "result": outcome,
     "notes": notes,
-    "completed_at": datetime.now(timezone.utc).isoformat(),
+    "completed_at": datetime.now(UTC).isoformat(),
   })
 
   print(f"Recorded {checkpoint.checkpoint_id} as {outcome}.")
@@ -396,13 +396,13 @@ def main() -> int:
   if args.log:
     log_path = Path(args.log)
   else:
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     log_path = Path(f"/tmp/wifi_test_checkpoints_{timestamp}.jsonl")
 
   print(f"Logging to {log_path}")
   append_log(log_path, {
     "type": "session_start",
-    "started_at": datetime.now(timezone.utc).isoformat(),
+    "started_at": datetime.now(UTC).isoformat(),
     "hostname": os.uname().nodename,
     "checkpoint_ids": [checkpoint.checkpoint_id for checkpoint in checkpoints],
   })
@@ -414,13 +414,13 @@ def main() -> int:
     print("\nStopped early.")
     append_log(log_path, {
       "type": "session_stop",
-      "stopped_at": datetime.now(timezone.utc).isoformat(),
+      "stopped_at": datetime.now(UTC).isoformat(),
     })
     return 130
 
   append_log(log_path, {
     "type": "session_complete",
-    "completed_at": datetime.now(timezone.utc).isoformat(),
+    "completed_at": datetime.now(UTC).isoformat(),
   })
   print(f"Done. Log saved to {log_path}")
   return 0

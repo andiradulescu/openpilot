@@ -1,8 +1,9 @@
 """Tests for WifiManagerClient snapshot and event handling."""
 import threading
-from unittest.mock import MagicMock
 
-from openpilot.system.ui.lib.wifi_manager import ConnectStatus, MeteredType, Network, SecurityType, WifiState
+from pytest_mock import MockerFixture
+
+from openpilot.system.ui.lib.wifi_manager import ConnectStatus, MeteredType, SecurityType, WifiState
 from openpilot.system.ui.lib.wifi_manager_service import WifiManagerClient, _EventBroker
 
 
@@ -46,10 +47,10 @@ def _snapshot(**overrides):
 # ---------------------------------------------------------------------------
 
 class TestApplySnapshot:
-  def test_connecting_to_disconnected_fires_callback(self):
+  def test_connecting_to_disconnected_fires_callback(self, mocker: MockerFixture):
     client = _make_client()
     client._wifi_state = WifiState(ssid="systeam", status=ConnectStatus.CONNECTING)
-    disconnected = MagicMock()
+    disconnected = mocker.MagicMock()
     client._disconnected.append(disconnected)
 
     client._apply_snapshot(_snapshot())
@@ -57,10 +58,10 @@ class TestApplySnapshot:
 
     disconnected.assert_called_once()
 
-  def test_connected_to_disconnected_fires_callback(self):
+  def test_connected_to_disconnected_fires_callback(self, mocker: MockerFixture):
     client = _make_client()
     client._wifi_state = WifiState(ssid="MyNet", status=ConnectStatus.CONNECTED)
-    disconnected = MagicMock()
+    disconnected = mocker.MagicMock()
     client._disconnected.append(disconnected)
 
     client._apply_snapshot(_snapshot())
@@ -68,9 +69,9 @@ class TestApplySnapshot:
 
     disconnected.assert_called_once()
 
-  def test_disconnected_to_connected_fires_activated(self):
+  def test_disconnected_to_connected_fires_activated(self, mocker: MockerFixture):
     client = _make_client()
-    activated = MagicMock()
+    activated = mocker.MagicMock()
     client._activated.append(activated)
 
     client._apply_snapshot(_snapshot(wifi_state={"ssid": "MyNet", "status": int(ConnectStatus.CONNECTED)}))
@@ -78,10 +79,10 @@ class TestApplySnapshot:
 
     activated.assert_called_once()
 
-  def test_connected_to_connected_does_not_fire_activated(self):
+  def test_connected_to_connected_does_not_fire_activated(self, mocker: MockerFixture):
     client = _make_client()
     client._wifi_state = WifiState(ssid="MyNet", status=ConnectStatus.CONNECTED)
-    activated = MagicMock()
+    activated = mocker.MagicMock()
     client._activated.append(activated)
 
     client._apply_snapshot(_snapshot(wifi_state={"ssid": "OtherNet", "status": int(ConnectStatus.CONNECTED)}))
@@ -89,10 +90,10 @@ class TestApplySnapshot:
 
     activated.assert_not_called()
 
-  def test_disconnected_to_disconnected_does_not_fire(self):
+  def test_disconnected_to_disconnected_does_not_fire(self, mocker: MockerFixture):
     client = _make_client()
     client._wifi_state = WifiState(ssid=None, status=ConnectStatus.DISCONNECTED)
-    disconnected = MagicMock()
+    disconnected = mocker.MagicMock()
     client._disconnected.append(disconnected)
 
     client._apply_snapshot(_snapshot())
@@ -100,10 +101,10 @@ class TestApplySnapshot:
 
     disconnected.assert_not_called()
 
-  def test_identical_snapshot_fires_no_callbacks(self):
+  def test_identical_snapshot_fires_no_callbacks(self, mocker: MockerFixture):
     client = _make_client()
-    disconnected = MagicMock()
-    networks_updated = MagicMock()
+    disconnected = mocker.MagicMock()
+    networks_updated = mocker.MagicMock()
     client._disconnected.append(disconnected)
     client._networks_updated.append(networks_updated)
 
@@ -113,9 +114,9 @@ class TestApplySnapshot:
     disconnected.assert_not_called()
     networks_updated.assert_not_called()
 
-  def test_network_list_change_fires_networks_updated(self):
+  def test_network_list_change_fires_networks_updated(self, mocker: MockerFixture):
     client = _make_client()
-    networks_updated = MagicMock()
+    networks_updated = mocker.MagicMock()
     client._networks_updated.append(networks_updated)
 
     client._apply_snapshot(_snapshot(networks=[
@@ -125,9 +126,9 @@ class TestApplySnapshot:
 
     networks_updated.assert_called_once()
 
-  def test_saved_ssids_change_fires_networks_updated(self):
+  def test_saved_ssids_change_fires_networks_updated(self, mocker: MockerFixture):
     client = _make_client()
-    networks_updated = MagicMock()
+    networks_updated = mocker.MagicMock()
     client._networks_updated.append(networks_updated)
 
     client._apply_snapshot(_snapshot(saved_ssids=["MyNet"]))
@@ -152,9 +153,9 @@ class TestApplySnapshot:
 # ---------------------------------------------------------------------------
 
 class TestApplyEvents:
-  def test_need_auth_event(self):
+  def test_need_auth_event(self, mocker: MockerFixture):
     client = _make_client()
-    need_auth = MagicMock()
+    need_auth = mocker.MagicMock()
     client._need_auth.append(need_auth)
 
     client._apply_events([{"seq": 1, "type": "need_auth", "payload": {"ssid": "LockedNet"}}])
@@ -162,10 +163,10 @@ class TestApplyEvents:
 
     need_auth.assert_called_once_with("LockedNet")
 
-  def test_activated_event_deferred_to_snapshot(self):
+  def test_activated_event_deferred_to_snapshot(self, mocker: MockerFixture):
     """activated events are handled by snapshot diff, not _apply_events."""
     client = _make_client()
-    activated = MagicMock()
+    activated = mocker.MagicMock()
     client._activated.append(activated)
 
     client._apply_events([{"seq": 1, "type": "activated", "payload": {}}])
@@ -174,9 +175,9 @@ class TestApplyEvents:
     activated.assert_not_called()
     assert client._last_seq == 1  # seq is still tracked
 
-  def test_forgotten_event(self):
+  def test_forgotten_event(self, mocker: MockerFixture):
     client = _make_client()
-    forgotten = MagicMock()
+    forgotten = mocker.MagicMock()
     client._forgotten.append(forgotten)
 
     client._apply_events([{"seq": 1, "type": "forgotten", "payload": {"ssid": "OldNet"}}])
@@ -184,10 +185,10 @@ class TestApplyEvents:
 
     forgotten.assert_called_once_with("OldNet")
 
-  def test_disconnected_event_deferred_to_snapshot(self):
+  def test_disconnected_event_deferred_to_snapshot(self, mocker: MockerFixture):
     """disconnected events are handled by snapshot diff, not _apply_events."""
     client = _make_client()
-    disconnected = MagicMock()
+    disconnected = mocker.MagicMock()
     client._disconnected.append(disconnected)
 
     client._apply_events([{"seq": 1, "type": "disconnected", "payload": {}}])
@@ -196,10 +197,10 @@ class TestApplyEvents:
     disconnected.assert_not_called()
     assert client._last_seq == 1
 
-  def test_snapshot_plus_event_fires_activated_once(self):
+  def test_snapshot_plus_event_fires_activated_once(self, mocker: MockerFixture):
     """When snapshot shows CONNECTED and activated event exists, callback fires once."""
     client = _make_client()
-    activated = MagicMock()
+    activated = mocker.MagicMock()
     client._activated.append(activated)
 
     client._apply_snapshot(_snapshot(wifi_state={"ssid": "Home", "status": int(ConnectStatus.CONNECTED)}))
@@ -216,9 +217,9 @@ class TestApplyEvents:
     ])
     assert client._last_seq == 5
 
-  def test_need_auth_without_ssid_ignored(self):
+  def test_need_auth_without_ssid_ignored(self, mocker: MockerFixture):
     client = _make_client()
-    need_auth = MagicMock()
+    need_auth = mocker.MagicMock()
     client._need_auth.append(need_auth)
 
     client._apply_events([{"seq": 1, "type": "need_auth", "payload": {}}])

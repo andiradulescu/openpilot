@@ -1,7 +1,8 @@
 """Tests for NetworkStore (saved WiFi network persistence)."""
 import os
 import tempfile
-from unittest.mock import patch
+
+from pytest_mock import MockerFixture
 
 from openpilot.system.ui.lib.wifi_manager import NetworkStore
 
@@ -9,44 +10,52 @@ from openpilot.system.ui.lib.wifi_manager import NetworkStore
 class TestNetworkStore:
   def setup_method(self):
     self.tmpdir = tempfile.mkdtemp()
-    with patch("subprocess.run"):
-      self.store = NetworkStore(directory=self.tmpdir)
 
-  def test_empty_store(self):
-    assert self.store.get_all() == {}
+  def _make_store(self, mocker: MockerFixture):
+    mocker.patch("subprocess.run")
+    return NetworkStore(directory=self.tmpdir)
 
-  def test_remove_nonexistent_returns_false(self):
-    assert self.store.remove("DoesNotExist") is False
+  def test_empty_store(self, mocker: MockerFixture):
+    store = self._make_store(mocker)
+    assert store.get_all() == {}
 
-  def test_remove_existing_returns_true(self):
-    self.store._networks["TestNet"] = {"psk": "pass123", "metered": 0, "hidden": False, "uuid": "abc"}
-    with patch("subprocess.run") as mock_run:
-      result = self.store.remove("TestNet")
+  def test_remove_nonexistent_returns_false(self, mocker: MockerFixture):
+    store = self._make_store(mocker)
+    assert store.remove("DoesNotExist") is False
+
+  def test_remove_existing_returns_true(self, mocker: MockerFixture):
+    store = self._make_store(mocker)
+    store._networks["TestNet"] = {"psk": "pass123", "metered": 0, "hidden": False, "uuid": "abc"}
+    mock_run = mocker.patch("subprocess.run")
+    result = store.remove("TestNet")
     assert result is True
-    assert "TestNet" not in self.store._networks
+    assert "TestNet" not in store._networks
     mock_run.assert_called_once()
     args = mock_run.call_args[0][0]
     assert args[:3] == ["sudo", "rm", "-f"]
 
-  def test_remove_uses_check_false(self):
+  def test_remove_uses_check_false(self, mocker: MockerFixture):
     """Verify remove uses check=False, not check=True (rm -f handles missing files)."""
-    self.store._networks["TestNet"] = {"psk": "x", "metered": 0, "hidden": False, "uuid": "abc"}
-    with patch("subprocess.run") as mock_run:
-      self.store.remove("TestNet")
+    store = self._make_store(mocker)
+    store._networks["TestNet"] = {"psk": "x", "metered": 0, "hidden": False, "uuid": "abc"}
+    mock_run = mocker.patch("subprocess.run")
+    store.remove("TestNet")
     kwargs = mock_run.call_args[1]
     assert kwargs.get("check") is False, "remove() should use check=False since rm -f handles missing files"
 
-  def test_get_returns_copy(self):
-    self.store._networks["TestNet"] = {"psk": "pass123", "metered": 0, "hidden": False, "uuid": "abc"}
-    entry = self.store.get("TestNet")
+  def test_get_returns_copy(self, mocker: MockerFixture):
+    store = self._make_store(mocker)
+    store._networks["TestNet"] = {"psk": "pass123", "metered": 0, "hidden": False, "uuid": "abc"}
+    entry = store.get("TestNet")
     assert entry is not None
     entry["psk"] = "CHANGED"
-    assert self.store.get("TestNet")["psk"] == "pass123"
+    assert store.get("TestNet")["psk"] == "pass123"
 
-  def test_get_nonexistent_returns_none(self):
-    assert self.store.get("DoesNotExist") is None
+  def test_get_nonexistent_returns_none(self, mocker: MockerFixture):
+    store = self._make_store(mocker)
+    assert store.get("DoesNotExist") is None
 
-  def test_load_reads_nmconnection_files(self):
+  def test_load_reads_nmconnection_files(self, mocker: MockerFixture):
     """Write a real .nmconnection file and verify it loads."""
     content = """\
 [connection]
@@ -70,8 +79,8 @@ method=auto
     with open(fpath, "w") as f:
       f.write(content)
 
-    with patch("openpilot.system.ui.lib.wifi_manager.sudo_read", return_value=content):
-      store = NetworkStore(directory=self.tmpdir)
+    mocker.patch("openpilot.system.ui.lib.wifi_manager.sudo_read", return_value=content)
+    store = NetworkStore(directory=self.tmpdir)
 
     entry = store.get("MyWifi")
     assert entry is not None
@@ -79,7 +88,7 @@ method=auto
     assert entry["uuid"] == "test-uuid-123"
     assert entry["metered"] == 0
 
-  def test_load_skips_ap_mode(self):
+  def test_load_skips_ap_mode(self, mocker: MockerFixture):
     content = """\
 [connection]
 id=Hotspot
@@ -94,7 +103,7 @@ mode=ap
     with open(fpath, "w") as f:
       f.write(content)
 
-    with patch("openpilot.system.ui.lib.wifi_manager.sudo_read", return_value=content):
-      store = NetworkStore(directory=self.tmpdir)
+    mocker.patch("openpilot.system.ui.lib.wifi_manager.sudo_read", return_value=content)
+    store = NetworkStore(directory=self.tmpdir)
 
     assert store.get("Hotspot") is None
