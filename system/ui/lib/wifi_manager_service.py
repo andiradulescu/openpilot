@@ -244,6 +244,15 @@ class WifiManagerClient:
     except Exception:
       return False
 
+  def _try_request(self, command: str, **payload) -> bool:
+    """Attempt an RPC request; log and return False if the daemon is unreachable."""
+    try:
+      self._request(command, **payload)
+      return True
+    except Exception:
+      cloudlog.exception(f"wifi manager request {command!r} failed")
+      return False
+
   def _wait_for_daemon(self):
     """Wait for the manager-spawned wifi_manager daemon to be reachable."""
     deadline = time.monotonic() + WIFI_MANAGER_DAEMON_WAIT_SECONDS
@@ -370,23 +379,17 @@ class WifiManagerClient:
   def connect_to_network(self, ssid: str, password: str, hidden: bool = False):
     prev = self._wifi_state
     self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTING)
-    try:
-      self._request("connect_to_network", ssid=ssid, password=password, hidden=hidden)
-    except Exception:
+    if not self._try_request("connect_to_network", ssid=ssid, password=password, hidden=hidden):
       self._wifi_state = prev
-      raise
 
   def forget_connection(self, ssid: str):
-    self._request("forget_connection", ssid=ssid)
+    self._try_request("forget_connection", ssid=ssid)
 
   def activate_connection(self, ssid: str):
     prev = self._wifi_state
     self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTING)
-    try:
-      self._request("activate_connection", ssid=ssid)
-    except Exception:
+    if not self._try_request("activate_connection", ssid=ssid):
       self._wifi_state = prev
-      raise
 
   def is_tethering_active(self) -> bool:
     return self._tethering_active
@@ -395,20 +398,20 @@ class WifiManagerClient:
     return ssid in self._saved_ssids
 
   def set_tethering_password(self, password: str):
-    self._request("set_tethering_password", password=password)
+    self._try_request("set_tethering_password", password=password)
 
   def set_ipv4_forward(self, enabled: bool):
-    self._request("set_ipv4_forward", enabled=enabled)
+    self._try_request("set_ipv4_forward", enabled=enabled)
 
   def set_tethering_active(self, active: bool):
     self._tethering_active = active
-    self._request("set_tethering_active", active=active)
+    self._try_request("set_tethering_active", active=active)
 
   def set_current_network_metered(self, metered: MeteredType):
-    self._request("set_current_network_metered", metered=int(metered))
+    self._try_request("set_current_network_metered", metered=int(metered))
 
   def update_gsm_settings(self, roaming: bool, apn: str, metered: bool):
-    self._request("update_gsm_settings", roaming=roaming, apn=apn, metered=metered)
+    self._try_request("update_gsm_settings", roaming=roaming, apn=apn, metered=metered)
 
   def stop(self):
     self._exit = True
