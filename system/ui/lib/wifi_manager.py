@@ -450,6 +450,22 @@ def _generate_wpa_conf(store: NetworkStore, path: str = WPA_SUPPLICANT_CONF):
 
 # ---------------------------------------------------------------------------
 # WifiManager
+def _get_upstream_iface() -> str:
+  """Return the non-wlan default route interface (e.g. wwan0, rmnet_data0, eth0)."""
+  try:
+    result = subprocess.run(["ip", "-4", "route", "show", "default"],
+                            capture_output=True, text=True, timeout=2)
+    for line in result.stdout.strip().split("\n"):
+      parts = line.split()
+      if "dev" in parts:
+        iface = parts[parts.index("dev") + 1]
+        if not iface.startswith("wlan"):
+          return iface
+  except Exception:
+    pass
+  return "wwan0"
+
+
 # ---------------------------------------------------------------------------
 
 class WifiManager:
@@ -469,6 +485,7 @@ class WifiManager:
     self._current_network_metered: MeteredType = MeteredType.UNKNOWN
     self._ipv4_forward = False
     self._tethering_active = False
+    self._tethering_upstream_iface: str = ""
     self._dnsmasq_proc: subprocess.Popen | None = None
     self._pending_connection: PendingConnection | None = None
 
@@ -1179,8 +1196,9 @@ class WifiManager:
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
       start_new_session=True)
 
-    # NAT
-    subprocess.run(["sudo", "iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "wwan0", "-j", "MASQUERADE"], check=False)
+    # NAT — use whichever upstream interface has the default route
+    self._tethering_upstream_iface = _get_upstream_iface()
+    subprocess.run(["sudo", "iptables", "-t", "nat", "-A", "POSTROUTING", "-o", self._tethering_upstream_iface, "-j", "MASQUERADE"], check=False)
     if self._ipv4_forward:
       subprocess.run(["sudo", "sysctl", "net.ipv4.ip_forward=1"], check=False)
 
@@ -1208,7 +1226,8 @@ class WifiManager:
       self._dnsmasq_proc = None
 
     # Remove NAT
-    subprocess.run(["sudo", "iptables", "-t", "nat", "-D", "POSTROUTING", "-o", "wwan0", "-j", "MASQUERADE"], check=False)
+    iface = self._tethering_upstream_iface or "wwan0"
+    subprocess.run(["sudo", "iptables", "-t", "nat", "-D", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"], check=False)
 
     # Close control socket
     if self._ctrl:
