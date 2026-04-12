@@ -162,7 +162,8 @@ class TestApplyEvents:
 
     need_auth.assert_called_once_with("LockedNet")
 
-  def test_activated_event(self):
+  def test_activated_event_deferred_to_snapshot(self):
+    """activated events are handled by snapshot diff, not _apply_events."""
     client = _make_client()
     activated = MagicMock()
     client._activated.append(activated)
@@ -170,7 +171,8 @@ class TestApplyEvents:
     client._apply_events([{"seq": 1, "type": "activated", "payload": {}}])
     client.process_callbacks()
 
-    activated.assert_called_once()
+    activated.assert_not_called()
+    assert client._last_seq == 1  # seq is still tracked
 
   def test_forgotten_event(self):
     client = _make_client()
@@ -182,7 +184,8 @@ class TestApplyEvents:
 
     forgotten.assert_called_once_with("OldNet")
 
-  def test_disconnected_event(self):
+  def test_disconnected_event_deferred_to_snapshot(self):
+    """disconnected events are handled by snapshot diff, not _apply_events."""
     client = _make_client()
     disconnected = MagicMock()
     client._disconnected.append(disconnected)
@@ -190,17 +193,20 @@ class TestApplyEvents:
     client._apply_events([{"seq": 1, "type": "disconnected", "payload": {}}])
     client.process_callbacks()
 
-    disconnected.assert_called_once()
+    disconnected.assert_not_called()
+    assert client._last_seq == 1
 
-  def test_networks_updated_event(self):
+  def test_snapshot_plus_event_fires_activated_once(self):
+    """When snapshot shows CONNECTED and activated event exists, callback fires once."""
     client = _make_client()
-    networks_updated = MagicMock()
-    client._networks_updated.append(networks_updated)
+    activated = MagicMock()
+    client._activated.append(activated)
 
-    client._apply_events([{"seq": 1, "type": "networks_updated", "payload": {}}])
+    client._apply_snapshot(_snapshot(wifi_state={"ssid": "Home", "status": int(ConnectStatus.CONNECTED)}))
+    client._apply_events([{"seq": 1, "type": "activated", "payload": {}}])
     client.process_callbacks()
 
-    networks_updated.assert_called_once()
+    activated.assert_called_once()
 
   def test_updates_last_seq(self):
     client = _make_client()

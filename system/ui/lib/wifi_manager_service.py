@@ -324,18 +324,15 @@ class WifiManagerClient:
       self._last_seq = max(self._last_seq, int(event.get("seq", 0)))
       payload = event.get("payload", {})
       event_type = event.get("type")
+      # need_auth and forgotten carry payload the snapshot can't express
       if event_type == "need_auth":
         ssid = payload.get("ssid")
         if ssid is not None:
           self._enqueue_callbacks(self._need_auth, ssid)
-      elif event_type == "activated":
-        self._enqueue_callbacks(self._activated)
       elif event_type == "forgotten":
         self._enqueue_callbacks(self._forgotten, payload.get("ssid"))
-      elif event_type == "networks_updated":
-        self._enqueue_callbacks(self._networks_updated, self.networks)
-      elif event_type == "disconnected":
-        self._enqueue_callbacks(self._disconnected)
+      # activated, disconnected, networks_updated are handled by
+      # _apply_snapshot state diff — skip here to avoid double-firing
 
   def _sync_state(self):
     response = self._request("get_state", since_seq=self._last_seq)
