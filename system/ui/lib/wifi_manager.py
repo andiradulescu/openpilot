@@ -1048,9 +1048,9 @@ class WifiManager:
         return
 
       try:
-        net_id = self._find_network_id(ssid)
-        if net_id is not None:
-          self._ctrl.request(f"SELECT_NETWORK {net_id}")
+        ids = self._list_network_ids(ssid)
+        if ids:
+          self._ctrl.request(f"SELECT_NETWORK {ids[0]}")
         else:
           # Network not in wpa_supplicant's runtime list — add from store
           entry = self._store.get(ssid)
@@ -1095,11 +1095,6 @@ class WifiManager:
     except Exception:
       cloudlog.exception("Failed to list networks")
       return []
-
-  def _find_network_id(self, ssid: str) -> str | None:
-    """Find first wpa_supplicant network id for given SSID."""
-    ids = self._list_network_ids(ssid)
-    return ids[0] if ids else None
 
   def _remove_wpa_network(self, ssid: str):
     """Remove all wpa_supplicant network entries matching SSID."""
