@@ -180,8 +180,10 @@ def flags_to_security_type(flags: str) -> SecurityType:
   """
   flags_upper = flags.upper()
 
-  # Enterprise / 802.1X → unsupported
+  # Enterprise / 802.1X / WEP → unsupported
   if "EAP" in flags_upper or "802.1X" in flags_upper:
+    return SecurityType.UNSUPPORTED
+  if "WEP" in flags_upper:
     return SecurityType.UNSUPPORTED
 
   if "WPA2-PSK" in flags_upper or "RSN-PSK" in flags_upper:
