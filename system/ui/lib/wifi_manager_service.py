@@ -331,7 +331,8 @@ class WifiManagerClient:
       # need_auth and forgotten carry payload the snapshot can't express
       if event_type == "need_auth":
         ssid = payload.get("ssid")
-        if ssid is not None:
+        # Skip stale auth failures if snapshot already shows connected to this SSID
+        if ssid is not None and not (self._wifi_state.status == ConnectStatus.CONNECTED and self._wifi_state.ssid == ssid):
           self._enqueue_callbacks(self._need_auth, ssid)
       elif event_type == "forgotten":
         self._enqueue_callbacks(self._forgotten, payload.get("ssid"))
