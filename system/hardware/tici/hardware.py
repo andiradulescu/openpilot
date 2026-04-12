@@ -278,7 +278,11 @@ class Tici(HardwareBase):
           safe = ssid.replace("/", "_").replace("\0", "")
           fpath = os.path.join(NM_CONNECTIONS_DIR, f"{safe}.nmconnection")
           cp = configparser.ConfigParser(interpolation=None)
-          cp.read(fpath)
+          raw = sudo_read(fpath)
+          if raw:
+            cp.read_string(raw)
+          else:
+            cp.read(fpath)
           metered = cp.getint("connection", "metered", fallback=0)
           if metered == 1:  # YES
             return True
