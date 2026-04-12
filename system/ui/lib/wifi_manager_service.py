@@ -303,11 +303,17 @@ class WifiManagerClient:
     self._apply_events(response.get("events", []))
 
   def _poll_state(self):
+    was_failing = False
     while not self._exit:
       try:
         self._sync_state()
+        if was_failing:
+          cloudlog.info("wifi manager client poll recovered")
+          was_failing = False
       except Exception:
-        cloudlog.exception("wifi manager client poll failed")
+        if not was_failing:
+          cloudlog.exception("wifi manager client poll failed")
+          was_failing = True
         self._last_seq = 0
       time.sleep(WIFI_MANAGER_POLL_SECONDS)
 
