@@ -1197,8 +1197,15 @@ class WifiManager:
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
       start_new_session=True)
 
-    # NAT — use whichever upstream interface has the default route
+    # NAT — use whichever upstream interface has the default route.
+    # Flush any stale MASQUERADE rules from previous sessions first (idempotent).
     self._tethering_upstream_iface = _get_upstream_iface()
+    for iface in {"wwan0", "rmnet_data0", "eth0", self._tethering_upstream_iface}:
+      for _ in range(4):
+        result = subprocess.run(["sudo", "iptables", "-t", "nat", "-D", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"],
+                                capture_output=True, check=False)
+        if result.returncode != 0:
+          break
     subprocess.run(["sudo", "iptables", "-t", "nat", "-A", "POSTROUTING", "-o", self._tethering_upstream_iface, "-j", "MASQUERADE"], check=False)
     if self._ipv4_forward:
       subprocess.run(["sudo", "sysctl", "net.ipv4.ip_forward=1"], check=False)
