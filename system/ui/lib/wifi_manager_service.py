@@ -91,7 +91,14 @@ class _EventBroker:
 class _WifiRPCServer(socketserver.ThreadingUnixStreamServer):
   def __init__(self, manager: WifiManagerBackend, broker: _EventBroker):
     if os.path.exists(WIFI_MANAGER_SOCKET):
-      os.unlink(WIFI_MANAGER_SOCKET)
+      # Check if another daemon is already listening before removing
+      try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+          probe.settimeout(1.0)
+          probe.connect(WIFI_MANAGER_SOCKET)
+          raise RuntimeError("wifi manager daemon already running")
+      except (ConnectionRefusedError, FileNotFoundError, OSError):
+        os.unlink(WIFI_MANAGER_SOCKET)
     self.manager = manager
     self.broker = broker
     self._request_lock = threading.Lock()
