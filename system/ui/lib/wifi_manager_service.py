@@ -200,8 +200,6 @@ class WifiManagerClient:
     self._ipv4_address = ""
     self._current_network_metered = MeteredType.UNKNOWN
     self._tethering_active = False
-    self._tethering_pending = False
-    self._tethering_pending_at: float = 0.0
     self._tethering_password = ""
     self._last_seq = 0
 
@@ -265,14 +263,7 @@ class WifiManagerClient:
     self._wifi_state = state["wifi_state"]
     self._ipv4_address = state["ipv4_address"]
     self._current_network_metered = state["current_network_metered"]
-    if self._tethering_pending:
-      if state["tethering_active"] == self._tethering_active:
-        self._tethering_pending = False
-      elif time.monotonic() - self._tethering_pending_at > 10.0:
-        self._tethering_pending = False
-        self._tethering_active = state["tethering_active"]
-    else:
-      self._tethering_active = state["tethering_active"]
+    self._tethering_active = state["tethering_active"]
     self._tethering_password = state["tethering_password"]
 
     if previous_networks != self._networks or previous_saved_ssids != self._saved_ssids:
@@ -399,8 +390,6 @@ class WifiManagerClient:
 
   def set_tethering_active(self, active: bool):
     self._tethering_active = active
-    self._tethering_pending = True
-    self._tethering_pending_at = time.monotonic()
     self._request("set_tethering_active", active=active)
 
   def set_current_network_metered(self, metered: MeteredType):

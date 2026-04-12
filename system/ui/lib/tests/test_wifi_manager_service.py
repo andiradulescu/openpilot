@@ -22,7 +22,6 @@ def _make_client():
   client._ipv4_address = ""
   client._current_network_metered = MeteredType.UNKNOWN
   client._tethering_active = False
-  client._tethering_pending = False
   client._tethering_password = ""
   client._last_seq = 0
   return client

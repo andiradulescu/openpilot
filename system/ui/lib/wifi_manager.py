@@ -1130,8 +1130,7 @@ class WifiManager:
     self._ipv4_forward = enabled
 
   def set_tethering_active(self, active: bool):
-    if not active:
-      self._tethering_active = False
+    self._tethering_active = active
     def worker():
       if active:
         try:
@@ -1218,7 +1217,6 @@ class WifiManager:
     except Exception:
       cloudlog.exception("Failed to reconnect wpa_ctrl after tethering start")
 
-    self._tethering_active = True
     self._wifi_state = WifiState(ssid=self._tethering_ssid, status=ConnectStatus.CONNECTED)
     self._ipv4_address = TETHERING_IP_ADDRESS
     self._enqueue_callbacks(self._activated)
