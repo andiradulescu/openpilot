@@ -3,8 +3,6 @@ import json
 import os
 import socket
 import socketserver
-import subprocess
-import sys
 import threading
 import time
 from collections import deque
@@ -191,8 +189,6 @@ def run_daemon():
 
 
 class WifiManagerClient:
-  _spawn_lock = threading.Lock()
-
   def __init__(self):
     self._exit = False
     self._callback_queue: list[Callable] = []
@@ -215,7 +211,7 @@ class WifiManagerClient:
     self._tethering_password = ""
     self._last_seq = 0
 
-    self._ensure_daemon()
+    self._wait_for_daemon()
     self._sync_state()
 
     self._poll_thread = threading.Thread(target=self._poll_state, daemon=True)
@@ -250,43 +246,14 @@ class WifiManagerClient:
     except Exception:
       return False
 
-  def _ensure_daemon(self):
-    if self._can_connect():
-      return
-
-    with self._spawn_lock:
+  def _wait_for_daemon(self):
+    """Wait for the manager-spawned wifi_manager daemon to be reachable."""
+    deadline = time.monotonic() + WIFI_MANAGER_DAEMON_WAIT_SECONDS
+    while time.monotonic() < deadline:
       if self._can_connect():
         return
-
-      # Only remove a stale socket — if a daemon is listening, don't clobber it
-      if os.path.exists(WIFI_MANAGER_SOCKET):
-        try:
-          with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
-            probe.settimeout(1.0)
-            probe.connect(WIFI_MANAGER_SOCKET)
-            return  # daemon is alive, retry will succeed
-        except (ConnectionRefusedError, FileNotFoundError, OSError):
-          pass
-        try:
-          os.unlink(WIFI_MANAGER_SOCKET)
-        except OSError:
-          pass
-
-      subprocess.Popen(
-        [sys.executable, "-m", "openpilot.system.ui.lib.wifi_manager_service", "--daemon"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-      )
-
-      deadline = time.monotonic() + WIFI_MANAGER_DAEMON_WAIT_SECONDS
-      while time.monotonic() < deadline:
-        if self._can_connect():
-          return
-        time.sleep(0.1)
-
-    raise RuntimeError("wifi manager daemon did not start")
+      time.sleep(0.1)
+    raise RuntimeError("wifi manager daemon not available")
 
   def _enqueue_callbacks(self, cbs: list[Callable], *args):
     with self._callback_lock:
@@ -351,10 +318,6 @@ class WifiManagerClient:
       except Exception:
         cloudlog.exception("wifi manager client poll failed")
         self._last_seq = 0
-        try:
-          self._ensure_daemon()
-        except Exception:
-          pass
       time.sleep(WIFI_MANAGER_POLL_SECONDS)
 
   def add_callbacks(self, need_auth: Callable[[str], None] | None = None,
@@ -459,8 +422,6 @@ class WifiManagerClient:
 
 
 def main():
-  if "--daemon" not in sys.argv:
-    raise SystemExit("wifi_manager_service is only meant to run as a daemon")
   run_daemon()
 
 
