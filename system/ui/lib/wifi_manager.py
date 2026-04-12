@@ -707,10 +707,10 @@ class WifiManager:
     if pending is None:
       return
 
-    self._pending_connection = None
     if ssid != pending.ssid or pending.epoch != self._user_epoch:
       return
 
+    self._pending_connection = None
     self._store.save_network(ssid, psk=pending.password, hidden=pending.hidden)
     _generate_wpa_conf(self._store)
 
