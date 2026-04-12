@@ -1172,7 +1172,8 @@ class WifiManager:
              "network={", f'  ssid="{safe_tether_ssid}"', "  mode=2",
              "  frequency=2437", "  key_mgmt=WPA-PSK", f'  psk="{safe_tether_psk}"', "}", ""]
     ap_conf = "\n".join(lines)
-    with open(WPA_AP_CONF, "w") as f:
+    fd = os.open(WPA_AP_CONF, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
       f.write(ap_conf)
 
     # Start AP wpa_supplicant
