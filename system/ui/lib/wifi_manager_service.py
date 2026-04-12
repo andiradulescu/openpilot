@@ -410,15 +410,25 @@ class WifiManagerClient:
       cloudlog.exception("Failed to set wifi manager active state")
 
   def connect_to_network(self, ssid: str, password: str, hidden: bool = False):
+    prev = self._wifi_state
     self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTING)
-    self._request("connect_to_network", ssid=ssid, password=password, hidden=hidden)
+    try:
+      self._request("connect_to_network", ssid=ssid, password=password, hidden=hidden)
+    except Exception:
+      self._wifi_state = prev
+      raise
 
   def forget_connection(self, ssid: str):
     self._request("forget_connection", ssid=ssid)
 
   def activate_connection(self, ssid: str):
+    prev = self._wifi_state
     self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTING)
-    self._request("activate_connection", ssid=ssid)
+    try:
+      self._request("activate_connection", ssid=ssid)
+    except Exception:
+      self._wifi_state = prev
+      raise
 
   def is_tethering_active(self) -> bool:
     return self._tethering_active
