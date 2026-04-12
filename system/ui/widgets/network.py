@@ -26,7 +26,6 @@ except Exception:
   ui_state = None
   PrimeType = None
 
-NM_DEVICE_STATE_NEED_AUTH = 60
 MIN_PASSWORD_LENGTH = 8
 MAX_PASSWORD_LENGTH = 64
 ITEM_HEIGHT = 160
@@ -304,12 +303,9 @@ class WifiManagerUI(Widget):
 
   def show_event(self):
     super().show_event()
-    # start/stop scanning when widget is visible
-    self._wifi_manager.set_active(True)
 
   def hide_event(self):
     super().hide_event()
-    self._wifi_manager.set_active(False)
 
   def _load_icons(self):
     for icon in STRENGTH_ICONS + ["icons/checkmark.png", "icons/circled_slash.png", "icons/lock_closed.png"]:

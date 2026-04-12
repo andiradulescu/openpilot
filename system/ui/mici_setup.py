@@ -297,7 +297,6 @@ class NetworkSetupPageBase(Scroller):
     super().__init__()
 
     self._wifi_manager = WifiManager()
-    self._wifi_manager.set_active(True)
     self._network_monitor = network_monitor
     self._custom_software = False
     self._wifi_ui = WifiUIMici(self._wifi_manager)
@@ -337,8 +336,6 @@ class NetworkSetupPageBase(Scroller):
 
   def show_event(self):
     super().show_event()
-    # make sure we populate strength and ip immediately if already have wifi
-    self._wifi_manager.set_active(True)
     self._prev_has_internet = self._has_internet
     self._prev_wifi_connected = self._wifi_manager.wifi_state.status == ConnectStatus.CONNECTED
     self._pending_has_internet_scroll = None

@@ -89,8 +89,6 @@ class _EventBroker:
 
 
 class _WifiRPCServer(socketserver.ThreadingUnixStreamServer):
-  allow_reuse_address = True
-
   def __init__(self, manager: WifiManagerBackend, broker: _EventBroker):
     if os.path.exists(WIFI_MANAGER_SOCKET):
       os.unlink(WIFI_MANAGER_SOCKET)
@@ -109,9 +107,6 @@ class _WifiRPCServer(socketserver.ThreadingUnixStreamServer):
           "snapshot": _serialize_snapshot(self.manager),
           "events": self.broker.since(since_seq),
         }
-      if command == "set_active":
-        self.manager.set_active(bool(request["active"]))
-        return {"ok": True}
       if command == "connect_to_network":
         self.manager.connect_to_network(str(request["ssid"]), str(request.get("password", "")), bool(request.get("hidden", False)))
         return {"ok": True}
@@ -177,25 +172,15 @@ def run_daemon():
 
   server = _WifiRPCServer(manager, broker)
 
-  cleaned_up = False
-
-  def cleanup():
-    nonlocal cleaned_up
-    if cleaned_up:
-      return
-    cleaned_up = True
+  cloudlog.info("wifi_manager daemon started")
+  try:
+    server.serve_forever(poll_interval=0.5)
+  finally:
     stop_event.set()
     server.server_close()
     manager.stop()
     if os.path.exists(WIFI_MANAGER_SOCKET):
       os.unlink(WIFI_MANAGER_SOCKET)
-
-  atexit.register(cleanup)
-  cloudlog.info("wifi_manager daemon started")
-  try:
-    server.serve_forever(poll_interval=0.5)
-  finally:
-    cleanup()
 
 
 class WifiManagerClient:
@@ -402,12 +387,6 @@ class WifiManagerClient:
       to_run, self._callback_queue = self._callback_queue, []
     for cb in to_run:
       cb()
-
-  def set_active(self, active: bool):
-    try:
-      self._request("set_active", active=active)
-    except Exception:
-      cloudlog.exception("Failed to set wifi manager active state")
 
   def connect_to_network(self, ssid: str, password: str, hidden: bool = False):
     prev = self._wifi_state

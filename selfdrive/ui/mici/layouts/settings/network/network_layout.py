@@ -15,7 +15,6 @@ class NetworkLayoutMici(NavScroller):
     super().__init__()
 
     self._wifi_manager = WifiManager()
-    self._wifi_manager.set_active(False)
     self._wifi_ui = WifiUIMici(self._wifi_manager)
 
     self._wifi_manager.add_callbacks(
@@ -108,14 +107,12 @@ class NetworkLayoutMici(NavScroller):
 
   def show_event(self):
     super().show_event()
-    self._wifi_manager.set_active(True)
 
     # Process wifi callbacks while at any point in the nav stack
     gui_app.add_nav_stack_tick(self._wifi_manager.process_callbacks)
 
   def hide_event(self):
     super().hide_event()
-    self._wifi_manager.set_active(False)
 
     gui_app.remove_nav_stack_tick(self._wifi_manager.process_callbacks)
 

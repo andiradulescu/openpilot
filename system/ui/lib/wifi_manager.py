@@ -33,8 +33,6 @@ NM_CONNECTIONS_DIR = "/data/etc/NetworkManager/system-connections"
 
 WPA_AP_CONF = "/tmp/wpa_supplicant_ap.conf"
 
-DEBUG = False
-
 
 def normalize_ssid(ssid: str) -> str:
   return ssid.replace("\u2019", "'")  # for iPhone hotspots
@@ -237,10 +235,6 @@ class NetworkStore:
     with self._lock:
       return set(self._networks.keys())
 
-  def get_psk(self, ssid: str) -> str:
-    with self._lock:
-      entry = self._networks.get(ssid)
-      return entry.get("psk", "") if entry else ""
 
 
 # ---------------------------------------------------------------------------
@@ -708,9 +702,6 @@ class WifiManager:
     for cb in to_run:
       cb()
 
-  def set_active(self, active: bool):
-    pass
-
   # ---------------------------------------------------------------------------
   # Monitor thread: wpa_supplicant events
   # ---------------------------------------------------------------------------
@@ -748,9 +739,6 @@ class WifiManager:
 
   def _handle_event(self, event: str):
     """Dispatch wpa_supplicant event to state machine."""
-    if DEBUG:
-      cloudlog.debug(f"[WPA EVENT] {event}")
-
     if "CTRL-EVENT-SCAN-RESULTS" in event:
       self._update_networks(block=False)
 
@@ -797,10 +785,6 @@ class WifiManager:
         self._clear_pending_connection(self._wifi_state.ssid)
         self._enqueue_callbacks(self._need_auth, self._wifi_state.ssid)
         self._set_connecting(None)
-
-    elif "CTRL-EVENT-ASSOC-REJECT" in event or "CTRL-EVENT-AUTH-REJECT" in event:
-      # Could be wrong password or AP rejected
-      pass
 
     elif "Trying to associate with" in event or "Associated with" in event:
       # Auto-connect case: wpa_supplicant is connecting on its own

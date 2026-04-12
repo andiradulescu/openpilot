@@ -170,10 +170,6 @@ class Tici(HardwareBase):
     modem_path = list(objects.keys())[0]
     return self.bus.get_object(MM, modem_path)
 
-  def get_wlan(self):
-    # Stub: callers rewritten to use wpa_cli/ip directly
-    return None
-
   def get_wwan(self):
     wwan_path = self.nm.GetDeviceByIpIface('wwan0', dbus_interface=NM, timeout=TIMEOUT)
     return self.bus.get_object(NM, wwan_path)
