@@ -1,30 +1,6 @@
 """Tests for WifiManagerClient snapshot and event handling."""
-import threading
-
-from pytest_mock import MockerFixture
-
-from openpilot.system.ui.lib.wifi_manager import ConnectStatus, MeteredType, SecurityType, WifiState
-from openpilot.system.ui.lib.wifi_manager_service import WifiManagerClient, _EventBroker
-
-
-def _make_client():
-  client = WifiManagerClient.__new__(WifiManagerClient)
-  client._callback_queue = []
-  client._callback_lock = threading.Lock()
-  client._need_auth = []
-  client._activated = []
-  client._forgotten = []
-  client._networks_updated = []
-  client._disconnected = []
-  client._networks = []
-  client._saved_ssids = set()
-  client._wifi_state = WifiState()
-  client._ipv4_address = ""
-  client._current_network_metered = MeteredType.UNKNOWN
-  client._tethering_active = False
-  client._tethering_password = ""
-  client._last_seq = 0
-  return client
+from openpilot.system.ui.lib.wifi_manager import ConnectStatus, SecurityType, WifiState
+from openpilot.system.ui.lib.wifi_manager_service import _EventBroker
 
 
 def _snapshot(**overrides):
@@ -46,8 +22,7 @@ def _snapshot(**overrides):
 # ---------------------------------------------------------------------------
 
 class TestApplySnapshot:
-  def test_connecting_to_disconnected_fires_callback(self, mocker: MockerFixture):
-    client = _make_client()
+  def test_connecting_to_disconnected_fires_callback(self, client, mocker):
     client._wifi_state = WifiState(ssid="systeam", status=ConnectStatus.CONNECTING)
     disconnected = mocker.MagicMock()
     client._disconnected.append(disconnected)
@@ -57,8 +32,7 @@ class TestApplySnapshot:
 
     disconnected.assert_called_once()
 
-  def test_connected_to_disconnected_fires_callback(self, mocker: MockerFixture):
-    client = _make_client()
+  def test_connected_to_disconnected_fires_callback(self, client, mocker):
     client._wifi_state = WifiState(ssid="MyNet", status=ConnectStatus.CONNECTED)
     disconnected = mocker.MagicMock()
     client._disconnected.append(disconnected)
@@ -68,8 +42,7 @@ class TestApplySnapshot:
 
     disconnected.assert_called_once()
 
-  def test_disconnected_to_connected_fires_activated(self, mocker: MockerFixture):
-    client = _make_client()
+  def test_disconnected_to_connected_fires_activated(self, client, mocker):
     activated = mocker.MagicMock()
     client._activated.append(activated)
 
@@ -78,8 +51,7 @@ class TestApplySnapshot:
 
     activated.assert_called_once()
 
-  def test_connected_to_connected_does_not_fire_activated(self, mocker: MockerFixture):
-    client = _make_client()
+  def test_connected_to_connected_does_not_fire_activated(self, client, mocker):
     client._wifi_state = WifiState(ssid="MyNet", status=ConnectStatus.CONNECTED)
     activated = mocker.MagicMock()
     client._activated.append(activated)
@@ -89,8 +61,7 @@ class TestApplySnapshot:
 
     activated.assert_not_called()
 
-  def test_disconnected_to_disconnected_does_not_fire(self, mocker: MockerFixture):
-    client = _make_client()
+  def test_disconnected_to_disconnected_does_not_fire(self, client, mocker):
     client._wifi_state = WifiState(ssid=None, status=ConnectStatus.DISCONNECTED)
     disconnected = mocker.MagicMock()
     client._disconnected.append(disconnected)
@@ -100,8 +71,7 @@ class TestApplySnapshot:
 
     disconnected.assert_not_called()
 
-  def test_identical_snapshot_fires_no_callbacks(self, mocker: MockerFixture):
-    client = _make_client()
+  def test_identical_snapshot_fires_no_callbacks(self, client, mocker):
     disconnected = mocker.MagicMock()
     networks_updated = mocker.MagicMock()
     client._disconnected.append(disconnected)
@@ -113,8 +83,7 @@ class TestApplySnapshot:
     disconnected.assert_not_called()
     networks_updated.assert_not_called()
 
-  def test_network_list_change_fires_networks_updated(self, mocker: MockerFixture):
-    client = _make_client()
+  def test_network_list_change_fires_networks_updated(self, client, mocker):
     networks_updated = mocker.MagicMock()
     client._networks_updated.append(networks_updated)
 
@@ -125,8 +94,7 @@ class TestApplySnapshot:
 
     networks_updated.assert_called_once()
 
-  def test_saved_ssids_change_fires_networks_updated(self, mocker: MockerFixture):
-    client = _make_client()
+  def test_saved_ssids_change_fires_networks_updated(self, client, mocker):
     networks_updated = mocker.MagicMock()
     client._networks_updated.append(networks_updated)
 
@@ -135,14 +103,12 @@ class TestApplySnapshot:
 
     networks_updated.assert_called_once()
 
-  def test_tethering_state_applied(self):
-    client = _make_client()
+  def test_tethering_state_applied(self, client):
     client._apply_snapshot(_snapshot(tethering_active=True, tethering_password="secret123"))
     assert client._tethering_active is True
     assert client._tethering_password == "secret123"
 
-  def test_ipv4_address_applied(self):
-    client = _make_client()
+  def test_ipv4_address_applied(self, client):
     client._apply_snapshot(_snapshot(ipv4_address="10.0.0.5"))
     assert client._ipv4_address == "10.0.0.5"
 
@@ -152,8 +118,7 @@ class TestApplySnapshot:
 # ---------------------------------------------------------------------------
 
 class TestApplyEvents:
-  def test_need_auth_event(self, mocker: MockerFixture):
-    client = _make_client()
+  def test_need_auth_event(self, client, mocker):
     need_auth = mocker.MagicMock()
     client._need_auth.append(need_auth)
 
@@ -162,9 +127,8 @@ class TestApplyEvents:
 
     need_auth.assert_called_once_with("LockedNet")
 
-  def test_activated_event_deferred_to_snapshot(self, mocker: MockerFixture):
+  def test_activated_event_deferred_to_snapshot(self, client, mocker):
     """activated events are handled by snapshot diff, not _apply_events."""
-    client = _make_client()
     activated = mocker.MagicMock()
     client._activated.append(activated)
 
@@ -174,8 +138,7 @@ class TestApplyEvents:
     activated.assert_not_called()
     assert client._last_seq == 1  # seq is still tracked
 
-  def test_forgotten_event(self, mocker: MockerFixture):
-    client = _make_client()
+  def test_forgotten_event(self, client, mocker):
     forgotten = mocker.MagicMock()
     client._forgotten.append(forgotten)
 
@@ -184,9 +147,8 @@ class TestApplyEvents:
 
     forgotten.assert_called_once_with("OldNet")
 
-  def test_disconnected_event_deferred_to_snapshot(self, mocker: MockerFixture):
+  def test_disconnected_event_deferred_to_snapshot(self, client, mocker):
     """disconnected events are handled by snapshot diff, not _apply_events."""
-    client = _make_client()
     disconnected = mocker.MagicMock()
     client._disconnected.append(disconnected)
 
@@ -196,9 +158,8 @@ class TestApplyEvents:
     disconnected.assert_not_called()
     assert client._last_seq == 1
 
-  def test_snapshot_plus_event_fires_activated_once(self, mocker: MockerFixture):
+  def test_snapshot_plus_event_fires_activated_once(self, client, mocker):
     """When snapshot shows CONNECTED and activated event exists, callback fires once."""
-    client = _make_client()
     activated = mocker.MagicMock()
     client._activated.append(activated)
 
@@ -208,16 +169,14 @@ class TestApplyEvents:
 
     activated.assert_called_once()
 
-  def test_updates_last_seq(self):
-    client = _make_client()
+  def test_updates_last_seq(self, client):
     client._apply_events([
       {"seq": 5, "type": "activated", "payload": {}},
       {"seq": 3, "type": "disconnected", "payload": {}},
     ])
     assert client._last_seq == 5
 
-  def test_need_auth_without_ssid_ignored(self, mocker: MockerFixture):
-    client = _make_client()
+  def test_need_auth_without_ssid_ignored(self, client, mocker):
     need_auth = mocker.MagicMock()
     client._need_auth.append(need_auth)
 
@@ -226,8 +185,7 @@ class TestApplyEvents:
 
     need_auth.assert_not_called()
 
-  def test_unknown_event_type_ignored(self):
-    client = _make_client()
+  def test_unknown_event_type_ignored(self, client):
     client._apply_events([{"seq": 1, "type": "unknown_type", "payload": {}}])
     client.process_callbacks()
     # No exception, no callbacks

@@ -4,45 +4,8 @@ Tests the state machine in isolation by constructing a WifiManager with mocked
 wpa_supplicant, then calling _handle_event directly with wpa_supplicant events.
 """
 
-import threading
-
-from pytest_mock import MockerFixture
-
 from openpilot.system.ui.lib import wifi_manager as wifi_manager_module
 from openpilot.system.ui.lib.wifi_manager import WifiManager, WifiState, ConnectStatus, PendingConnection
-
-
-def _make_wm(mocker: MockerFixture, saved_networks=None):
-  """Create a WifiManager with only the fields _handle_event touches."""
-  mocker.patch.object(WifiManager, '_initialize')
-  wm = WifiManager.__new__(WifiManager)
-  wm._exit = True
-  wm._ctrl = mocker.MagicMock()
-  wm._dhcp = mocker.MagicMock()
-  wm._tethering_active = False
-  wm._wifi_state = WifiState()
-  wm._user_epoch = 0
-  wm._callback_queue = []
-  wm._callback_lock = threading.Lock()
-  wm._need_auth = []
-  wm._activated = []
-  wm._disconnected = []
-  wm._networks_updated = []
-  wm._forgotten = []
-  wm._ipv4_address = ""
-  wm._current_network_metered = 0
-  wm._update_active_connection_info = mocker.MagicMock()
-  wm._poll_for_ip = mocker.MagicMock()
-  wm._pending_connection = None
-
-  # Mock store
-  wm._store = mocker.MagicMock()
-  wm._store.contains.side_effect = lambda ssid: ssid in (saved_networks or {})
-  wm._store.get_metered.return_value = 0
-
-  # Default STATUS response
-  wm._ctrl.request.return_value = "wpa_state=COMPLETED\nssid=TestNet\n"
-  return wm
 
 
 def fire(wm: WifiManager, event: str) -> None:
@@ -55,8 +18,7 @@ def fire(wm: WifiManager, event: str) -> None:
 # ---------------------------------------------------------------------------
 
 class TestConnected:
-  def test_connected_sets_state(self, mocker):
-    wm = _make_wm(mocker)
+  def test_connected_sets_state(self, wm):
     wm._set_connecting("MyNet")
     wm._ctrl.request.return_value = "wpa_state=COMPLETED\nssid=MyNet\n"
 
@@ -66,8 +28,7 @@ class TestConnected:
     assert wm._wifi_state.ssid == "MyNet"
     wm._dhcp.start.assert_called_once()
 
-  def test_connected_fires_activated_callback(self, mocker):
-    wm = _make_wm(mocker)
+  def test_connected_fires_activated_callback(self, wm, mocker):
     cb = mocker.MagicMock()
     wm.add_callbacks(activated=cb)
     wm._set_connecting("Net")
@@ -78,8 +39,7 @@ class TestConnected:
     wm.process_callbacks()
     cb.assert_called_once()
 
-  def test_connected_persists_pending_connection(self, mocker):
-    wm = _make_wm(mocker)
+  def test_connected_persists_pending_connection(self, wm, mocker):
     wm._set_connecting("MyNet")
     wm._set_pending_connection("MyNet", "pass1234", False)
     wm._ctrl.request.return_value = "wpa_state=COMPLETED\nssid=MyNet\n"
@@ -92,8 +52,7 @@ class TestConnected:
 
 
 class TestDisconnected:
-  def test_disconnected_clears_state(self, mocker):
-    wm = _make_wm(mocker)
+  def test_disconnected_clears_state(self, wm):
     wm._wifi_state = WifiState(ssid="Net", status=ConnectStatus.CONNECTED)
 
     fire(wm, "CTRL-EVENT-DISCONNECTED bssid=aa:bb:cc:dd:ee:ff reason=3")
@@ -102,9 +61,8 @@ class TestDisconnected:
     assert wm._wifi_state.status == ConnectStatus.DISCONNECTED
     wm._dhcp.stop.assert_called_once()
 
-  def test_disconnected_preserves_connecting(self, mocker):
+  def test_disconnected_preserves_connecting(self, wm):
     """If user just initiated a connect, don't clear the connecting state."""
-    wm = _make_wm(mocker)
     wm._set_connecting("NewNet")
 
     fire(wm, "CTRL-EVENT-DISCONNECTED bssid=aa:bb:cc:dd:ee:ff reason=3")
@@ -112,8 +70,7 @@ class TestDisconnected:
     assert wm._wifi_state.ssid == "NewNet"
     assert wm._wifi_state.status == ConnectStatus.CONNECTING
 
-  def test_disconnected_during_tethering_ignored(self, mocker):
-    wm = _make_wm(mocker)
+  def test_disconnected_during_tethering_ignored(self, wm):
     wm._wifi_state = WifiState(ssid="tether", status=ConnectStatus.CONNECTED)
     wm._tethering_active = True
 
@@ -122,8 +79,7 @@ class TestDisconnected:
     assert wm._wifi_state.ssid == "tether"
     assert wm._wifi_state.status == ConnectStatus.CONNECTED
 
-  def test_disconnected_fires_callback(self, mocker):
-    wm = _make_wm(mocker)
+  def test_disconnected_fires_callback(self, wm, mocker):
     cb = mocker.MagicMock()
     wm.add_callbacks(disconnected=cb)
     wm._wifi_state = WifiState(ssid="Net", status=ConnectStatus.CONNECTED)
@@ -135,8 +91,7 @@ class TestDisconnected:
 
 
 class TestWrongPassword:
-  def test_wrong_key_fires_need_auth(self, mocker):
-    wm = _make_wm(mocker)
+  def test_wrong_key_fires_need_auth(self, wm, mocker):
     cb = mocker.MagicMock()
     wm.add_callbacks(need_auth=cb)
     wm._set_connecting("SecNet")
@@ -147,8 +102,7 @@ class TestWrongPassword:
     wm.process_callbacks()
     cb.assert_called_once_with("SecNet")
 
-  def test_wrong_key_no_ssid_no_callback(self, mocker):
-    wm = _make_wm(mocker)
+  def test_wrong_key_no_ssid_no_callback(self, wm, mocker):
     cb = mocker.MagicMock()
     wm.add_callbacks(need_auth=cb)
 
@@ -156,8 +110,7 @@ class TestWrongPassword:
 
     assert len(wm._callback_queue) == 0
 
-  def test_wrong_key_clears_pending_without_saving(self, mocker):
-    wm = _make_wm(mocker)
+  def test_wrong_key_clears_pending_without_saving(self, wm):
     wm._set_connecting("SecNet")
     wm._set_pending_connection("SecNet", "wrongpass", False)
 
@@ -168,9 +121,8 @@ class TestWrongPassword:
 
 
 class TestAutoConnect:
-  def test_trying_to_associate_sets_connecting(self, mocker):
+  def test_trying_to_associate_sets_connecting(self, wm):
     """Auto-connect: wpa_supplicant connects on its own."""
-    wm = _make_wm(mocker)
     wm._ctrl.request.return_value = "wpa_state=ASSOCIATING\nssid=AutoNet\n"
 
     fire(wm, "Trying to associate with aa:bb:cc:dd:ee:ff (SSID='AutoNet' freq=2437 MHz)")
@@ -178,9 +130,8 @@ class TestAutoConnect:
     assert wm._wifi_state.ssid == "AutoNet"
     assert wm._wifi_state.status == ConnectStatus.CONNECTING
 
-  def test_auto_connect_doesnt_overwrite_user_connecting(self, mocker):
+  def test_auto_connect_doesnt_overwrite_user_connecting(self, wm):
     """If user initiated connect, auto-connect event is ignored."""
-    wm = _make_wm(mocker)
     wm._set_connecting("UserNet")
 
     fire(wm, "Trying to associate with aa:bb:cc:dd:ee:ff (SSID='OtherNet' freq=2437 MHz)")
@@ -190,12 +141,10 @@ class TestAutoConnect:
 
 
 class TestScanResults:
-  def test_scan_results_triggers_update(self, mocker):
-    wm = _make_wm(mocker)
+  def test_scan_results_triggers_update(self, wm, mocker):
     wm._active = True
     wm._scan_lock = mocker.MagicMock()
     wm._tethering_ssid = "weedle"
-    wm._networks = []
     # Mock scan results
     wm._ctrl.request.return_value = "bssid / frequency / signal level / flags / ssid\naa:bb:cc:dd:ee:ff\t2437\t-50\t[WPA2-PSK-CCMP][ESS]\tTestNet\n"
     wm._update_networks = mocker.MagicMock()
@@ -210,9 +159,8 @@ class TestScanResults:
 # ---------------------------------------------------------------------------
 
 class TestThreadRaces:
-  def test_connected_race_user_tap_during_status(self, mocker):
+  def test_connected_race_user_tap_during_status(self, wm):
     """User taps B right as A finishes connecting (STATUS call in flight)."""
-    wm = _make_wm(mocker)
     wm._set_connecting("A")
 
     def user_taps_b_during_status(cmd):
@@ -228,10 +176,8 @@ class TestThreadRaces:
     assert wm._wifi_state.ssid == "B"
     assert wm._wifi_state.status == ConnectStatus.CONNECTING
 
-  def test_auto_connect_race_user_tap_during_status(self, mocker):
+  def test_auto_connect_race_user_tap_during_status(self, wm):
     """User taps B while auto-connect STATUS lookup is in flight."""
-    wm = _make_wm(mocker)
-
     def user_taps_b_during_status(cmd):
       if cmd == "STATUS":
         wm._set_connecting("B")
@@ -245,9 +191,8 @@ class TestThreadRaces:
     assert wm._wifi_state.ssid == "B"
     assert wm._wifi_state.status == ConnectStatus.CONNECTING
 
-  def test_disconnected_does_not_stomp_connecting(self, mocker):
+  def test_disconnected_does_not_stomp_connecting(self, wm):
     """_set_connecting() between CONNECTING check and state write is preserved."""
-    wm = _make_wm(mocker)
     wm._wifi_state = WifiState(ssid="A", status=ConnectStatus.CONNECTED)
 
     original_handle = wm._handle_event.__func__
@@ -264,9 +209,8 @@ class TestThreadRaces:
     assert wm._wifi_state.ssid == "B"
     assert wm._wifi_state.status == ConnectStatus.CONNECTING
 
-  def test_connected_with_none_ssid_is_ignored(self, mocker):
+  def test_connected_with_none_ssid_is_ignored(self, wm):
     """CONNECTED event with no SSID (STATUS parse fails) should not transition."""
-    wm = _make_wm(mocker)
     wm._wifi_state = WifiState()  # DISCONNECTED, ssid=None
     wm._ctrl.request.side_effect = Exception("wpa_supplicant gone")
 
@@ -281,9 +225,8 @@ class TestThreadRaces:
 # ---------------------------------------------------------------------------
 
 class TestFullSequences:
-  def test_normal_connect(self, mocker):
+  def test_normal_connect(self, wm):
     """User connects → CONNECTED event → gets IP."""
-    wm = _make_wm(mocker)
     wm._set_connecting("Home")
     wm._ctrl.request.return_value = "wpa_state=COMPLETED\nssid=Home\n"
 
@@ -293,9 +236,8 @@ class TestFullSequences:
     assert wm._wifi_state.ssid == "Home"
     wm._dhcp.start.assert_called_once()
 
-  def test_wrong_password_then_retry(self, mocker):
+  def test_wrong_password_then_retry(self, wm, mocker):
     """Wrong password → need_auth callback → user retries."""
-    wm = _make_wm(mocker)
     cb = mocker.MagicMock()
     wm.add_callbacks(need_auth=cb)
 
@@ -314,9 +256,8 @@ class TestFullSequences:
     assert wm._wifi_state.status == ConnectStatus.CONNECTED
     assert wm._wifi_state.ssid == "Sec"
 
-  def test_connect_then_disconnect(self, mocker):
+  def test_connect_then_disconnect(self, wm):
     """Connect, then network drops."""
-    wm = _make_wm(mocker)
     wm._set_connecting("Net")
     wm._ctrl.request.return_value = "wpa_state=COMPLETED\nssid=Net\n"
 
@@ -327,9 +268,8 @@ class TestFullSequences:
     assert wm._wifi_state.status == ConnectStatus.DISCONNECTED
     assert wm._wifi_state.ssid is None
 
-  def test_auto_connect_full_sequence(self, mocker):
+  def test_auto_connect_full_sequence(self, wm):
     """wpa_supplicant auto-connects to saved network."""
-    wm = _make_wm(mocker)
     wm._ctrl.request.return_value = "wpa_state=ASSOCIATING\nssid=AutoNet\n"
 
     fire(wm, "Trying to associate with aa:bb:cc:dd:ee:ff (SSID='AutoNet' freq=2437 MHz)")
@@ -341,9 +281,8 @@ class TestFullSequences:
     assert wm._wifi_state.status == ConnectStatus.CONNECTED
     assert wm._wifi_state.ssid == "AutoNet"
 
-  def test_switch_networks(self, mocker):
+  def test_switch_networks(self, wm):
     """User switches from A to B."""
-    wm = _make_wm(mocker)
     wm._ctrl.request.return_value = "wpa_state=COMPLETED\nssid=A\n"
     wm._set_connecting("A")
     fire(wm, "CTRL-EVENT-CONNECTED - Connection to 11:22:33:44:55:66 completed [id=0]")
@@ -366,8 +305,7 @@ class TestFullSequences:
 
 
 class TestConnectPersistence:
-  def test_connect_to_network_does_not_save_before_auth(self, mocker):
-    wm = _make_wm(mocker)
+  def test_connect_to_network_does_not_save_before_auth(self, wm, mocker):
     wm._remove_wpa_network = mocker.MagicMock()
     wm._add_and_select_network = mocker.MagicMock()
 
@@ -390,8 +328,7 @@ class TestConnectPersistence:
 
 
 class TestStop:
-  def test_stop_calls_stop_tethering_when_active(self, mocker):
-    wm = _make_wm(mocker)
+  def test_stop_calls_stop_tethering_when_active(self, wm, mocker):
     wm._tethering_active = True
     wm._scan_thread = mocker.MagicMock(is_alive=mocker.MagicMock(return_value=False))
     wm._state_thread = mocker.MagicMock(is_alive=mocker.MagicMock(return_value=False))
@@ -403,8 +340,7 @@ class TestStop:
 
     wm._stop_tethering.assert_called_once()
 
-  def test_stop_skips_tethering_when_not_active(self, mocker):
-    wm = _make_wm(mocker)
+  def test_stop_skips_tethering_when_not_active(self, wm, mocker):
     wm._tethering_active = False
     wm._scan_thread = mocker.MagicMock(is_alive=mocker.MagicMock(return_value=False))
     wm._state_thread = mocker.MagicMock(is_alive=mocker.MagicMock(return_value=False))
