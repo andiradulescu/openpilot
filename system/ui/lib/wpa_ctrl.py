@@ -2,6 +2,7 @@
 import os
 import socket
 import select
+import threading
 from dataclasses import dataclass
 from enum import IntEnum
 
@@ -24,27 +25,44 @@ class ScanResult:
   ssid: str
 
 
-class WpaCtrl:
-  """Synchronous command/response wrapper for wpa_supplicant control socket."""
+class _WpaCtrlBase:
+  """Shared socket lifecycle for wpa_supplicant control connections."""
 
   _counter = 0
+  _counter_lock = threading.Lock()
 
   def __init__(self, ctrl_path: str = "/var/run/wpa_supplicant/wlan0"):
     self._ctrl_path = ctrl_path
     self._sock: socket.socket | None = None
     self._local_path: str = ""
 
-  def open(self):
-    WpaCtrl._counter += 1
-    self._local_path = f"/tmp/wpa_ctrl_{os.getpid()}_{WpaCtrl._counter}"
+  def _open_socket(self, prefix: str):
+    with _WpaCtrlBase._counter_lock:
+      _WpaCtrlBase._counter += 1
+      idx = _WpaCtrlBase._counter
+    self._local_path = f"/tmp/{prefix}_{os.getpid()}_{idx}"
     try:
       os.unlink(self._local_path)
     except OSError:
       pass
-    self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-    self._sock.bind(self._local_path)
-    self._sock.connect(self._ctrl_path)
-    self._sock.settimeout(10)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    try:
+      sock.bind(self._local_path)
+      sock.connect(self._ctrl_path)
+    except Exception:
+      sock.close()
+      try:
+        os.unlink(self._local_path)
+      except OSError:
+        pass
+      self._local_path = ""
+      raise
+    self._sock = sock
+
+  def _ensure_sock(self) -> socket.socket:
+    if self._sock is None:
+      raise RuntimeError("not opened")
+    return self._sock
 
   def close(self):
     if self._sock is not None:
@@ -60,12 +78,6 @@ class WpaCtrl:
         pass
       self._local_path = ""
 
-  def request(self, cmd: str) -> str:
-    """Send command, return response string."""
-    assert self._sock is not None, "WpaCtrl not opened"
-    self._sock.send(cmd.encode())
-    return self._sock.recv(RECV_BUF_SIZE).decode("utf-8", "replace")
-
   def __enter__(self):
     self.open()
     return self
@@ -77,35 +89,35 @@ class WpaCtrl:
     self.close()
 
 
-class WpaCtrlMonitor:
-  """Async event stream from wpa_supplicant (ATTACH/DETACH protocol)."""
-
-  _counter = 0
-
-  def __init__(self, ctrl_path: str = "/var/run/wpa_supplicant/wlan0"):
-    self._ctrl_path = ctrl_path
-    self._sock: socket.socket | None = None
-    self._local_path: str = ""
+class WpaCtrl(_WpaCtrlBase):
+  """Synchronous command/response wrapper for wpa_supplicant control socket."""
 
   def open(self):
-    WpaCtrlMonitor._counter += 1
-    self._local_path = f"/tmp/wpa_mon_{os.getpid()}_{WpaCtrlMonitor._counter}"
-    try:
-      os.unlink(self._local_path)
-    except OSError:
-      pass
-    self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-    self._sock.bind(self._local_path)
-    self._sock.connect(self._ctrl_path)
+    self._open_socket("wpa_ctrl")
+    self._sock.settimeout(10)
+
+  def request(self, cmd: str) -> str:
+    """Send command, return response string."""
+    sock = self._ensure_sock()
+    sock.send(cmd.encode())
+    return sock.recv(RECV_BUF_SIZE).decode("utf-8", "replace")
+
+
+class WpaCtrlMonitor(_WpaCtrlBase):
+  """Async event stream from wpa_supplicant (ATTACH/DETACH protocol)."""
+
+  def open(self):
+    self._open_socket("wpa_mon")
     self._sock.settimeout(10)
     resp = self._raw_request("ATTACH")
     if not resp.startswith("OK"):
+      self.close()
       raise RuntimeError(f"ATTACH failed: {resp}")
 
   def _raw_request(self, cmd: str) -> str:
-    assert self._sock is not None
-    self._sock.send(cmd.encode())
-    return self._sock.recv(RECV_BUF_SIZE).decode("utf-8", "replace")
+    sock = self._ensure_sock()
+    sock.send(cmd.encode())
+    return sock.recv(RECV_BUF_SIZE).decode("utf-8", "replace")
 
   def pending(self, timeout: float = 0) -> bool:
     if self._sock is None:
@@ -129,29 +141,9 @@ class WpaCtrlMonitor:
     if self._sock is not None:
       try:
         self._raw_request("DETACH")
-      except OSError:
+      except (OSError, RuntimeError):
         pass
-      try:
-        self._sock.close()
-      except OSError:
-        pass
-      self._sock = None
-    if self._local_path:
-      try:
-        os.unlink(self._local_path)
-      except OSError:
-        pass
-      self._local_path = ""
-
-  def __enter__(self):
-    self.open()
-    return self
-
-  def __exit__(self, *_):
-    self.close()
-
-  def __del__(self):
-    self.close()
+    super().close()
 
 
 # ---------------------------------------------------------------------------
