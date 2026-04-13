@@ -57,6 +57,35 @@ class TestConnected:
     wm._store.save_network.assert_called_once_with("MyNet", psk="pass1234", hidden=False)
     assert wm._pending_connection is None
 
+  def test_handle_connected_is_idempotent(self, wm, mocker):
+    """The scanner's reconcile loop and the monitor thread can both call
+    _handle_connected for the same transition. The second call must not
+    restart DHCP or fire another activated callback."""
+    cb = mocker.MagicMock()
+    wm.add_callbacks(activated=cb)
+
+    wm._handle_connected("MyNet")
+    # Simulate the second caller arriving after state is already CONNECTED.
+    wm._handle_connected("MyNet")
+
+    wm.process_callbacks()
+    wm._dhcp.start.assert_called_once()
+    cb.assert_called_once()
+
+  def test_handle_connected_re_fires_on_ssid_change(self, wm, mocker):
+    """Switching networks — second _handle_connected with a different ssid
+    must still transition (not treated as a dup)."""
+    cb = mocker.MagicMock()
+    wm.add_callbacks(activated=cb)
+
+    wm._handle_connected("First")
+    wm._handle_connected("Second")
+
+    wm.process_callbacks()
+    assert wm._wifi_state.ssid == "Second"
+    assert wm._dhcp.start.call_count == 2
+    assert cb.call_count == 2
+
 
 class TestDisconnected:
   def test_disconnected_clears_state(self, wm):

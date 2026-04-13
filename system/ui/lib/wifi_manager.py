@@ -841,7 +841,16 @@ class WifiManager:
         time.sleep(2)
 
   def _handle_connected(self, ssid: str):
-    """Transition to CONNECTED: persist credentials, start DHCP, notify UI."""
+    """Transition to CONNECTED: persist credentials, start DHCP, notify UI.
+
+    Idempotent: if we're already reporting CONNECTED to the same ssid, skip
+    the DHCP restart and callback fan-out. Without this, the scanner's
+    reconcile loop and the monitor thread's CTRL-EVENT-CONNECTED handler can
+    both call in for the same transition, and each `_dhcp.start()` kills the
+    previous udhcpc."""
+    if (self._wifi_state.status == ConnectStatus.CONNECTED
+        and self._wifi_state.ssid == ssid):
+      return
     self._last_connecting_at = 0.0
     self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTED)
     self._persist_pending_connection(ssid)
