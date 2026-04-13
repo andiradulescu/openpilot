@@ -913,7 +913,10 @@ class WifiManager:
         self._handle_connected(status["ssid"])
       return
 
-    if current_state.status != ConnectStatus.CONNECTING or current_state.ssid is None:
+    # Even if ssid is None (e.g. the auto-connect path couldn't read STATUS
+    # when it set CONNECTING), we still need to reconcile — a subsequent
+    # STATUS query below will tell us definitively whether we're up.
+    if current_state.status != ConnectStatus.CONNECTING:
       return
     if time.monotonic() - self._last_connecting_at < CONNECTING_STALE_TIMEOUT_SECONDS:
       return
