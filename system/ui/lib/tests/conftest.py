@@ -1,16 +1,14 @@
-"""Shared pytest fixtures for wifi_manager / wifi_manager_service tests."""
+"""Shared pytest fixtures for wifi_manager tests."""
 import threading
 import time
 
 import pytest
 
 from openpilot.system.ui.lib.wifi_manager import (
+  CONNECTING_STALE_TIMEOUT_SECONDS,
   WifiManager,
   WifiState,
-  CONNECTING_STALE_TIMEOUT_SECONDS,
-  MeteredType,
 )
-from openpilot.system.ui.lib.wifi_manager_service import WifiManagerClient
 
 
 @pytest.fixture
@@ -42,25 +40,3 @@ def wm(mocker):
   wm._poll_for_ip = mocker.MagicMock()
   wm._ctrl.request.return_value = "wpa_state=COMPLETED\nssid=TestNet\n"
   return wm
-
-
-@pytest.fixture
-def client():
-  """WifiManagerClient stub with mocked state for snapshot/event tests."""
-  client = WifiManagerClient.__new__(WifiManagerClient)
-  client._callback_queue = []
-  client._callback_lock = threading.Lock()
-  client._need_auth = []
-  client._activated = []
-  client._forgotten = []
-  client._networks_updated = []
-  client._disconnected = []
-  client._networks = []
-  client._saved_ssids = set()
-  client._wifi_state = WifiState()
-  client._ipv4_address = ""
-  client._current_network_metered = MeteredType.UNKNOWN
-  client._tethering_active = False
-  client._tethering_password = ""
-  client._last_seq = 0
-  return client
