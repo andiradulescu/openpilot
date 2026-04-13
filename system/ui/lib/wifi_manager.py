@@ -750,6 +750,7 @@ class WifiManager:
   # ---------------------------------------------------------------------------
 
   def _monitor_state(self):
+    was_down = False
     while not self._exit:
       if self._ctrl is None:
         # wpa_supplicant never came up (CI / dev PC) — avoid tight reconnect spam
@@ -760,12 +761,19 @@ class WifiManager:
         epoch = self._monitor_epoch
         monitor = WpaCtrlMonitor()
         monitor.open()
+        if was_down:
+          # Monitor reconnected after a prior failure — if wpa_supplicant
+          # restarted (e.g. systemd brought it back), our main ctrl socket
+          # is stale too. Refresh it without touching any service manager.
+          self._try_attach_ctrl()
+          was_down = False
         while not self._exit and self._monitor_epoch == epoch:
           event = monitor.recv(timeout=1.0)
           if event is None:
             continue
           self._handle_event(event)
       except Exception:
+        was_down = True
         cloudlog.exception("wpa_supplicant monitor error, reconnecting...")
       finally:
         if monitor is not None:
