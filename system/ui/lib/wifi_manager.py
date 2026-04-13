@@ -1167,10 +1167,17 @@ class WifiManager:
             cloudlog.warning("net.ipv4.ip_forward = 0")
             subprocess.run(["sudo", "sysctl", "net.ipv4.ip_forward=0"], check=False)
         except Exception:
-          cloudlog.exception("Failed to start tethering")
-          self._tethering_active = False
-          self._wifi_state = WifiState()
-          self._enqueue_callbacks(self._disconnected)
+          cloudlog.exception("Failed to start tethering, rolling back")
+          try:
+            # _stop_tethering cleans up dnsmasq, iptables, AP wpa_supplicant,
+            # restarts STA wpa_supplicant, and resets state. Safe to call on
+            # a partial bringup.
+            self._stop_tethering()
+          except Exception:
+            cloudlog.exception("Tethering rollback also failed")
+            self._tethering_active = False
+            self._wifi_state = WifiState()
+            self._enqueue_callbacks(self._disconnected)
       else:
         self._stop_tethering()
     threading.Thread(target=worker, daemon=True).start()
@@ -1237,13 +1244,16 @@ class WifiManager:
     if self._ipv4_forward:
       subprocess.run(["sudo", "sysctl", "net.ipv4.ip_forward=1"], check=False)
 
-    # Reconnect control socket
+    # Reconnect control socket — doubles as a bringup check. If the AP
+    # wpa_supplicant failed to spawn (e.g. another daemon already owns
+    # wlan0, interface missing, config rejected), there's no ctrl socket
+    # to attach to. We raise so set_tethering_active's rollback runs.
     try:
       ctrl = WpaCtrl()
       ctrl.open()
       self._ctrl = ctrl
-    except Exception:
-      cloudlog.exception("Failed to reconnect wpa_ctrl after tethering start")
+    except Exception as e:
+      raise RuntimeError(f"AP wpa_supplicant bringup failed: {e}") from e
 
     self._wifi_state = WifiState(ssid=self._tethering_ssid, status=ConnectStatus.CONNECTED)
     self._ipv4_address = TETHERING_IP_ADDRESS
