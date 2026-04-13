@@ -5,6 +5,8 @@ and we never spawn a second daemon if one is already answering on the
 ctrl socket. Designed to coexist with a future systemd/OpenRC-managed
 wpa_supplicant on tici.
 """
+import re
+
 from openpilot.system.ui.lib import wifi_manager as wifi_manager_module
 from openpilot.system.ui.lib.wifi_manager import WPA_SUPPLICANT_CONF
 
@@ -38,8 +40,9 @@ class TestAttachFirst:
     ctrl.open.assert_called_once()
     mock_run.assert_not_called()
 
-  def test_attach_success_calls_reconfigure_and_enable(self, wm, mocker):
-    """On attach, RECONFIGURE picks up fresh config and networks are enabled."""
+  def test_attach_success_enables_networks(self, wm, mocker):
+    """On attach, all networks are re-enabled (no RECONFIGURE — that would
+    be rude on a system-managed daemon)."""
     ctrl = mocker.MagicMock()
     mocker.patch.object(wifi_manager_module, "WpaCtrl", return_value=ctrl)
     mocker.patch.object(wifi_manager_module.subprocess, "run")
@@ -47,8 +50,8 @@ class TestAttachFirst:
     wm._ensure_wpa_supplicant()
 
     requests = [call.args[0] for call in ctrl.request.call_args_list]
-    assert "RECONFIGURE" in requests
     assert "ENABLE_NETWORK all" in requests
+    assert "RECONFIGURE" not in requests
 
   def test_attach_success_swallows_request_errors(self, wm, mocker):
     """RECONFIGURE/ENABLE_NETWORK failures (e.g. permission-restricted
@@ -98,7 +101,8 @@ class TestSpawnFallback:
 
   def test_spawn_fallback_pkill_targets_our_config(self, wm, mocker):
     """The pkill fallback must target only processes running our config,
-    so a baked system daemon on a different config survives."""
+    so a baked system daemon on a different config survives. The CONF path
+    is regex-escaped to avoid over-match on metacharacters."""
     ctrl = mocker.MagicMock()
     mocker.patch.object(wifi_manager_module, "WpaCtrl",
                         side_effect=[OSError("no socket"), ctrl])
@@ -109,8 +113,9 @@ class TestSpawnFallback:
     commands = [tuple(call.args[0]) for call in mock_run.call_args_list]
     pkill_cmds = [cmd for cmd in commands if cmd[:2] == ("sudo", "pkill")]
     assert pkill_cmds, f"no pkill fallback in {commands}"
-    assert any(WPA_SUPPLICANT_CONF in arg for cmd in pkill_cmds for arg in cmd), \
-      f"pkill doesn't narrow to our config: {pkill_cmds}"
+    escaped = re.escape(WPA_SUPPLICANT_CONF)
+    assert any(escaped in arg for cmd in pkill_cmds for arg in cmd), \
+      f"pkill doesn't narrow to our escaped config: {pkill_cmds}"
 
   def test_spawn_then_reattach_loop(self, wm, mocker):
     """After spawn, the retry loop attaches successfully to the new daemon."""
