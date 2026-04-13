@@ -92,6 +92,10 @@ class _WpaCtrlBase:
 class WpaCtrl(_WpaCtrlBase):
   """Synchronous command/response wrapper for wpa_supplicant control socket."""
 
+  def __init__(self, ctrl_path: str = "/var/run/wpa_supplicant/wlan0"):
+    super().__init__(ctrl_path)
+    self._request_lock = threading.Lock()
+
   def open(self):
     self._open_socket("wpa_ctrl")
     self._sock.settimeout(10)
@@ -99,8 +103,9 @@ class WpaCtrl(_WpaCtrlBase):
   def request(self, cmd: str) -> str:
     """Send command, return response string."""
     sock = self._ensure_sock()
-    sock.send(cmd.encode())
-    return sock.recv(RECV_BUF_SIZE).decode("utf-8", "replace")
+    with self._request_lock:
+      sock.send(cmd.encode())
+      return sock.recv(RECV_BUF_SIZE).decode("utf-8", "replace")
 
 
 class WpaCtrlMonitor(_WpaCtrlBase):

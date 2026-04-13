@@ -1,9 +1,13 @@
 """Tests for wpa_ctrl parsing helpers and constants."""
+import threading
+import time
+
 import pytest
 
 from openpilot.system.ui.lib.wpa_ctrl import (
   RECV_BUF_SIZE,
   SecurityType,
+  WpaCtrl,
   parse_scan_results,
   parse_status,
   flags_to_security_type,
@@ -116,3 +120,64 @@ class TestParseScanResults:
       lines.append(f"{bssid}\t2437\t{-30 - (i % 70)}\t[WPA2-PSK-CCMP][ESS]\t{ssid}")
     raw = "\n".join(lines) + "\n"
     assert len(raw.encode()) > 4096, "Test assumes 200 APs exceed 4096 bytes"
+
+
+class _RacySock:
+  """Stub ctrl socket that models the reply/command pairing race.
+
+  The real wpa_supplicant ctrl socket delivers replies in send order. If two
+  threads interleave their send/recv calls, the first reader sees the *other*
+  thread's reply. This stub reproduces that: `send` stores the last command,
+  `recv` sleeps briefly to widen the race window, then returns a reply
+  based on whichever command was most recently sent.
+
+  Under `WpaCtrl.request`'s lock, each send/recv pair is atomic, so each
+  caller sees its own reply. Without the lock, thread B's send overwrites
+  the stored command during thread A's sleep and A observes B's reply.
+  """
+
+  def __init__(self):
+    self._lock = threading.Lock()
+    self._last_sent: bytes = b""
+
+  def send(self, data: bytes):
+    with self._lock:
+      self._last_sent = data
+
+  def recv(self, _bufsize: int) -> bytes:
+    # Widen the race window so any unlocked caller would mispair.
+    time.sleep(0.005)
+    with self._lock:
+      return b"REPLY:" + self._last_sent
+
+
+class TestWpaCtrlRequestSerialization:
+  def test_request_pairs_reply_with_command_under_concurrency(self):
+    """Regression: concurrent WpaCtrl.request callers must each observe
+    the reply for their own command, not a peer's."""
+    ctrl = WpaCtrl()
+    ctrl._sock = _RacySock()
+
+    results: dict[str, str] = {}
+    errors: list[BaseException] = []
+
+    def worker(cmd: str):
+      try:
+        results[cmd] = ctrl.request(cmd)
+      except BaseException as exc:
+        errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(cmd,))
+               for cmd in ("STATUS", "SCAN_RESULTS", "LIST_NETWORKS", "PING")]
+    for t in threads:
+      t.start()
+    for t in threads:
+      t.join(timeout=5)
+
+    assert not errors, errors
+    for cmd in ("STATUS", "SCAN_RESULTS", "LIST_NETWORKS", "PING"):
+      assert results[cmd] == f"REPLY:{cmd}", \
+        f"concurrent request mispaired reply for {cmd}: {results[cmd]}"
+
+    # Clear the socket so __del__ doesn't try to close the stub.
+    ctrl._sock = None
