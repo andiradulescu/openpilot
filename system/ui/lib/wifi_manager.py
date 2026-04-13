@@ -35,9 +35,20 @@ NM_CONNECTIONS_DIR = "/data/etc/NetworkManager/system-connections"
 
 WPA_AP_CONF = "/tmp/wpa_supplicant_ap.conf"
 
+# Matches ssid="…" in wpa_supplicant events, allowing escaped quotes inside.
+TEMP_DISABLED_SSID_RE = re.compile(r'\bssid="((?:\\.|[^"])*)"')
+
 
 def normalize_ssid(ssid: str) -> str:
   return ssid.replace("\u2019", "'")  # for iPhone hotspots
+
+
+def parse_event_ssid(event: str) -> str | None:
+  """Extract ssid="…" from a wpa_supplicant control event, or None."""
+  match = TEMP_DISABLED_SSID_RE.search(event)
+  if match is None:
+    return None
+  return match.group(1).replace('\\"', '"')
 
 
 class MeteredType(IntEnum):
@@ -860,9 +871,11 @@ class WifiManager:
       self._enqueue_callbacks(self._disconnected)
 
     elif "TEMP-DISABLED" in event and "reason=WRONG_KEY" in event:
-      if self._wifi_state.ssid:
-        self._clear_pending_connection(self._wifi_state.ssid)
-        self._enqueue_callbacks(self._need_auth, self._wifi_state.ssid)
+      event_ssid = parse_event_ssid(event)
+      current_ssid = self._wifi_state.ssid
+      if current_ssid and event_ssid == current_ssid:
+        self._clear_pending_connection(event_ssid)
+        self._enqueue_callbacks(self._need_auth, event_ssid)
         self._set_connecting(None)
 
     elif "Trying to associate with" in event or "Associated with" in event:

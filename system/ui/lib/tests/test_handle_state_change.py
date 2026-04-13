@@ -119,6 +119,20 @@ class TestWrongPassword:
     wm._store.save_network.assert_not_called()
     assert wm._pending_connection is None
 
+  def test_wrong_key_ignores_stale_event_for_previous_ssid(self, wm, mocker):
+    """A delayed TEMP-DISABLED for a previously-attempted SSID must not
+    tear down the user's current connection attempt."""
+    cb = mocker.MagicMock()
+    wm.add_callbacks(need_auth=cb)
+    wm._set_connecting("CurrentNet")
+
+    fire(wm, "CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid=\"OldNet\" auth_failures=1 duration=10 reason=WRONG_KEY")
+
+    assert wm._wifi_state.ssid == "CurrentNet"
+    assert wm._wifi_state.status == ConnectStatus.CONNECTING
+    wm.process_callbacks()
+    cb.assert_not_called()
+
 
 class TestAutoConnect:
   def test_trying_to_associate_sets_connecting(self, wm):
