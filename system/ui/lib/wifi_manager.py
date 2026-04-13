@@ -773,9 +773,13 @@ class WifiManager:
     was_down = False
     while not self._exit:
       if self._ctrl is None:
-        # wpa_supplicant never came up (CI / dev PC) — avoid tight reconnect spam
-        time.sleep(2)
-        continue
+        # wpa_supplicant not reachable yet (CI/dev, or _ensure_wpa_supplicant
+        # exhausted its 30 retries at init). Retry attach silently so the
+        # manager self-recovers if the daemon shows up later — without the
+        # retry-spam of a full monitor-reconnect loop.
+        if not self._try_attach_ctrl():
+          time.sleep(2)
+          continue
       monitor = None
       try:
         epoch = self._monitor_epoch
