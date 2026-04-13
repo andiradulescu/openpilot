@@ -522,6 +522,11 @@ class WifiManager:
     self._last_connecting_at: float = 0.0
     self._callback_queue: list[Callable] = []
     self._callback_lock = threading.Lock()
+    # Coalesced dirty flag for periodic networks_updated; the scan worker
+    # sets this instead of enqueueing a lambda per scan, so when the panel
+    # isn't draining callbacks (e.g. user on another tab) the queue can't
+    # grow unboundedly.
+    self._networks_updated_pending = False
 
     self._tethering_ssid = "weedle"
     if Params is not None:
@@ -770,11 +775,28 @@ class WifiManager:
       for cb in cbs:
         self._callback_queue.append(lambda _cb=cb: _cb(*args))
 
+  def _mark_networks_updated(self):
+    """Flag a pending networks_updated notification. Coalesces across scans
+    so callback accumulation stays O(1) when the UI isn't draining."""
+    with self._callback_lock:
+      self._networks_updated_pending = True
+
   def process_callbacks(self):
     with self._callback_lock:
       to_run, self._callback_queue = self._callback_queue, []
+      if self._networks_updated_pending:
+        self._networks_updated_pending = False
+        networks_cbs = list(self._networks_updated)
+      else:
+        networks_cbs = None
     for cb in to_run:
       cb()
+    if networks_cbs:
+      # Always fire with the latest snapshot, not a value captured at the
+      # time we were flagged.
+      snapshot = self.networks
+      for cb in networks_cbs:
+        cb(snapshot)
 
   # ---------------------------------------------------------------------------
   # Monitor thread: wpa_supplicant events
@@ -995,7 +1017,7 @@ class WifiManager:
         if networks:
           self._networks = networks
         self._update_active_connection_info()
-        self._enqueue_callbacks(self._networks_updated, self.networks)
+        self._mark_networks_updated()
 
     if block:
       worker()

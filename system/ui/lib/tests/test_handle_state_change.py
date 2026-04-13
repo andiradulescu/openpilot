@@ -5,7 +5,14 @@ wpa_supplicant, then calling _handle_event directly with wpa_supplicant events.
 """
 
 from openpilot.system.ui.lib import wifi_manager as wifi_manager_module
-from openpilot.system.ui.lib.wifi_manager import WifiManager, WifiState, ConnectStatus, PendingConnection
+from openpilot.system.ui.lib.wifi_manager import (
+  ConnectStatus,
+  Network,
+  PendingConnection,
+  SecurityType,
+  WifiManager,
+  WifiState,
+)
 
 
 def fire(wm: WifiManager, event: str) -> None:
@@ -339,6 +346,56 @@ class TestConnectPersistence:
     assert wm._pending_connection == PendingConnection(ssid="SecNet", password="secretpass", hidden=True, epoch=1)
     wm._remove_wpa_network.assert_called_once_with("SecNet")
     wm._add_and_select_network.assert_called_once_with("SecNet", "secretpass", True)
+
+
+class TestNetworksUpdatedCoalescing:
+  def test_mark_networks_updated_is_idempotent(self, wm):
+    wm._mark_networks_updated()
+    wm._mark_networks_updated()
+    wm._mark_networks_updated()
+    # Only the single dirty flag is buffered — no queue growth.
+    assert wm._networks_updated_pending is True
+    assert wm._callback_queue == []
+
+  def test_many_scan_ticks_while_panel_hidden_collapse_to_one_call(self, wm, mocker):
+    cb = mocker.MagicMock()
+    wm.add_callbacks(networks_updated=cb)
+
+    for _ in range(50):
+      wm._mark_networks_updated()
+
+    assert wm._callback_queue == []
+    wm.process_callbacks()
+
+    cb.assert_called_once_with(wm.networks)
+    assert wm._networks_updated_pending is False
+
+  def test_process_callbacks_uses_latest_networks_snapshot(self, wm, mocker):
+    seen = []
+    wm.add_callbacks(networks_updated=lambda nets: seen.append(list(nets)))
+    wm._store.saved_ssids.return_value = set()
+
+    stale = Network(ssid="Stale", strength=50, security_type=SecurityType.OPEN, is_tethering=False)
+    fresh = Network(ssid="Fresh", strength=80, security_type=SecurityType.OPEN, is_tethering=False)
+
+    wm._networks = [stale]
+    wm._mark_networks_updated()
+
+    # Simulate newer scan landing before the drain.
+    wm._networks = [fresh]
+
+    wm.process_callbacks()
+
+    assert len(seen) == 1
+    assert [n.ssid for n in seen[0]] == ["Fresh"]
+
+  def test_process_callbacks_without_flag_does_not_fire(self, wm, mocker):
+    cb = mocker.MagicMock()
+    wm.add_callbacks(networks_updated=cb)
+
+    wm.process_callbacks()
+
+    cb.assert_not_called()
 
 
 class TestStop:
