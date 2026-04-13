@@ -3,6 +3,7 @@
 Tests the state machine in isolation by constructing a WifiManager with mocked
 wpa_supplicant, then calling _handle_event directly with wpa_supplicant events.
 """
+import pytest
 
 from openpilot.system.ui.lib import wifi_manager as wifi_manager_module
 from openpilot.system.ui.lib.wifi_manager import (
@@ -352,6 +353,87 @@ class TestFullSequences:
     fire(wm, "CTRL-EVENT-CONNECTED - Connection to aa:bb:cc:dd:ee:ff completed [id=1]")
     assert wm._wifi_state.status == ConnectStatus.CONNECTED
     assert wm._wifi_state.ssid == "B"
+
+
+class TestAddAndSelectNetworkResponseChecks:
+  """Verify that wpa_supplicant FAIL responses are caught and orphaned
+  network entries are cleaned up (see _add_and_select_network)."""
+
+  def _stub_ctrl(self, wm, responses):
+    """Back wm._ctrl with a canned response sequence."""
+    calls = []
+
+    def fake_request(cmd):
+      calls.append(cmd)
+      if not responses:
+        return "OK"
+      return responses.pop(0)
+
+    wm._ctrl.request.side_effect = fake_request
+    return calls
+
+  def test_happy_path_all_ok(self, wm):
+    calls = self._stub_ctrl(wm, ["7", "OK", "OK", "OK"])
+
+    wm._add_and_select_network("Net", "pass1234", hidden=False)
+
+    assert calls == [
+      "ADD_NETWORK",
+      'SET_NETWORK 7 ssid "Net"',
+      'SET_NETWORK 7 psk "pass1234"',
+      "SELECT_NETWORK 7",
+    ]
+
+  def test_set_network_psk_fail_removes_orphan(self, wm):
+    """FAIL on PSK SET_NETWORK (e.g. too short) must raise and clean up."""
+    calls = self._stub_ctrl(wm, ["3", "OK", "FAIL", "OK"])
+
+    with pytest.raises(RuntimeError, match="SET_NETWORK 3 psk failed"):
+      wm._add_and_select_network("Net", "bad", hidden=False)
+
+    assert "REMOVE_NETWORK 3" in calls
+    # SELECT_NETWORK must NOT have been called with the orphan id.
+    assert "SELECT_NETWORK 3" not in calls
+
+  def test_set_network_ssid_fail_removes_orphan(self, wm):
+    calls = self._stub_ctrl(wm, ["4", "FAIL"])
+
+    with pytest.raises(RuntimeError, match="SET_NETWORK 4 ssid failed"):
+      wm._add_and_select_network("BadSsid", "pw12345678", hidden=False)
+
+    assert "REMOVE_NETWORK 4" in calls
+
+  def test_select_network_fail_removes_orphan(self, wm):
+    calls = self._stub_ctrl(wm, ["2", "OK", "OK", "FAIL"])
+
+    with pytest.raises(RuntimeError, match="SELECT_NETWORK 2 failed"):
+      wm._add_and_select_network("Net", "pw12345678", hidden=False)
+
+    assert "REMOVE_NETWORK 2" in calls
+
+  def test_add_network_fail_raises_without_orphan(self, wm):
+    self._stub_ctrl(wm, ["FAIL"])
+
+    with pytest.raises(RuntimeError, match="ADD_NETWORK failed"):
+      wm._add_and_select_network("Net", "pw12345678", hidden=False)
+
+    # Nothing to remove — ADD_NETWORK itself failed.
+    assert wm._ctrl.request.call_count == 1
+
+  def test_hidden_network_sets_scan_ssid(self, wm):
+    calls = self._stub_ctrl(wm, ["1", "OK", "OK", "OK", "OK"])
+
+    wm._add_and_select_network("Hidden", "pw12345678", hidden=True)
+
+    assert "SET_NETWORK 1 scan_ssid 1" in calls
+    assert "SELECT_NETWORK 1" in calls
+
+  def test_open_network_sets_key_mgmt_none(self, wm):
+    calls = self._stub_ctrl(wm, ["5", "OK", "OK", "OK"])
+
+    wm._add_and_select_network("Open", "", hidden=False)
+
+    assert "SET_NETWORK 5 key_mgmt NONE" in calls
 
 
 class TestConnectPersistence:

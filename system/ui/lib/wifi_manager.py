@@ -1176,20 +1176,42 @@ class WifiManager:
       threading.Thread(target=worker, daemon=True).start()
 
   def _add_and_select_network(self, ssid: str, psk: str = "", hidden: bool = False):
-    """Add a network to wpa_supplicant and select it."""
+    """Add a network to wpa_supplicant and select it.
+
+    Each SET_NETWORK / SELECT_NETWORK response is checked — a short PSK or
+    bad key_mgmt returns "FAIL", and without this check SELECT_NETWORK
+    would still run, producing a delayed/confusing WRONG_KEY instead of an
+    immediate error. On any failure we REMOVE_NETWORK the orphan so we
+    don't leak zombie entries across retries."""
     net_id = self._ctrl.request("ADD_NETWORK").strip()
     if not net_id.isdigit():
       raise RuntimeError(f"ADD_NETWORK failed: {net_id}")
-    safe_ssid = _sanitize_for_conf(ssid)
-    self._ctrl.request(f'SET_NETWORK {net_id} ssid "{safe_ssid}"')
-    safe_psk = _sanitize_for_conf(psk)
-    if safe_psk:
-      self._ctrl.request(f'SET_NETWORK {net_id} psk "{safe_psk}"')
-    else:
-      self._ctrl.request(f"SET_NETWORK {net_id} key_mgmt NONE")
-    if hidden:
-      self._ctrl.request(f"SET_NETWORK {net_id} scan_ssid 1")
-    self._ctrl.request(f"SELECT_NETWORK {net_id}")
+
+    try:
+      safe_ssid = _sanitize_for_conf(ssid)
+      self._wpa_set_network(net_id, "ssid", f'"{safe_ssid}"')
+      safe_psk = _sanitize_for_conf(psk)
+      if safe_psk:
+        self._wpa_set_network(net_id, "psk", f'"{safe_psk}"')
+      else:
+        self._wpa_set_network(net_id, "key_mgmt", "NONE")
+      if hidden:
+        self._wpa_set_network(net_id, "scan_ssid", "1")
+      resp = self._ctrl.request(f"SELECT_NETWORK {net_id}").strip()
+      if not resp.startswith("OK"):
+        raise RuntimeError(f"SELECT_NETWORK {net_id} failed: {resp}")
+    except Exception:
+      try:
+        self._ctrl.request(f"REMOVE_NETWORK {net_id}")
+      except Exception:
+        cloudlog.exception(f"Failed to clean up orphaned network {net_id}")
+      raise
+
+  def _wpa_set_network(self, net_id: str, key: str, value: str):
+    """SET_NETWORK wrapper that raises on wpa_supplicant FAIL responses."""
+    resp = self._ctrl.request(f"SET_NETWORK {net_id} {key} {value}").strip()
+    if not resp.startswith("OK"):
+      raise RuntimeError(f"SET_NETWORK {net_id} {key} failed: {resp}")
 
   def _list_network_ids(self, ssid: str) -> list[str]:
     """Return all wpa_supplicant network ids matching SSID."""
