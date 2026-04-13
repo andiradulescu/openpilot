@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.parse
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -83,9 +84,15 @@ class PendingConnection:
 # ---------------------------------------------------------------------------
 
 def _ssid_to_filename(ssid: str) -> str:
-  """Convert an SSID to a safe .nmconnection filename."""
-  safe = ssid.replace("/", "_").replace("\0", "")
-  return f"{safe}.nmconnection"
+  """Convert an SSID to a collision-free .nmconnection filename.
+
+  Uses percent-encoding so two SSIDs can never map to the same path
+  (e.g. `a/b` and `a_b` are distinct). Legacy files written with the
+  previous `_`-substitution scheme still load via the `ssid=` field
+  inside the file, and their original filename is remembered in the
+  store so remove/save keep operating on the correct path.
+  """
+  return urllib.parse.quote(ssid, safe="") + ".nmconnection"
 
 
 class NetworkStore:
@@ -129,12 +136,20 @@ class NetworkStore:
         "metered": cp.getint("connection", "metered", fallback=0),
         "hidden": cp.getboolean("wifi", "hidden", fallback=False),
         "uuid": cp.get("connection", "uuid", fallback=""),
+        # Remember the actual on-disk filename so save/remove stay
+        # consistent with legacy files that used a lossy naming scheme.
+        "_filename": fname,
       }
 
   def _render_nmconnection(self, ssid: str, entry: dict) -> tuple[str, dict]:
     file_uuid = entry.get("uuid") or str(uuid.uuid5(uuid.NAMESPACE_DNS, ssid))
     entry = dict(entry)
     entry["uuid"] = file_uuid
+
+    # Preserve legacy filenames so we don't orphan files that were written
+    # with the previous non-lossless naming scheme.
+    fname = entry.get("_filename") or _ssid_to_filename(ssid)
+    entry["_filename"] = fname
 
     cp = configparser.ConfigParser(interpolation=None)
     cp["connection"] = {
@@ -167,7 +182,7 @@ class NetworkStore:
       os.chmod(temp_path, 0o600)
       subprocess.run(["sudo", "install", "-d", "-m", "755", self._directory], check=True)
       subprocess.run(["sudo", "install", "-o", "root", "-g", "root", "-m", "600",
-                      temp_path, os.path.join(self._directory, _ssid_to_filename(ssid))], check=True)
+                      temp_path, os.path.join(self._directory, fname)], check=True)
     finally:
       try:
         os.unlink(temp_path)
@@ -206,8 +221,10 @@ class NetworkStore:
 
   def remove(self, ssid: str) -> bool:
     with self._lock:
-      if ssid in self._networks:
-        fpath = os.path.join(self._directory, _ssid_to_filename(ssid))
+      entry = self._networks.get(ssid)
+      if entry is not None:
+        fname = entry.get("_filename") or _ssid_to_filename(ssid)
+        fpath = os.path.join(self._directory, fname)
         subprocess.run(["sudo", "rm", "-f", fpath], check=False)
         del self._networks[ssid]
         return True
