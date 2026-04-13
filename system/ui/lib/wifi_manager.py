@@ -971,7 +971,14 @@ class WifiManager:
 
     if wpa_state == "COMPLETED" and status_ssid:
       self._handle_connected(status_ssid)
-    elif wpa_state in ("DISCONNECTED", "INACTIVE", "SCANNING"):
+    elif wpa_state == "SCANNING":
+      # Still actively probing — hidden-SSID joins can legitimately stay in
+      # SCANNING past the stale window. Don't synthesize a failure; defer
+      # the next check by another full window so we avoid STATUS spam and
+      # let wpa_supplicant either find the AP or transition to a terminal
+      # state we'll recognize.
+      self._last_connecting_at = time.monotonic()
+    elif wpa_state in ("DISCONNECTED", "INACTIVE"):
       network = next((n for n in self._networks if n.ssid == current_state.ssid), None)
       if network is not None and network.security_type != SecurityType.OPEN:
         self._enqueue_callbacks(self._need_auth, current_state.ssid)
