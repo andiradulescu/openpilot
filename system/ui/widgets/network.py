@@ -256,7 +256,13 @@ class AdvancedNetworkSettings(Widget):
 
       password = self._keyboard.text
       self._wifi_manager.set_tethering_password(password)
-      self._tethering_password_action.set_enabled(False)
+      # Only debounce while tethering is actually bouncing — when tethering
+      # is off, set_tethering_password is a synchronous file write that
+      # doesn't emit activated/disconnected, so _on_tethering_finished
+      # (the only re-enable path) would never fire and the button would
+      # be stuck disabled until the widget is recreated.
+      if self._wifi_manager.is_tethering_active():
+        self._tethering_password_action.set_enabled(False)
 
     self._keyboard.reset(min_text_size=MIN_PASSWORD_LENGTH)
     self._keyboard.set_title(tr("Enter new tethering password"), "")
