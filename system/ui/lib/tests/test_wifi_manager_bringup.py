@@ -17,6 +17,11 @@ def _patch_bringup_sideeffects(wm, mocker):
   mocker.patch.object(wm, "_unmanage_wlan0")
   mocker.patch.object(wifi_manager_module.time, "sleep")
   wm._exit = False
+  # Fixture lacks scan/state threads — ensure GC-triggered __del__ → stop()
+  # doesn't crash when _exit flips to False for the duration of the test.
+  wm._scan_thread = mocker.MagicMock(is_alive=mocker.MagicMock(return_value=False))
+  wm._state_thread = mocker.MagicMock(is_alive=mocker.MagicMock(return_value=False))
+  wm._gsm = mocker.MagicMock()
   return mock_run
 
 
