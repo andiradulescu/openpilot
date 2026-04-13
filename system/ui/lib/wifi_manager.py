@@ -523,20 +523,23 @@ class WifiManager:
       self._tethering_psk = DEFAULT_TETHERING_PASSWORD
 
     def worker():
-      _generate_wpa_conf(self._store)
-      self._ensure_wpa_supplicant()
+      try:
+        _generate_wpa_conf(self._store)
+        self._ensure_wpa_supplicant()
 
-      # Populate networks before wifi state so the connected network's
-      # strength is available when the UI first renders (avoids the
-      # "disconnected icon" flash for the connected SSID).
-      self._update_networks(block=True)
+        # Populate networks before wifi state so the connected network's
+        # strength is available when the UI first renders (avoids the
+        # "disconnected icon" flash for the connected SSID).
+        self._update_networks(block=True)
 
-      self._init_wifi_state()
+        self._init_wifi_state()
 
-      self._scan_thread.start()
-      self._state_thread.start()
+        self._scan_thread.start()
+        self._state_thread.start()
 
-      cloudlog.debug("WifiManager initialized")
+        cloudlog.debug("WifiManager initialized")
+      except Exception:
+        cloudlog.exception("WifiManager initialization failed")
 
     threading.Thread(target=worker, daemon=True).start()
 
