@@ -275,19 +275,34 @@ class Tici(HardwareBase):
                                 capture_output=True, text=True, timeout=2)
         ssid = parse_status(result.stdout).get("ssid")
         if ssid:
-          safe = ssid.replace("/", "_").replace("\0", "")
-          fpath = os.path.join(NM_CONNECTIONS_DIR, f"{safe}.nmconnection")
-          cp = configparser.ConfigParser(interpolation=None)
-          raw = sudo_read(fpath)
-          if raw:
-            cp.read_string(raw)
-          else:
-            cp.read(fpath)
-          metered = cp.getint("connection", "metered", fallback=0)
-          if metered == 1:  # YES
-            return True
-          elif metered == 2:  # NO
-            return False
+          # NetworkStore in wifi_manager.py owns the SSID-to-filename
+          # encoding (percent-encoded, lossless). Rather than duplicating
+          # that encoding here (and drifting out of sync again), match by
+          # the ssid field inside each .nmconnection file.
+          try:
+            filenames = os.listdir(NM_CONNECTIONS_DIR)
+          except OSError:
+            filenames = []
+          for fname in filenames:
+            if not fname.endswith(".nmconnection"):
+              continue
+            fpath = os.path.join(NM_CONNECTIONS_DIR, fname)
+            raw = sudo_read(fpath)
+            if not raw:
+              continue
+            cp = configparser.ConfigParser(interpolation=None)
+            try:
+              cp.read_string(raw)
+            except configparser.Error:
+              continue
+            if cp.get("wifi", "ssid", fallback="") != ssid:
+              continue
+            metered = cp.getint("connection", "metered", fallback=0)
+            if metered == 1:  # YES
+              return True
+            if metered == 2:  # NO
+              return False
+            break
       elif network_type in [NetworkType.cell2G, NetworkType.cell3G, NetworkType.cell4G, NetworkType.cell5G]:
         # Cellular metered check still via NM (NM still manages cellular)
         primary_connection = self.nm.Get(NM, 'PrimaryConnection', dbus_interface=DBUS_PROPS, timeout=TIMEOUT)
