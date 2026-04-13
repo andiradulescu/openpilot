@@ -731,6 +731,10 @@ class WifiManager:
 
   def _monitor_state(self):
     while not self._exit:
+      if self._ctrl is None:
+        # wpa_supplicant never came up (CI / dev PC) — avoid tight reconnect spam
+        time.sleep(2)
+        continue
       monitor = None
       try:
         epoch = self._monitor_epoch
