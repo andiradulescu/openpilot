@@ -1172,10 +1172,22 @@ class WifiManager:
         # _tethering_active, and _start_tethering doesn't set it back — so
         # we re-assert the flag before the restart to keep UI/backend
         # state in sync (otherwise is_tethering_active() reports False
-        # while the hotspot is still running).
+        # while the hotspot is still running). Mirror set_tethering_active's
+        # rollback on bringup failure so a wedged AP doesn't leave the flag
+        # stuck True (which would block scan/reconcile loops).
         self._stop_tethering()
         self._tethering_active = True
-        self._start_tethering()
+        try:
+          self._start_tethering()
+        except Exception:
+          cloudlog.exception("Failed to restart tethering after password change")
+          try:
+            self._stop_tethering()
+          except Exception:
+            cloudlog.exception("Tethering rollback also failed")
+            self._tethering_active = False
+            self._wifi_state = WifiState()
+            self._enqueue_callbacks(self._disconnected)
     threading.Thread(target=worker, daemon=True).start()
 
   def set_ipv4_forward(self, enabled: bool):
