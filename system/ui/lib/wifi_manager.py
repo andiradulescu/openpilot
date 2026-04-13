@@ -2,6 +2,7 @@ import atexit
 import configparser
 import glob
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -587,7 +588,7 @@ class WifiManager:
     # Target only wpa_supplicants running *our* config so we don't touch
     # a system-managed daemon that happens to be on a different config
     # or a different interface.
-    subprocess.run(["sudo", "pkill", "-f", f"wpa_supplicant.*{WPA_SUPPLICANT_CONF}"], check=False)
+    subprocess.run(["sudo", "pkill", "-f", rf"wpa_supplicant.*{re.escape(WPA_SUPPLICANT_CONF)}"], check=False)
     subprocess.run(["sudo", "killall", "-q", "dnsmasq"], check=False)
     subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
     time.sleep(0.5)
@@ -1179,9 +1180,10 @@ class WifiManager:
       self._ctrl.close()
       self._ctrl = None
 
-    # Stop STA wpa_supplicant
+    # Stop STA wpa_supplicant (only the one running our config — never touch a
+    # system-managed daemon on another interface or config).
     self._monitor_epoch += 1
-    subprocess.run(["sudo", "killall", "-q", "wpa_supplicant"], check=False)
+    subprocess.run(["sudo", "pkill", "-f", f"wpa_supplicant.*{re.escape(WPA_SUPPLICANT_CONF)}"], check=False)
     self._dhcp.stop()
     time.sleep(0.5)
 
@@ -1261,9 +1263,9 @@ class WifiManager:
       self._ctrl.close()
       self._ctrl = None
 
-    # Stop AP wpa_supplicant
+    # Stop AP wpa_supplicant (only the one running our AP config).
     self._monitor_epoch += 1
-    subprocess.run(["sudo", "killall", "-q", "wpa_supplicant"], check=False)
+    subprocess.run(["sudo", "pkill", "-f", f"wpa_supplicant.*{re.escape(WPA_AP_CONF)}"], check=False)
     time.sleep(0.5)
 
     # Flush AP IP
