@@ -651,9 +651,14 @@ class WifiManager:
       if self._user_epoch != epoch:
         return
 
-      self._wifi_state = WifiState(ssid=ssid, status=new_status)
-      if new_status == ConnectStatus.CONNECTED:
-        self._update_active_connection_info()
+      if new_status == ConnectStatus.CONNECTED and ssid is not None:
+        # Adopt an already-connected daemon (UI restart, or attach to a
+        # system-managed daemon that was already associated). We own DHCP,
+        # so we must (re)start udhcpc — the previous UI's udhcpc died with
+        # its parent, so without this the interface has no IPv4 lease.
+        self._handle_connected(ssid)
+      else:
+        self._wifi_state = WifiState(ssid=ssid, status=new_status)
 
     if block:
       worker()
