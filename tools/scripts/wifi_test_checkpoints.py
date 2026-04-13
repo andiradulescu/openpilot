@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, UTC
 from pathlib import Path
 
-from openpilot.system.ui.lib.wifi_manager_service import WifiManagerClient
+from openpilot.system.ui.lib.wifi_manager import WifiManager
 from openpilot.system.ui.lib.wpa_ctrl import parse_status
 
 
@@ -236,17 +236,17 @@ def collect_nmconnections() -> list[dict[str, str | int]]:
 
 
 def collect_daemon_snapshot() -> dict:
-  client = None
+  manager = None
   try:
-    client = WifiManagerClient()
-    wifi_state = client.wifi_state
+    manager = WifiManager()
+    wifi_state = manager.wifi_state
     return {
       "wifi_state": {
         "ssid": wifi_state.ssid,
         "status": int(wifi_state.status),
       },
-      "ipv4_address": client.ipv4_address,
-      "saved_ssids": sorted(getattr(client, "_saved_ssids", set())),
+      "ipv4_address": manager.ipv4_address,
+      "saved_ssids": sorted(manager._store.saved_ssids()),
       "networks": [
         {
           "ssid": network.ssid,
@@ -254,15 +254,15 @@ def collect_daemon_snapshot() -> dict:
           "security_type": int(network.security_type),
           "is_tethering": network.is_tethering,
         }
-        for network in client.networks
+        for network in manager.networks
       ],
-      "tethering_active": client.is_tethering_active(),
+      "tethering_active": manager.is_tethering_active(),
     }
   except Exception as e:
     return {"error": str(e)}
   finally:
-    if client is not None:
-      client.stop()
+    if manager is not None:
+      manager.stop()
 
 
 def collect_snapshot() -> dict:

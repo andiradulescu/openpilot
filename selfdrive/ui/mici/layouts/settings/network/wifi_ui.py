@@ -9,8 +9,7 @@ from openpilot.selfdrive.ui.mici.widgets.button import BigButton, LABEL_COLOR
 from openpilot.system.ui.lib.application import gui_app, MousePos, FontWeight
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.scroller import NavScroller
-from openpilot.system.ui.lib.wifi_manager import Network, SecurityType, normalize_ssid
-from openpilot.system.ui.lib.wifi_manager_service import WifiManagerClient as WifiManager
+from openpilot.system.ui.lib.wifi_manager import Network, SecurityType, WifiManager, normalize_ssid
 
 
 class LoadingAnimation(Widget):

@@ -19,8 +19,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.time_helpers import system_time_valid
 from openpilot.common.utils import run_cmd
 from openpilot.system.ui.lib.application import gui_app, FontWeight
-from openpilot.system.ui.lib.wifi_manager import ConnectStatus
-from openpilot.system.ui.lib.wifi_manager_service import WifiManagerClient as WifiManager
+from openpilot.system.ui.lib.wifi_manager import ConnectStatus, WifiManager
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.nav_widget import NavWidget
 from openpilot.system.ui.widgets.label import UnifiedLabel
