@@ -854,6 +854,16 @@ class WifiManager:
     self._last_connecting_at = 0.0
     self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTED)
     self._persist_pending_connection(ssid)
+    # Re-enable all saved networks so wpa_supplicant can auto-roam if the
+    # current AP disappears. SELECT_NETWORK (in _add_and_select_network /
+    # activate_connection) disables every other network as a side effect,
+    # so without this call the runtime daemon has only one enabled network
+    # and cannot fall back to another saved AP when the current one fades.
+    if self._ctrl is not None:
+      try:
+        self._ctrl.request("ENABLE_NETWORK all")
+      except Exception:
+        cloudlog.exception("Failed to re-enable saved networks for auto-roam")
     self._dhcp.start()
     self._enqueue_callbacks(self._activated)
     self._poll_for_ip()

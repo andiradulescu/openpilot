@@ -87,6 +87,28 @@ class TestConnected:
     assert wm._dhcp.start.call_count == 2
     assert cb.call_count == 2
 
+  def test_handle_connected_enables_all_networks_for_auto_roam(self, wm):
+    """SELECT_NETWORK disables every other network as a side effect, so the
+    runtime daemon would only have one enabled network after a UI-driven
+    connect. _handle_connected must re-enable all saved networks so
+    wpa_supplicant can auto-roam when the current AP disappears."""
+    wm._handle_connected("MyNet")
+
+    requests = [call.args[0] for call in wm._ctrl.request.call_args_list]
+    assert "ENABLE_NETWORK all" in requests
+
+  def test_handle_connected_swallows_enable_network_failure(self, wm):
+    """A transient ctrl error on ENABLE_NETWORK must not tear down the
+    CONNECTED transition itself."""
+    wm._ctrl.request.side_effect = OSError("ctrl busy")
+
+    wm._handle_connected("MyNet")
+
+    # State still transitioned, DHCP still started.
+    assert wm._wifi_state.status == ConnectStatus.CONNECTED
+    assert wm._wifi_state.ssid == "MyNet"
+    wm._dhcp.start.assert_called_once()
+
 
 class TestDisconnected:
   def test_disconnected_clears_state(self, wm):
