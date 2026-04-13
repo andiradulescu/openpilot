@@ -102,10 +102,19 @@ class WpaCtrl(_WpaCtrlBase):
 
   def request(self, cmd: str) -> str:
     """Send command, return response string."""
-    sock = self._ensure_sock()
     with self._request_lock:
+      sock = self._ensure_sock()
       sock.send(cmd.encode())
       return sock.recv(RECV_BUF_SIZE).decode("utf-8", "replace")
+
+  def close(self):
+    # Serialize against request() so a concurrent caller can't be mid-send/
+    # recv while we close the underlying fd. Without this, the other thread
+    # observes a closed socket and raises OSError (EBADF); callers swallow
+    # that today, but the cleaner contract is "close waits for in-flight
+    # requests to drain".
+    with self._request_lock:
+      super().close()
 
 
 class WpaCtrlMonitor(_WpaCtrlBase):
