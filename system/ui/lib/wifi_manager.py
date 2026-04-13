@@ -1148,8 +1148,13 @@ class WifiManager:
       with atomic_write(TETHERING_PASSWORD_FILE, overwrite=True) as f:
         f.write(password)
       if self._tethering_active:
-        # Restart tethering with new password
+        # Restart tethering with new password. _stop_tethering clears
+        # _tethering_active, and _start_tethering doesn't set it back — so
+        # we re-assert the flag before the restart to keep UI/backend
+        # state in sync (otherwise is_tethering_active() reports False
+        # while the hotspot is still running).
         self._stop_tethering()
+        self._tethering_active = True
         self._start_tethering()
     threading.Thread(target=worker, daemon=True).start()
 
