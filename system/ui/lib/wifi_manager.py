@@ -548,30 +548,49 @@ class WifiManager:
     result = subprocess.run(["sudo", "nmcli", "dev", "set", "wlan0", "managed", "no"], capture_output=True)
     cloudlog.info(f"nmcli dev set wlan0 managed no: rc={result.returncode}")
 
-  def _is_our_wpa_supplicant(self) -> bool:
-    """Check if the running wpa_supplicant was started with our config."""
+  def _try_attach_ctrl(self) -> bool:
+    """Attach to an already-running wpa_supplicant via its ctrl socket.
+
+    Works for both our own previously-spawned daemon and a system-managed
+    one (e.g. a future systemd/OpenRC unit on tici). Pure attach — never
+    spawns, never kills. Returns True if self._ctrl is now live.
+    """
     try:
-      out = subprocess.check_output(["pgrep", "-a", "wpa_supplicant"], text=True)
-      return WPA_SUPPLICANT_CONF in out
-    except subprocess.CalledProcessError:
+      ctrl = WpaCtrl()
+      ctrl.open()
+      self._ctrl = ctrl
+      return True
+    except (OSError, ConnectionRefusedError):
       return False
 
   def _ensure_wpa_supplicant(self):
-    """Start our own wpa_supplicant, then connect to control socket."""
-    # If our wpa_supplicant is already running (process restart), just reconnect
-    if self._is_our_wpa_supplicant():
-      try:
-        ctrl = WpaCtrl()
-        ctrl.open()
-        self._ctrl = ctrl
-        self._ctrl.request("RECONFIGURE")
-        self._ctrl.request("ENABLE_NETWORK all")
-        return
-      except (OSError, ConnectionRefusedError):
-        pass
+    """Attach to a running wpa_supplicant, or spawn one if none is running.
 
-    # Kill stale wpa_supplicant and tethering remnants (e.g. leftover AP mode from a dirty shutdown)
-    subprocess.run(["sudo", "killall", "-q", "wpa_supplicant"], check=False)
+    There must never be more than one wpa_supplicant on wlan0. We always
+    prefer attaching to whatever is already running — ours or a
+    system-managed daemon — and only spawn our own when nothing answers
+    on the ctrl socket. We never kill a daemon we didn't spawn.
+    """
+    # Fast path: attach to whatever is already running.
+    if self._try_attach_ctrl():
+      # RECONFIGURE picks up any config rewrite from _generate_wpa_conf
+      # this session. Harmless on a system-managed daemon (it just
+      # rereads its own config file).
+      try:
+        self._ctrl.request("RECONFIGURE")
+      except Exception:
+        pass
+      try:
+        self._ctrl.request("ENABLE_NETWORK all")
+      except Exception:
+        pass
+      return
+
+    # No daemon is answering — clean up our own stale state and spawn.
+    # Target only wpa_supplicants running *our* config so we don't touch
+    # a system-managed daemon that happens to be on a different config
+    # or a different interface.
+    subprocess.run(["sudo", "pkill", "-f", f"wpa_supplicant.*{WPA_SUPPLICANT_CONF}"], check=False)
     subprocess.run(["sudo", "killall", "-q", "dnsmasq"], check=False)
     subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
     time.sleep(0.5)
@@ -590,7 +609,6 @@ class WifiManager:
       time.sleep(0.5)
 
     # Tell NM to release wlan0, then start our own wpa_supplicant.
-    # NM's wpa_supplicant runs in global mode (-u) and can coexist with ours.
     self._unmanage_wlan0()
 
     subprocess.run(["sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", WPA_SUPPLICANT_CONF, "-D", "nl80211"], check=False)
@@ -599,14 +617,13 @@ class WifiManager:
     for _ in range(30):
       if self._exit:
         return
-      try:
-        ctrl = WpaCtrl()
-        ctrl.open()
-        self._ctrl = ctrl
-        self._ctrl.request("ENABLE_NETWORK all")
+      if self._try_attach_ctrl():
+        try:
+          self._ctrl.request("ENABLE_NETWORK all")
+        except Exception:
+          pass
         return
-      except (OSError, ConnectionRefusedError):
-        time.sleep(1)
+      time.sleep(1)
     cloudlog.error("wpa_supplicant did not start after 30 attempts")
 
   def _init_wifi_state(self, block: bool = True):
