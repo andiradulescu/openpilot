@@ -571,15 +571,12 @@ class WifiManager:
     system-managed daemon — and only spawn our own when nothing answers
     on the ctrl socket. We never kill a daemon we didn't spawn.
     """
-    # Fast path: attach to whatever is already running.
+    # Fast path: attach to whatever is already running. ENABLE_NETWORK is
+    # safe on any daemon — it just enables all networks in whatever config
+    # the running daemon is using. We don't RECONFIGURE here: on a
+    # system-managed daemon it'd force an unrelated config reload, and on
+    # our own daemon new networks get pushed via ADD_NETWORK at runtime.
     if self._try_attach_ctrl():
-      # RECONFIGURE picks up any config rewrite from _generate_wpa_conf
-      # this session. Harmless on a system-managed daemon (it just
-      # rereads its own config file).
-      try:
-        self._ctrl.request("RECONFIGURE")
-      except Exception:
-        pass
       try:
         self._ctrl.request("ENABLE_NETWORK all")
       except Exception:
