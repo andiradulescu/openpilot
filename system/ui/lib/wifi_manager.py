@@ -1298,16 +1298,26 @@ class WifiManager:
     if self._ipv4_forward:
       subprocess.run(["sudo", "sysctl", "net.ipv4.ip_forward=1"], check=False)
 
-    # Reconnect control socket — doubles as a bringup check. If the AP
-    # wpa_supplicant failed to spawn (e.g. another daemon already owns
-    # wlan0, interface missing, config rejected), there's no ctrl socket
-    # to attach to. We raise so set_tethering_active's rollback runs.
+    # Reconnect control socket — doubles as a bringup check. A bare attach
+    # isn't enough: a pre-existing STA daemon (system-managed, different
+    # config path) can still own the ctrl socket even when our AP spawn
+    # failed to take the interface. We also require STATUS to report
+    # mode=AP, so a surviving STA daemon can't masquerade as our hotspot.
     try:
       ctrl = WpaCtrl()
       ctrl.open()
-      self._ctrl = ctrl
     except Exception as e:
       raise RuntimeError(f"AP wpa_supplicant bringup failed: {e}") from e
+    try:
+      status = parse_status(ctrl.request("STATUS"))
+    except Exception as e:
+      ctrl.close()
+      raise RuntimeError(f"AP wpa_supplicant STATUS failed: {e}") from e
+    if status.get("mode") != "AP":
+      actual_mode = status.get("mode")
+      ctrl.close()
+      raise RuntimeError(f"AP wpa_supplicant bringup did not take over wlan0 (mode={actual_mode!r}); another daemon likely owns the interface")
+    self._ctrl = ctrl
 
     self._wifi_state = WifiState(ssid=self._tethering_ssid, status=ConnectStatus.CONNECTED)
     self._ipv4_address = TETHERING_IP_ADDRESS

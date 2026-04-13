@@ -7,6 +7,8 @@ wpa_supplicant on tici.
 """
 import re
 
+import pytest
+
 from openpilot.system.ui.lib import wifi_manager as wifi_manager_module
 from openpilot.system.ui.lib.wifi_manager import WPA_SUPPLICANT_CONF
 
@@ -146,3 +148,79 @@ class TestMultipleDaemonsPrevented:
 
     mock_run.assert_not_called()
     mock_unmanage.assert_not_called()
+
+
+def _patch_tethering_sideeffects(wm, mocker):
+  """Silence all the subprocess / filesystem plumbing _start_tethering
+  executes so we can exercise just the ctrl-socket bringup check."""
+  mocker.patch.object(wifi_manager_module.subprocess, "run")
+  mocker.patch.object(wifi_manager_module.subprocess, "Popen")
+  mocker.patch.object(wifi_manager_module.time, "sleep")
+  mocker.patch.object(wifi_manager_module.os, "open", return_value=0)
+
+  class _DummyFd:
+    def __enter__(self):
+      return self
+
+    def __exit__(self, *a):
+      return False
+
+    def write(self, _data):
+      return None
+
+  mocker.patch.object(wifi_manager_module.os, "fdopen", return_value=_DummyFd())
+  mocker.patch.object(wifi_manager_module, "_get_upstream_iface", return_value="wwan0")
+  wm._tethering_ssid = "weedle-test"
+  wm._tethering_psk = "hotspot-psk-1234"
+  wm._ipv4_forward = False
+  wm._monitor_epoch = 0
+
+
+class TestTetheringBringupVerification:
+  def test_start_tethering_raises_when_attached_daemon_is_not_ap(self, wm, mocker):
+    """If a surviving STA daemon still owns wlan0, our AP spawn fails but
+    attach still succeeds against the old daemon. STATUS reports mode=station,
+    so bringup must raise (so set_tethering_active's rollback runs)."""
+    _patch_tethering_sideeffects(wm, mocker)
+    sta_ctrl = mocker.MagicMock()
+    sta_ctrl.request.return_value = "wpa_state=COMPLETED\nmode=station\nssid=NotOurs\n"
+    mocker.patch.object(wifi_manager_module, "WpaCtrl", return_value=sta_ctrl)
+
+    with pytest.raises(RuntimeError, match="did not take over wlan0"):
+      wm._start_tethering()
+
+    sta_ctrl.close.assert_called_once()
+    # We must NOT publish the stale ctrl as our own — otherwise callers
+    # (monitor thread, connect path) would keep talking to the STA daemon
+    # thinking it's our AP.
+    assert wm._ctrl is None
+
+  def test_start_tethering_accepts_ap_mode(self, wm, mocker):
+    """Happy path: STATUS says mode=AP → attach is accepted and state flips
+    to CONNECTED."""
+    _patch_tethering_sideeffects(wm, mocker)
+    ap_ctrl = mocker.MagicMock()
+    ap_ctrl.request.return_value = f"wpa_state=COMPLETED\nmode=AP\nssid={wm._tethering_ssid}\n"
+    mocker.patch.object(wifi_manager_module, "WpaCtrl", return_value=ap_ctrl)
+
+    wm._start_tethering()
+
+    assert wm._ctrl is ap_ctrl
+    ap_ctrl.close.assert_not_called()
+    from openpilot.system.ui.lib.wifi_manager import ConnectStatus
+    assert wm._wifi_state.status == ConnectStatus.CONNECTED
+    assert wm._wifi_state.ssid == wm._tethering_ssid
+
+  def test_start_tethering_raises_when_status_request_fails(self, wm, mocker):
+    """A daemon that answers the socket but errors on STATUS is also unsafe
+    to keep — we raise and close the ctrl."""
+    _patch_tethering_sideeffects(wm, mocker)
+    broken_ctrl = mocker.MagicMock()
+    broken_ctrl.request.side_effect = OSError("broken pipe")
+    mocker.patch.object(wifi_manager_module, "WpaCtrl", return_value=broken_ctrl)
+
+    with pytest.raises(RuntimeError, match="STATUS failed"):
+      wm._start_tethering()
+
+    broken_ctrl.close.assert_called_once()
+    assert wm._ctrl is None
