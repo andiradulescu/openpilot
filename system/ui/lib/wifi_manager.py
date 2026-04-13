@@ -558,7 +558,7 @@ class WifiManager:
 
   def _ensure_wpa_supplicant(self):
     """Start our own wpa_supplicant, then connect to control socket."""
-    # If our wpa_supplicant is already running (daemon restart), just reconnect
+    # If our wpa_supplicant is already running (process restart), just reconnect
     if self._is_our_wpa_supplicant():
       try:
         ctrl = WpaCtrl()
@@ -839,9 +839,6 @@ class WifiManager:
   def _network_scanner(self):
     while not self._exit:
       self._reconcile_connecting_state()
-      # Keep scans running even when no UI widget is currently visible.
-      # A detached service may be shared by multiple clients, and networking
-      # should continue to refresh independently of any one UI lifecycle.
       if not self._tethering_active:
         if time.monotonic() - self._last_network_scan > SCAN_PERIOD_SECONDS:
           self._request_scan()
