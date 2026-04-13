@@ -300,12 +300,6 @@ class WifiManagerUI(Widget):
                                      networks_updated=self._on_network_updated,
                                      disconnected=self._on_disconnected)
 
-  def show_event(self):
-    super().show_event()
-
-  def hide_event(self):
-    super().hide_event()
-
   def _load_icons(self):
     for icon in STRENGTH_ICONS + ["icons/checkmark.png", "icons/circled_slash.png", "icons/lock_closed.png"]:
       gui_app.texture(icon, ICON_SIZE, ICON_SIZE)
