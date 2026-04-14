@@ -17,7 +17,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.utils import atomic_write, sudo_read
 from openpilot.system.ui.lib.wpa_ctrl import (WpaCtrl, WpaCtrlMonitor, SecurityType,
                                                parse_scan_results, flags_to_security_type,
-                                               parse_status, dbm_to_percent)
+                                               parse_status, dbm_to_percent, decode_ssid)
 
 try:
   from openpilot.common.params import Params
@@ -44,11 +44,15 @@ def normalize_ssid(ssid: str) -> str:
 
 
 def parse_event_ssid(event: str) -> str | None:
-  """Extract ssid="…" from a wpa_supplicant control event, or None."""
+  """Extract ssid="…" from a wpa_supplicant control event, or None.
+
+  The captured value is printf_encode'd (wpa_ssid_txt), so run it through
+  decode_ssid to unescape hex/octal/backslash sequences.
+  """
   match = TEMP_DISABLED_SSID_RE.search(event)
   if match is None:
     return None
-  return match.group(1).replace('\\"', '"')
+  return decode_ssid(match.group(1))
 
 
 class MeteredType(IntEnum):

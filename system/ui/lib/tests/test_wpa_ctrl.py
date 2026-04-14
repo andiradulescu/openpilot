@@ -32,6 +32,24 @@ class TestParseStatus:
   def test_empty(self):
     assert parse_status("") == {}
 
+  def test_ssid_decoded(self):
+    # STATUS emits ssid via wpa_ssid_txt (printf_encode), so non-ASCII
+    # bytes come through escaped and must be decoded.
+    raw = "wpa_state=COMPLETED\nssid=caf\\xc3\\xa9\nip_address=10.0.0.5\n"
+    d = parse_status(raw)
+    assert d["ssid"] == "caf\xc3\xa9"
+
+  def test_ssid_with_embedded_quote(self):
+    raw = 'ssid=My \\"Home\\"\n'
+    assert parse_status(raw)["ssid"] == 'My "Home"'
+
+  def test_non_ssid_keys_untouched(self):
+    # Only the ssid value is decoded; other fields must pass through.
+    raw = "bssid=00:11:22:33:44:55\nssid=\\x41\n"
+    d = parse_status(raw)
+    assert d["bssid"] == "00:11:22:33:44:55"
+    assert d["ssid"] == "A"
+
 
 class TestFlagsToSecurityType:
   @pytest.mark.parametrize("flags,expected", [

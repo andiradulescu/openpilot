@@ -170,6 +170,14 @@ _HEX = "0123456789abcdefABCDEF"
 def decode_ssid(encoded: str) -> str:
   """Decode a wpa_supplicant printf_encode'd SSID string.
 
+  We speak to wpa_supplicant over its text control socket (no D-Bus on
+  this branch), so SSIDs arrive escaped by wpa_supplicant's printf_encode:
+  non-printable, special, and non-ASCII bytes are emitted as `\\xNN` /
+  octal / backslash sequences. If we didn't decode, a hidden AP
+  broadcasting 32 null bytes would render in the UI as a literal
+  `\\x00\\x00...` string, and any SSID with escapes or high bytes would
+  fail to round-trip for state tracking.
+
   Mirrors `printf_decode` in wpa_supplicant/src/utils/common.c:
     \\\\, \\", \\e, \\n, \\r, \\t       → literal
     \\xNN or \\xN                   → hex byte (1 or 2 digits)
@@ -178,8 +186,7 @@ def decode_ssid(encoded: str) -> str:
                                     is then processed as a literal
     trailing \\                     → dropped
 
-  Hidden APs broadcast 32 null bytes as their SSID, which wpa_supplicant
-  emits as `\\x00` repeated. Those normalize to "" so the existing
+  All-null decoded SSIDs (hidden APs) normalize to "" so the existing
   empty-SSID filter in wifi_manager drops them.
   """
   out: list[str] = []
@@ -288,11 +295,17 @@ def flags_to_security_type(flags: str) -> SecurityType:
 
 
 def parse_status(raw: str) -> dict[str, str]:
-  """Parse wpa_supplicant STATUS output (key=value lines)."""
+  """Parse wpa_supplicant STATUS output (key=value lines).
+
+  The `ssid` field is emitted via `wpa_ssid_txt()` (printf_encode'd), so
+  decode it here; every caller gets a raw, usable SSID.
+  """
   result = {}
   for line in raw.strip().split("\n"):
     if "=" in line:
       key, _, value = line.partition("=")
+      if key == "ssid":
+        value = decode_ssid(value)
       result[key] = value
   return result
 
