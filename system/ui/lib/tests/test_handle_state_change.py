@@ -457,6 +457,36 @@ class TestAddAndSelectNetworkResponseChecks:
 
     assert "SET_NETWORK 5 key_mgmt NONE" in calls
 
+  def test_raw_hex_psk_sent_unquoted(self, wm):
+    """A 64-hex PSK must be passed unquoted; wpa_supplicant rejects quoted
+    values of length 64 as too-long passphrases (hostap config.c:650)."""
+    raw_psk = "0123456789abcdef" * 4
+    assert len(raw_psk) == 64
+    calls = self._stub_ctrl(wm, ["8", "OK", "OK", "OK"])
+
+    wm._add_and_select_network("Net", raw_psk, hidden=False)
+
+    assert f"SET_NETWORK 8 psk {raw_psk}" in calls
+    assert f'SET_NETWORK 8 psk "{raw_psk}"' not in calls
+
+  def test_passphrase_psk_sent_quoted(self, wm):
+    """Anything not exactly 64 hex chars goes through as a quoted passphrase."""
+    calls = self._stub_ctrl(wm, ["9", "OK", "OK", "OK"])
+
+    wm._add_and_select_network("Net", "s3cretpass", hidden=False)
+
+    assert 'SET_NETWORK 9 psk "s3cretpass"' in calls
+
+  def test_63_hex_chars_is_passphrase(self, wm):
+    """A 63-char hex-looking string is a passphrase, not a raw PSK."""
+    psk63 = "0123456789abcdef" * 3 + "0123456789abcde"
+    assert len(psk63) == 63
+    calls = self._stub_ctrl(wm, ["10", "OK", "OK", "OK"])
+
+    wm._add_and_select_network("Net", psk63, hidden=False)
+
+    assert f'SET_NETWORK 10 psk "{psk63}"' in calls
+
 
 class TestConnectPersistence:
   def test_connect_to_network_does_not_save_before_auth(self, wm, mocker):

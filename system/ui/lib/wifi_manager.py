@@ -449,6 +449,24 @@ def _sanitize_for_conf(value: str) -> str:
   return value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '').replace('\r', '')
 
 
+def _is_raw_psk(psk: str) -> bool:
+  """True if psk is a 64-char hex string (a pre-hashed WPA PSK).
+
+  wpa_supplicant parses a quoted `psk` as an 8-63 char passphrase and an
+  unquoted `psk` as 64 hex chars (hostap config.c:620-694). Quoting a
+  64-char value makes it a too-long passphrase and always FAILs, so raw
+  PSKs must go through unquoted.
+  """
+  return len(psk) == 64 and all(c in "0123456789abcdefABCDEF" for c in psk)
+
+
+def _format_psk_value(psk: str) -> str:
+  """Render a psk value for wpa_supplicant: raw 64-hex unquoted, else quoted."""
+  if _is_raw_psk(psk):
+    return psk
+  return f'"{_sanitize_for_conf(psk)}"'
+
+
 def _generate_wpa_conf(store: NetworkStore, path: str = WPA_SUPPLICANT_CONF):
   """Write wpa_supplicant.conf from NetworkStore (STA networks only)."""
   lines = [
@@ -462,13 +480,12 @@ def _generate_wpa_conf(store: NetworkStore, path: str = WPA_SUPPLICANT_CONF):
     psk = entry.get("psk", "")
     hidden = entry.get("hidden", False)
     safe_ssid = _sanitize_for_conf(ssid)
-    safe_psk = _sanitize_for_conf(psk)
     if not safe_ssid:
       continue
     lines.append("network={")
     lines.append(f'  ssid="{safe_ssid}"')
-    if safe_psk:
-      lines.append(f'  psk="{safe_psk}"')
+    if psk:
+      lines.append(f'  psk={_format_psk_value(psk)}')
       lines.append("  key_mgmt=WPA-PSK")
     else:
       lines.append("  key_mgmt=NONE")
@@ -1204,9 +1221,8 @@ class WifiManager:
     try:
       safe_ssid = _sanitize_for_conf(ssid)
       self._wpa_set_network(net_id, "ssid", f'"{safe_ssid}"')
-      safe_psk = _sanitize_for_conf(psk)
-      if safe_psk:
-        self._wpa_set_network(net_id, "psk", f'"{safe_psk}"')
+      if psk:
+        self._wpa_set_network(net_id, "psk", _format_psk_value(psk))
       else:
         self._wpa_set_network(net_id, "key_mgmt", "NONE")
       if hidden:
@@ -1329,10 +1345,9 @@ class WifiManager:
 
     # Write AP config
     safe_tether_ssid = _sanitize_for_conf(self._tethering_ssid)
-    safe_tether_psk = _sanitize_for_conf(psk)
     lines = ["ctrl_interface=/var/run/wpa_supplicant", "ap_scan=2", "",
              "network={", f'  ssid="{safe_tether_ssid}"', "  mode=2",
-             "  frequency=2437", "  key_mgmt=WPA-PSK", f'  psk="{safe_tether_psk}"', "}", ""]
+             "  frequency=2437", "  key_mgmt=WPA-PSK", f'  psk={_format_psk_value(psk)}', "}", ""]
     ap_conf = "\n".join(lines)
     fd = os.open(WPA_AP_CONF, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
