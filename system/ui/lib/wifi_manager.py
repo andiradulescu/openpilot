@@ -1327,6 +1327,14 @@ class WifiManager:
     threading.Thread(target=worker, daemon=True).start()
 
   def _start_tethering(self):
+    # TODO: tethering is currently a kill-and-respawn: kill our STA daemon,
+    # spawn a second daemon with an AP-mode config. That's incompatible
+    # with a system-managed wpa_supplicant (we can't kill it, and we can't
+    # run two daemons on one interface). The clean model is to keep one
+    # daemon and flip networks: ADD_NETWORK with mode=2/frequency=2437,
+    # DISABLE_NETWORK all the STA networks, ENABLE_NETWORK the AP one.
+    # _stop_tethering becomes the reverse. Needed before we can run under
+    # a systemd-managed wpa_supplicant on tici.
     self._set_connecting(self._tethering_ssid)
 
     psk = self._tethering_psk
