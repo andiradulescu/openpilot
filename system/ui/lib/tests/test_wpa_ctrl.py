@@ -8,6 +8,7 @@ from openpilot.system.ui.lib.wpa_ctrl import (
   RECV_BUF_SIZE,
   SecurityType,
   WpaCtrl,
+  decode_ssid,
   parse_scan_results,
   parse_status,
   flags_to_security_type,
@@ -79,6 +80,22 @@ class TestParseScanResults:
     assert len(results) == 1
     assert results[0].ssid == ""
 
+  def test_null_padded_hidden_ssid(self):
+    """Some APs broadcast 32 null bytes instead of an empty SSID; wpa_supplicant
+    emits them as `\\x00` escapes. Those should normalize to empty so the UI
+    filters them out the same as empty hidden networks."""
+    padded = "\\x00" * 32
+    raw = self.HEADER + f"00:11:22:33:44:55\t2437\t-65\t[ESS]\t{padded}\n"
+    results = parse_scan_results(raw)
+    assert len(results) == 1
+    assert results[0].ssid == ""
+
+  def test_escaped_ssid(self):
+    raw = self.HEADER + '00:11:22:33:44:55\t2437\t-65\t[ESS]\tcaf\\xc3\\xa9 \\"home\\"\n'
+    results = parse_scan_results(raw)
+    assert len(results) == 1
+    assert results[0].ssid == 'caf\xc3\xa9 "home"'
+
   def test_missing_ssid_field(self):
     raw = self.HEADER + "00:11:22:33:44:55\t2437\t-65\t[ESS]\n"
     results = parse_scan_results(raw)
@@ -120,6 +137,72 @@ class TestParseScanResults:
       lines.append(f"{bssid}\t2437\t{-30 - (i % 70)}\t[WPA2-PSK-CCMP][ESS]\t{ssid}")
     raw = "\n".join(lines) + "\n"
     assert len(raw.encode()) > 4096, "Test assumes 200 APs exceed 4096 bytes"
+
+
+class TestDecodeSsid:
+  """Must match wpa_supplicant printf_decode (hostap/src/utils/common.c:526)."""
+
+  def test_plain(self):
+    assert decode_ssid("MyNetwork") == "MyNetwork"
+
+  def test_empty(self):
+    assert decode_ssid("") == ""
+
+  def test_hex_two_digit(self):
+    assert decode_ssid("\\x41\\x42") == "AB"
+
+  def test_hex_uppercase(self):
+    assert decode_ssid("\\xFF") == "\xff"
+
+  def test_hex_one_digit_fallback(self):
+    # `\x1Z`: hex2byte("1Z") fails (Z not hex), hex2num('1')=1 → byte 0x01.
+    assert decode_ssid("\\x1Z") == "\x01Z"
+
+  def test_hex_trailing_single_digit(self):
+    # `\xA` at end-of-string: 2-digit fails, 1-digit succeeds → 0x0a.
+    assert decode_ssid("\\xA") == "\x0a"
+
+  def test_hex_malformed_drops_escape(self):
+    # `\xGZ`: both hex2byte and hex2num fail; inner switch `break`, the
+    # outer loop then emits G then Z as literals.
+    assert decode_ssid("\\xGZ") == "GZ"
+
+  def test_octal_three_digit(self):
+    # `\101` = 0o101 = 65 = 'A'
+    assert decode_ssid("\\101") == "A"
+
+  def test_octal_one_digit(self):
+    assert decode_ssid("\\0X") == "\x00X"
+
+  def test_octal_stops_at_non_octal(self):
+    # `\78`: '7' is octal, '8' is not → val=7, then '8' emitted as literal.
+    assert decode_ssid("\\78") == "\x078"
+
+  def test_standard_escapes(self):
+    assert decode_ssid("\\\\") == "\\"
+    assert decode_ssid('\\"') == '"'
+    assert decode_ssid("\\n") == "\n"
+    assert decode_ssid("\\r") == "\r"
+    assert decode_ssid("\\t") == "\t"
+    assert decode_ssid("\\e") == "\x1b"
+
+  def test_unknown_escape_drops_backslash(self):
+    # `\q`: inner default breaks without advancing pos; next iteration
+    # emits 'q' as a literal. Backslash is consumed.
+    assert decode_ssid("a\\qb") == "aqb"
+
+  def test_trailing_backslash_dropped(self):
+    # pos++ past '\\', then *pos == '\\0' exits the while loop.
+    assert decode_ssid("abc\\") == "abc"
+
+  def test_all_null_normalized_to_empty(self):
+    # Hidden APs broadcast 32 null bytes; we normalize to "" so the
+    # wifi_manager filter drops them the same as truly-empty SSIDs.
+    assert decode_ssid("\\x00" * 32) == ""
+
+  def test_partial_null_preserved(self):
+    # Mixed content with an embedded NUL stays as-is (non-empty).
+    assert decode_ssid("A\\x00B") == "A\x00B"
 
 
 class _RacySock:

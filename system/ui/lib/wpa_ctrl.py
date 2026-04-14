@@ -164,6 +164,79 @@ class WpaCtrlMonitor(_WpaCtrlBase):
 # Parsing helpers
 # ---------------------------------------------------------------------------
 
+_HEX = "0123456789abcdefABCDEF"
+
+
+def decode_ssid(encoded: str) -> str:
+  """Decode a wpa_supplicant printf_encode'd SSID string.
+
+  Mirrors `printf_decode` in wpa_supplicant/src/utils/common.c:
+    \\\\, \\", \\e, \\n, \\r, \\t       → literal
+    \\xNN or \\xN                   → hex byte (1 or 2 digits)
+    \\0..\\777                      → octal byte (1-3 digits)
+    \\<other>                      → the backslash is dropped; the char
+                                    is then processed as a literal
+    trailing \\                     → dropped
+
+  Hidden APs broadcast 32 null bytes as their SSID, which wpa_supplicant
+  emits as `\\x00` repeated. Those normalize to "" so the existing
+  empty-SSID filter in wifi_manager drops them.
+  """
+  out: list[str] = []
+  i = 0
+  n = len(encoded)
+  while i < n:
+    c = encoded[i]
+    if c != "\\":
+      out.append(c)
+      i += 1
+      continue
+
+    i += 1  # consume backslash
+    if i >= n:
+      break  # trailing backslash: dropped
+
+    nxt = encoded[i]
+    if nxt == "\\":
+      out.append("\\"); i += 1
+    elif nxt == '"':
+      out.append('"'); i += 1
+    elif nxt == "n":
+      out.append("\n"); i += 1
+    elif nxt == "r":
+      out.append("\r"); i += 1
+    elif nxt == "t":
+      out.append("\t"); i += 1
+    elif nxt == "e":
+      out.append("\x1b"); i += 1
+    elif nxt == "x":
+      i += 1  # consume 'x'
+      if i + 1 < n and encoded[i] in _HEX and encoded[i + 1] in _HEX:
+        out.append(chr(int(encoded[i:i + 2], 16)))
+        i += 2
+      elif i < n and encoded[i] in _HEX:
+        out.append(chr(int(encoded[i], 16)))
+        i += 1
+      # else: malformed \x — drop the escape, continue parsing at i
+    elif "0" <= nxt <= "7":
+      val = ord(nxt) - ord("0")
+      i += 1
+      if i < n and "0" <= encoded[i] <= "7":
+        val = val * 8 + (ord(encoded[i]) - ord("0"))
+        i += 1
+        if i < n and "0" <= encoded[i] <= "7":
+          val = val * 8 + (ord(encoded[i]) - ord("0"))
+          i += 1
+      out.append(chr(val & 0xff))
+    # else: unknown escape — the backslash is consumed, the char falls
+    # through to the next iteration and is appended as a literal.
+
+  decoded = "".join(out)
+  if decoded and all(ch == "\x00" for ch in decoded):
+    return ""
+  return decoded
+
+
 def parse_scan_results(raw: str) -> list[ScanResult]:
   """Parse wpa_supplicant SCAN_RESULTS output (tab-separated, first line is header)."""
   results = []
@@ -180,7 +253,7 @@ def parse_scan_results(raw: str) -> list[ScanResult]:
         freq=int(parts[1]),
         signal=int(parts[2]),
         flags=parts[3],
-        ssid=parts[4] if len(parts) > 4 else "",
+        ssid=decode_ssid(parts[4]) if len(parts) > 4 else "",
       ))
     except (ValueError, IndexError):
       continue
