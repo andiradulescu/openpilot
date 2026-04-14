@@ -1439,20 +1439,13 @@ class WifiManager:
     # Flush AP IP
     subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
 
-    # Restart STA wpa_supplicant
+    # Restore STA. Use the attach-first-spawn-second path so we don't
+    # spawn a second daemon on top of a system-managed or NM supplicant
+    # if _start_tethering bailed out because another daemon owned wlan0
+    # (e.g. the mode != AP rollback). _generate_wpa_conf refreshes our
+    # config for the spawn fallback; the attach path ignores it.
     _generate_wpa_conf(self._store)
-    subprocess.run(["sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", WPA_SUPPLICANT_CONF, "-D", "nl80211"], check=False)
-    time.sleep(1)
-
-    # Reconnect control socket
-    try:
-      ctrl = WpaCtrl()
-      ctrl.open()
-      self._ctrl = ctrl
-      # Re-enable all networks
-      self._ctrl.request("ENABLE_NETWORK all")
-    except Exception:
-      cloudlog.exception("Failed to reconnect wpa_ctrl after tethering stop")
+    self._ensure_wpa_supplicant()
 
     self._tethering_active = False
     self._wifi_state = WifiState(ssid=None, status=ConnectStatus.DISCONNECTED)

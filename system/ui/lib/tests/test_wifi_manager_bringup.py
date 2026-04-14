@@ -224,3 +224,76 @@ class TestTetheringBringupVerification:
 
     broken_ctrl.close.assert_called_once()
     assert wm._ctrl is None
+
+
+class TestStopTetheringRollback:
+  """_stop_tethering must not spawn a second wpa_supplicant when a pre-existing
+  daemon (system-managed, NM's, or our own that survived) still owns wlan0.
+  Reuses the attach-first-spawn-second pattern from _ensure_wpa_supplicant."""
+
+  def _patch_common(self, wm, mocker):
+    mocker.patch.object(wifi_manager_module.time, "sleep")
+    mocker.patch.object(wifi_manager_module, "_generate_wpa_conf")
+    wm._dnsmasq_proc = None
+    wm._tethering_upstream_iface = "wwan0"
+    wm._monitor_epoch = 0
+
+  def test_rollback_attaches_without_spawning_when_daemon_alive(self, wm, mocker):
+    """Scenario 3: a system-managed or NM daemon still owns wlan0 after a
+    failed AP bringup. Rollback must attach, not spawn a second daemon."""
+    self._patch_common(wm, mocker)
+    mock_run = mocker.patch.object(wifi_manager_module.subprocess, "run")
+    existing_ctrl = mocker.MagicMock()
+    mocker.patch.object(wifi_manager_module, "WpaCtrl", return_value=existing_ctrl)
+    mocker.patch.object(wm, "_unmanage_wlan0")
+
+    wm._stop_tethering()
+
+    assert wm._ctrl is existing_ctrl
+    existing_ctrl.request.assert_any_call("ENABLE_NETWORK all")
+
+    spawn_cmds = [c for c in mock_run.call_args_list
+                  if len(c.args[0]) >= 2 and c.args[0][0] == "sudo" and c.args[0][1] == "wpa_supplicant"]
+    assert not spawn_cmds, f"must not spawn wpa_supplicant when attach succeeds: {spawn_cmds}"
+
+  def test_rollback_spawns_when_no_daemon_answers(self, wm, mocker):
+    """Scenario 2: _start_tethering killed our own STA daemon before the AP
+    bringup failed. Nothing is answering the ctrl socket, so we must spawn."""
+    self._patch_common(wm, mocker)
+    mocker.patch.object(wifi_manager_module.os.path, "exists", return_value=True)
+    mocker.patch.object(wifi_manager_module.glob, "glob", return_value=[])
+    mock_run = mocker.patch.object(wifi_manager_module.subprocess, "run")
+    mocker.patch.object(wm, "_unmanage_wlan0")
+    wm._exit = False
+
+    new_ctrl = mocker.MagicMock()
+    mocker.patch.object(wifi_manager_module, "WpaCtrl",
+                        side_effect=[OSError("no socket"), new_ctrl])
+
+    wm._stop_tethering()
+
+    assert wm._ctrl is new_ctrl
+    spawn_cmds = [c for c in mock_run.call_args_list
+                  if len(c.args[0]) >= 2 and c.args[0][0] == "sudo" and c.args[0][1] == "wpa_supplicant"]
+    assert spawn_cmds, "spawn must run when no daemon is answering"
+    assert WPA_SUPPLICANT_CONF in spawn_cmds[0].args[0]
+
+  def test_rollback_never_bare_killall_wpa_supplicant(self, wm, mocker):
+    """Invariant: rollback must never `killall wpa_supplicant`. pkill is
+    allowed because it's narrowed to our config path via regex."""
+    self._patch_common(wm, mocker)
+    mocker.patch.object(wifi_manager_module.os.path, "exists", return_value=True)
+    mocker.patch.object(wifi_manager_module.glob, "glob", return_value=[])
+    mock_run = mocker.patch.object(wifi_manager_module.subprocess, "run")
+    mocker.patch.object(wm, "_unmanage_wlan0")
+    new_ctrl = mocker.MagicMock()
+    mocker.patch.object(wifi_manager_module, "WpaCtrl",
+                        side_effect=[OSError("no socket"), new_ctrl])
+    wm._exit = False
+
+    wm._stop_tethering()
+
+    for call in mock_run.call_args_list:
+      cmd = call.args[0]
+      if "killall" in cmd:
+        assert "wpa_supplicant" not in cmd, f"bare killall would stomp system daemon: {cmd}"
