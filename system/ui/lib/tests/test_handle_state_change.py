@@ -585,3 +585,57 @@ class TestStop:
     wm.stop()
 
     wm._stop_tethering.assert_not_called()
+
+
+class TestInitWifiState:
+  """_init_wifi_state must distinguish a running AP (tethering) from a
+  station-mode association. STATUS reports wpa_state=COMPLETED in both
+  cases; routing an active hotspot through the station path would call
+  _dhcp.start() → ip addr flush wlan0 → drop TETHERING_IP_ADDRESS."""
+
+  def test_ap_mode_adopts_without_starting_dhcp(self, wm):
+    """Regression: process restart while tethering active must not flush wlan0."""
+    from openpilot.system.ui.lib.wifi_manager import TETHERING_IP_ADDRESS
+    wm._tethering_ssid = "weedle-test"
+    wm._ctrl.request.return_value = "wpa_state=COMPLETED\nmode=AP\nssid=weedle-test\n"
+
+    wm._init_wifi_state()
+
+    assert wm._tethering_active is True
+    assert wm._wifi_state.status == ConnectStatus.CONNECTED
+    assert wm._wifi_state.ssid == "weedle-test"
+    assert wm._ipv4_address == TETHERING_IP_ADDRESS
+    wm._dhcp.start.assert_not_called()
+    wm._dhcp.stop.assert_not_called()
+
+  def test_ap_mode_falls_back_to_configured_ssid_if_status_missing(self, wm):
+    """If STATUS doesn't echo ssid (should never happen, but be defensive),
+    use the configured tethering SSID so we still report CONNECTED."""
+    wm._tethering_ssid = "weedle-fallback"
+    wm._ctrl.request.return_value = "wpa_state=COMPLETED\nmode=AP\n"
+
+    wm._init_wifi_state()
+
+    assert wm._tethering_active is True
+    assert wm._wifi_state.ssid == "weedle-fallback"
+    wm._dhcp.start.assert_not_called()
+
+  def test_station_completed_still_starts_dhcp(self, wm):
+    """Happy path: attaching to a connected STA daemon must re-launch udhcpc
+    (the prior UI's udhcpc died with its parent)."""
+    wm._ctrl.request.return_value = "wpa_state=COMPLETED\nmode=station\nssid=HomeNet\n"
+
+    wm._init_wifi_state()
+
+    assert wm._tethering_active is False
+    assert wm._wifi_state.status == ConnectStatus.CONNECTED
+    assert wm._wifi_state.ssid == "HomeNet"
+    wm._dhcp.start.assert_called_once()
+
+  def test_station_disconnected_does_not_touch_dhcp(self, wm):
+    wm._ctrl.request.return_value = "wpa_state=DISCONNECTED\n"
+
+    wm._init_wifi_state()
+
+    assert wm._wifi_state.status == ConnectStatus.DISCONNECTED
+    wm._dhcp.start.assert_not_called()

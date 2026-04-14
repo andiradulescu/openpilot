@@ -694,6 +694,22 @@ class WifiManager:
       wpa_state = status.get("wpa_state", "")
       ssid = status.get("ssid")
 
+      if status.get("mode") == "AP":
+        # Process restart while hotspot was active. STATUS reports
+        # wpa_state=COMPLETED in AP mode too, so the station path below
+        # would call _handle_connected → _dhcp.start() → ip addr flush
+        # wlan0, which drops TETHERING_IP_ADDRESS and kills the running
+        # hotspot. dnsmasq/iptables/AP wpa_supplicant are still up from
+        # the pre-restart bringup (dnsmasq was spawned with
+        # start_new_session=True); just adopt the state.
+        if self._user_epoch != epoch:
+          return
+        self._tethering_active = True
+        self._wifi_state = WifiState(ssid=ssid or self._tethering_ssid, status=ConnectStatus.CONNECTED)
+        self._ipv4_address = TETHERING_IP_ADDRESS
+        self._enqueue_callbacks(self._activated)
+        return
+
       if wpa_state == "COMPLETED":
         new_status = ConnectStatus.CONNECTED
       elif wpa_state in ("ASSOCIATING", "ASSOCIATED", "4WAY_HANDSHAKE", "GROUP_HANDSHAKE"):
