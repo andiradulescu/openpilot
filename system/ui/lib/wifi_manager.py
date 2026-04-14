@@ -626,6 +626,15 @@ class WifiManager:
     system-managed daemon — and only spawn our own when nothing answers
     on the ctrl socket. We never kill a daemon we didn't spawn.
     """
+    # Tell NM to release wlan0 up-front. On AGNOS, NM auto-manages wlan0
+    # on boot and autoconnects a stored profile, which parks NM's own
+    # wpa_supplicant on /var/run/wpa_supplicant/wlan0 before our UI even
+    # starts. Without this call the attach-first branch below would latch
+    # onto NM's daemon — and since its cmdline has no config path, our
+    # narrow `pkill` in _start_tethering can't displace it and AP bringup
+    # fails with "ctrl_iface exists and seems to be in use".
+    self._unmanage_wlan0()
+
     # Fast path: attach to whatever is already running. ENABLE_NETWORK is
     # safe on any daemon — it just enables all networks in whatever config
     # the running daemon is using. We don't RECONFIGURE here: on a
@@ -659,9 +668,6 @@ class WifiManager:
       if os.path.exists("/sys/class/net/wlan0"):
         break
       time.sleep(0.5)
-
-    # Tell NM to release wlan0, then start our own wpa_supplicant.
-    self._unmanage_wlan0()
 
     subprocess.run(["sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", WPA_SUPPLICANT_CONF, "-D", "nl80211"], check=False)
 

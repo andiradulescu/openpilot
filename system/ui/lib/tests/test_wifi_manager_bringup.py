@@ -30,8 +30,10 @@ def _patch_bringup_sideeffects(wm, mocker):
 
 
 class TestAttachFirst:
-  def test_attach_success_skips_all_subprocess_calls(self, wm, mocker):
-    """Happy path: existing daemon answers on ctrl socket → no pkill, no spawn."""
+  def test_attach_success_skips_pkill_and_spawn(self, wm, mocker):
+    """Happy path: existing daemon answers on ctrl socket → no pkill, no
+    spawn. The upfront _unmanage_wlan0 still runs (one nmcli call) so NM
+    releases wlan0 before we commit to attaching."""
     ctrl = mocker.MagicMock()
     mocker.patch.object(wifi_manager_module, "WpaCtrl", return_value=ctrl)
     mock_run = mocker.patch.object(wifi_manager_module.subprocess, "run")
@@ -40,7 +42,10 @@ class TestAttachFirst:
 
     assert wm._ctrl is ctrl
     ctrl.open.assert_called_once()
-    mock_run.assert_not_called()
+    # Exactly one subprocess call: the nmcli unmanage.
+    commands = [tuple(call.args[0]) for call in mock_run.call_args_list]
+    assert commands == [("sudo", "nmcli", "dev", "set", "wlan0", "managed", "no")], \
+      f"expected only nmcli unmanage on attach path, got {commands}"
 
   def test_attach_success_enables_networks(self, wm, mocker):
     """On attach, all networks are re-enabled (no RECONFIGURE — that would
@@ -136,9 +141,10 @@ class TestSpawnFallback:
 
 
 class TestMultipleDaemonsPrevented:
-  def test_attach_short_circuits_before_any_subprocess(self, wm, mocker):
-    """Regression guard: verify the spawn block is never entered when attach
-    succeeds. If this test fails, we risk spawning a second daemon."""
+  def test_attach_short_circuits_before_pkill_and_spawn(self, wm, mocker):
+    """Regression guard: when attach succeeds, we must not enter the spawn
+    block (pkill/killall/flush/wpa_supplicant -B). _unmanage_wlan0 still
+    runs up-front so NM can release wlan0."""
     ctrl = mocker.MagicMock()
     mocker.patch.object(wifi_manager_module, "WpaCtrl", return_value=ctrl)
     mock_run = mocker.patch.object(wifi_manager_module.subprocess, "run")
@@ -146,8 +152,8 @@ class TestMultipleDaemonsPrevented:
 
     wm._ensure_wpa_supplicant()
 
-    mock_run.assert_not_called()
-    mock_unmanage.assert_not_called()
+    mock_run.assert_not_called()  # nothing ran because _unmanage_wlan0 is mocked
+    mock_unmanage.assert_called_once()
 
 
 def _patch_tethering_sideeffects(wm, mocker):
