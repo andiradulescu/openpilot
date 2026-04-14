@@ -168,34 +168,26 @@ _HEX = "0123456789abcdefABCDEF"
 
 
 def decode_ssid(encoded: str) -> str:
-  """Decode a wpa_supplicant printf_encode'd SSID string.
+  """Decode a wpa_supplicant printf_encode'd SSID (hostap common.c:526).
 
-  We speak to wpa_supplicant over its text control socket (no D-Bus on
-  this branch), so SSIDs arrive escaped by wpa_supplicant's printf_encode:
-  non-printable, special, and non-ASCII bytes are emitted as `\\xNN` /
-  octal / backslash sequences. If we didn't decode, a hidden AP
-  broadcasting 32 null bytes would render in the UI as a literal
-  `\\x00\\x00...` string, and any SSID with escapes or high bytes would
-  fail to round-trip for state tracking.
+  This branch talks to wpa_supplicant over the text control socket (no
+  D-Bus), so SSIDs arrive with escapes: `\\\\`, `\\"`, `\\e/n/r/t`,
+  `\\xNN`/`\\xN`, octal `\\0..\\777`. Unknown escapes drop the
+  backslash, trailing `\\` is dropped.
 
-  Mirrors `printf_decode` in wpa_supplicant/src/utils/common.c:
-    \\\\, \\", \\e, \\n, \\r, \\t       → literal
-    \\xNN or \\xN                   → hex byte (1 or 2 digits)
-    \\0..\\777                      → octal byte (1-3 digits)
-    \\<other>                      → the backslash is dropped; the char
-                                    is then processed as a literal
-    trailing \\                     → dropped
-
-  All-null decoded SSIDs (hidden APs) normalize to "" so the existing
-  empty-SSID filter in wifi_manager drops them.
+  Byte stream is reinterpreted as UTF-8 (errors="replace"), not
+  one-codepoint-per-byte: a `\\xc3\\xa9` AP ("é") decoded as Latin-1
+  becomes "Ã©", which re-encodes to 7 bytes on SET_NETWORK and can't
+  match the 5-byte AP. All-null SSIDs (hidden APs) normalize to "" so
+  the wifi_manager empty-SSID filter drops them.
   """
-  out: list[str] = []
+  out = bytearray()
   i = 0
   n = len(encoded)
   while i < n:
     c = encoded[i]
     if c != "\\":
-      out.append(c)
+      out.append(ord(c) & 0xff)
       i += 1
       continue
 
@@ -205,24 +197,24 @@ def decode_ssid(encoded: str) -> str:
 
     nxt = encoded[i]
     if nxt == "\\":
-      out.append("\\"); i += 1
+      out.append(ord("\\")); i += 1
     elif nxt == '"':
-      out.append('"'); i += 1
+      out.append(ord('"')); i += 1
     elif nxt == "n":
-      out.append("\n"); i += 1
+      out.append(ord("\n")); i += 1
     elif nxt == "r":
-      out.append("\r"); i += 1
+      out.append(ord("\r")); i += 1
     elif nxt == "t":
-      out.append("\t"); i += 1
+      out.append(ord("\t")); i += 1
     elif nxt == "e":
-      out.append("\x1b"); i += 1
+      out.append(0x1b); i += 1
     elif nxt == "x":
       i += 1  # consume 'x'
       if i + 1 < n and encoded[i] in _HEX and encoded[i + 1] in _HEX:
-        out.append(chr(int(encoded[i:i + 2], 16)))
+        out.append(int(encoded[i:i + 2], 16))
         i += 2
       elif i < n and encoded[i] in _HEX:
-        out.append(chr(int(encoded[i], 16)))
+        out.append(int(encoded[i], 16))
         i += 1
       # else: malformed \x — drop the escape, continue parsing at i
     elif "0" <= nxt <= "7":
@@ -234,14 +226,13 @@ def decode_ssid(encoded: str) -> str:
         if i < n and "0" <= encoded[i] <= "7":
           val = val * 8 + (ord(encoded[i]) - ord("0"))
           i += 1
-      out.append(chr(val & 0xff))
+      out.append(val & 0xff)
     # else: unknown escape — the backslash is consumed, the char falls
     # through to the next iteration and is appended as a literal.
 
-  decoded = "".join(out)
-  if decoded and all(ch == "\x00" for ch in decoded):
+  if not out or all(b == 0 for b in out):
     return ""
-  return decoded
+  return out.decode("utf-8", errors="replace")
 
 
 def parse_scan_results(raw: str) -> list[ScanResult]:

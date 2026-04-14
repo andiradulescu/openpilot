@@ -17,8 +17,12 @@ class TestParseEventSsid:
 
   def test_hex_escape(self):
     # Non-ASCII SSIDs (e.g. UTF-8 "é" = 0xc3 0xa9) come through printf_encoded.
+    # Must round-trip to the same 5 UTF-8 bytes the AP broadcasts, or
+    # SET_NETWORK on auth-retry will fail to match.
     event = 'CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid="caf\\xc3\\xa9" reason=WRONG_KEY'
-    assert parse_event_ssid(event) == "caf\xc3\xa9"
+    ssid = parse_event_ssid(event)
+    assert ssid == "café"
+    assert ssid.encode("utf-8") == b"caf\xc3\xa9"
 
   def test_backslash_in_ssid(self):
     # A real backslash in the SSID is emitted as `\\`.

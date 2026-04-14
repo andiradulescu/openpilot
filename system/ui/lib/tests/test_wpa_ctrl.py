@@ -34,10 +34,11 @@ class TestParseStatus:
 
   def test_ssid_decoded(self):
     # STATUS emits ssid via wpa_ssid_txt (printf_encode), so non-ASCII
-    # bytes come through escaped and must be decoded.
+    # bytes come through escaped and must be decoded as UTF-8.
     raw = "wpa_state=COMPLETED\nssid=caf\\xc3\\xa9\nip_address=10.0.0.5\n"
     d = parse_status(raw)
-    assert d["ssid"] == "caf\xc3\xa9"
+    assert d["ssid"] == "café"
+    assert d["ssid"].encode("utf-8") == b"caf\xc3\xa9"
 
   def test_ssid_with_embedded_quote(self):
     raw = 'ssid=My \\"Home\\"\n'
@@ -109,10 +110,15 @@ class TestParseScanResults:
     assert results[0].ssid == ""
 
   def test_escaped_ssid(self):
+    # \xc3\xa9 is UTF-8 for é — decode_ssid must reinterpret as UTF-8,
+    # not one-codepoint-per-byte (Latin-1), or SET_NETWORK round-trip
+    # will re-encode as 7 bytes and fail to match the 5-byte AP SSID.
     raw = self.HEADER + '00:11:22:33:44:55\t2437\t-65\t[ESS]\tcaf\\xc3\\xa9 \\"home\\"\n'
     results = parse_scan_results(raw)
     assert len(results) == 1
-    assert results[0].ssid == 'caf\xc3\xa9 "home"'
+    assert results[0].ssid == 'café "home"'
+    # Round-trip: the decoded str must re-encode to the original AP bytes.
+    assert results[0].ssid.encode("utf-8") == b'caf\xc3\xa9 "home"'
 
   def test_missing_ssid_field(self):
     raw = self.HEADER + "00:11:22:33:44:55\t2437\t-65\t[ESS]\n"
@@ -170,7 +176,32 @@ class TestDecodeSsid:
     assert decode_ssid("\\x41\\x42") == "AB"
 
   def test_hex_uppercase(self):
-    assert decode_ssid("\\xFF") == "\xff"
+    # A lone 0xFF is not valid UTF-8; decodes to U+FFFD replacement.
+    # (2-digit uppercase-hex parsing itself is covered by test_utf8_multibyte.)
+    assert decode_ssid("\\xFF") == "\ufffd"
+
+  def test_utf8_multibyte(self):
+    # "café" (UTF-8: 63 61 66 c3 a9) must decode as 4 codepoints, not 5.
+    decoded = decode_ssid("caf\\xc3\\xa9")
+    assert decoded == "café"
+    assert len(decoded) == 4
+    assert decoded.encode("utf-8") == b"caf\xc3\xa9"
+
+  def test_utf8_three_byte(self):
+    # "日本" (UTF-8: e6 97 a5 e6 9c ac) — common 3-byte CJK case.
+    decoded = decode_ssid("\\xe6\\x97\\xa5\\xe6\\x9c\\xac")
+    assert decoded == "日本"
+    assert decoded.encode("utf-8") == b"\xe6\x97\xa5\xe6\x9c\xac"
+
+  def test_utf8_emoji(self):
+    # 4-byte UTF-8 sequence (🚗 U+1F697 = f0 9f 9a 97).
+    decoded = decode_ssid("\\xf0\\x9f\\x9a\\x97")
+    assert decoded == "🚗"
+    assert decoded.encode("utf-8") == b"\xf0\x9f\x9a\x97"
+
+  def test_invalid_utf8_replaced(self):
+    # A lone high byte is invalid UTF-8 → U+FFFD, not Latin-1.
+    assert decode_ssid("\\x80") == "\ufffd"
 
   def test_hex_one_digit_fallback(self):
     # `\x1Z`: hex2byte("1Z") fails (Z not hex), hex2num('1')=1 → byte 0x01.
