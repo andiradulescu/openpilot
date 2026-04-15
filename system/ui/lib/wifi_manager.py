@@ -758,6 +758,12 @@ class WifiManager:
       if not os.path.exists("/var/run/wpa_supplicant/wlan0"):
         break
       time.sleep(0.1)
+    else:
+      # Timeout with the socket still present. NM hasn't released wlan0.
+      # Don't bail — the spawn-and-verify path below will refuse to adopt
+      # a foreign daemon via the pgrep gate on _try_attach_ctrl, so we
+      # either cleanly take over or log an error and give up.
+      cloudlog.warning("/var/run/wpa_supplicant/wlan0 still present after NM unmanage; spawn will refuse to attach to foreign daemon")
 
     # Clean up our own stale state. Target only wpa_supplicants running
     # *our* config so we don't touch a system-managed daemon that happens
@@ -776,11 +782,14 @@ class WifiManager:
 
     subprocess.run(["sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", WPA_SUPPLICANT_CONF, "-D", "nl80211"], check=False)
 
-    # Wait for it to come up
+    # Wait for it to come up. Gate the attach on pgrep matching OUR config
+    # so that if the wait-for-teardown loop above timed out and NM's daemon
+    # is still on the socket, we refuse to attach to it (which would
+    # silently let NM reconfigure or stop wpa_supplicant underneath us).
     for _ in range(30):
       if self._exit:
         return
-      if self._try_attach_ctrl():
+      if self._our_wpa_supplicant_running() and self._try_attach_ctrl():
         try:
           self._ctrl.request("ENABLE_NETWORK all")
         except Exception:
@@ -816,6 +825,12 @@ class WifiManager:
         if self._user_epoch != epoch:
           return
         self._tethering_active = True
+        # Recompute the upstream interface from the live default route so
+        # _stop_tethering tears down the right MASQUERADE rule. Without
+        # this, the empty init value falls back to wwan0 in _stop_tethering
+        # and leaves a stray NAT rule behind on the actual uplink
+        # (eth0, rmnet_data0, etc.).
+        self._tethering_upstream_iface = _get_upstream_iface()
         self._wifi_state = WifiState(ssid=ssid or self._tethering_ssid, status=ConnectStatus.CONNECTED)
         self._ipv4_address = TETHERING_IP_ADDRESS
         self._enqueue_callbacks(self._activated)

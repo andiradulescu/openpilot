@@ -14,12 +14,24 @@ from openpilot.system.ui.lib.wifi_manager import WPA_SUPPLICANT_CONF
 
 
 def _patch_bringup_sideeffects(wm, mocker):
-  """Mock the side-effect calls in the spawn fallback path."""
+  """Mock the side-effect calls in the spawn fallback path.
+
+  `_our_wpa_supplicant_running` is called twice by the spawn path: once at
+  the top as the fast-path gate (must be False so we fall through to
+  spawn) and again in the post-spawn retry loop as the "don't latch onto a
+  foreign daemon" gate (must be True so the attach is allowed once our
+  spawn completes). Use a side_effect that returns False first and True
+  thereafter so both tests are satisfied.
+  """
   mock_run = mocker.patch.object(wifi_manager_module.subprocess, "run")
   mocker.patch.object(wifi_manager_module.os.path, "exists", return_value=True)
   mocker.patch.object(wifi_manager_module.glob, "glob", return_value=[])
   mocker.patch.object(wm, "_unmanage_wlan0")
-  mocker.patch.object(wm, "_our_wpa_supplicant_running", return_value=False)
+  pgrep_calls = [0]
+  def pgrep_side_effect():
+    pgrep_calls[0] += 1
+    return pgrep_calls[0] > 1  # False on first call, True after spawn
+  mocker.patch.object(wm, "_our_wpa_supplicant_running", side_effect=pgrep_side_effect)
   mocker.patch.object(wifi_manager_module.time, "sleep")
   wm._exit = False
   # Fixture lacks scan/state threads — ensure GC-triggered __del__ → stop()
@@ -180,6 +192,34 @@ class TestSpawnFallback:
     requests = [call.args[0] for call in ctrl.request.call_args_list]
     assert "ENABLE_NETWORK all" in requests
 
+  def test_post_spawn_refuses_foreign_daemon(self, wm, mocker):
+    """Regression guard for codex P1: if NM never released the ctrl socket
+    (wait loop timed out) and our spawn failed, the retry loop must NOT
+    attach to the foreign daemon still occupying /var/run/wpa_supplicant/
+    wlan0. _our_wpa_supplicant_running gates the attach; when it returns
+    False the whole post-spawn window, we end with no ctrl bound."""
+    ctrl = mocker.MagicMock()
+    mocker.patch.object(wifi_manager_module, "WpaCtrl", return_value=ctrl)
+    # Don't use the False-then-True helper — here pgrep must return False
+    # for every call so neither the fast path nor the post-spawn retry
+    # attach succeeds.
+    mocker.patch.object(wifi_manager_module.subprocess, "run")
+    mocker.patch.object(wifi_manager_module.os.path, "exists", return_value=True)
+    mocker.patch.object(wifi_manager_module.glob, "glob", return_value=[])
+    mocker.patch.object(wm, "_unmanage_wlan0")
+    mocker.patch.object(wm, "_our_wpa_supplicant_running", return_value=False)
+    mocker.patch.object(wifi_manager_module.time, "sleep")
+    wm._exit = False
+    wm._scan_thread = mocker.MagicMock(is_alive=mocker.MagicMock(return_value=False))
+    wm._state_thread = mocker.MagicMock(is_alive=mocker.MagicMock(return_value=False))
+    wm._gsm = mocker.MagicMock()
+
+    wm._ensure_wpa_supplicant()
+
+    # We must not have latched onto the foreign daemon on the socket.
+    assert wm._ctrl is not ctrl
+    ctrl.open.assert_not_called()
+
 
 class TestMultipleDaemonsPrevented:
   def test_attach_short_circuits_before_pkill_and_spawn(self, wm, mocker):
@@ -309,13 +349,22 @@ class TestStopTetheringRollback:
                   if len(c.args[0]) >= 2 and c.args[0][0] == "sudo" and c.args[0][1] == "wpa_supplicant"]
     assert not spawn_cmds, f"must not spawn when our daemon is alive: {spawn_cmds}"
 
+  def _mock_pgrep_false_then_true(self, wm, mocker):
+    """Same False-then-True sequence as _patch_bringup_sideeffects: fast
+    path sees no owned daemon, post-spawn retry sees the spawned one."""
+    pgrep_calls = [0]
+    def pgrep_side_effect():
+      pgrep_calls[0] += 1
+      return pgrep_calls[0] > 1
+    mocker.patch.object(wm, "_our_wpa_supplicant_running", side_effect=pgrep_side_effect)
+
   def test_rollback_spawns_when_no_daemon_we_own(self, wm, mocker):
     """If no daemon we own is running (regardless of whether NM's or a
     system daemon is present), rollback must unmanage NM and spawn our own
     STA daemon. Attaching to a foreign daemon would be torn down when NM
     releases wlan0."""
     self._patch_common(wm, mocker)
-    mocker.patch.object(wm, "_our_wpa_supplicant_running", return_value=False)
+    self._mock_pgrep_false_then_true(wm, mocker)
     mock_run = mocker.patch.object(wifi_manager_module.subprocess, "run")
     new_ctrl = mocker.MagicMock()
     mocker.patch.object(wifi_manager_module, "WpaCtrl", return_value=new_ctrl)
@@ -332,7 +381,7 @@ class TestStopTetheringRollback:
     """Invariant: rollback must never `killall wpa_supplicant`. pkill is
     allowed because it's narrowed to our config path via regex."""
     self._patch_common(wm, mocker)
-    mocker.patch.object(wm, "_our_wpa_supplicant_running", return_value=False)
+    self._mock_pgrep_false_then_true(wm, mocker)
     mock_run = mocker.patch.object(wifi_manager_module.subprocess, "run")
     new_ctrl = mocker.MagicMock()
     mocker.patch.object(wifi_manager_module, "WpaCtrl", return_value=new_ctrl)
