@@ -49,7 +49,7 @@ iptables -t nat -I POSTROUTING \
 ## SSID encoding: decode everywhere on ingress
 
 - wpa_supplicant emits SSIDs via `wpa_ssid_txt` (printf_encode) in **every** control path: STATUS, SCAN_RESULTS, LIST_NETWORKS, CTRL-EVENT-SSID-TEMP-DISABLED, CTRL-EVENT-CONNECTED. Bytes outside printable ASCII come through as `\xNN` escape sequences.
-- Every ingress must pass through `decode_ssid()`. A raw string compare to a user-supplied SSID silently misses any network whose name contains non-ASCII bytes, and `forget_connection`/`activate_connection` leak runtime network IDs because `_list_network_ids` won't match (each leak lets a duplicate build up on reconnect).
+- Every ingress must pass through `decode_ssid()`. A raw string compare to a user-supplied SSID silently misses any network whose name contains non-ASCII bytes, and `forget_connection`/`activate_connection` leak runtime network IDs because `_list_network_ids` won't match (each leak allows a duplicate to build up on reconnect).
 - Empty/all-null SSIDs (hidden APs) normalize to `""` so the empty-SSID filter drops them.
 
 ## Credential persistence ordering
@@ -78,7 +78,7 @@ iptables -t nat -I POSTROUTING \
 - `WpaCtrl.close()` must serialize against in-flight `request()` callers to avoid racing the socket close against a reply read.
 - The monitor thread self-heals: it retries `ctrl.open()` on every iteration, so a daemon restart doesn't permanently wedge event delivery.
 
-## Test fixture gotcha (`wm` in `conftest.py`)
+## Test fixture pitfall (`wm` in `conftest.py`)
 
 - The fixture creates a `WifiManager` via `__new__` + direct field injection and sets `_exit = True`. Tests that exercise `_ensure_wpa_supplicant` rely on `_exit=True` to short-circuit the wait-for-wlan0 loop at the top.
 - Flipping `_exit` to `False` without also mocking `_scan_thread` / `_state_thread` / `_gsm` causes `__del__` → `stop()` → `.join()` on non-existent threads during GC, surfacing as a `PytestUnraisableExceptionWarning` on whatever unrelated test happens to trigger GC next. `_patch_bringup_sideeffects` handles this correctly; new helpers should too.

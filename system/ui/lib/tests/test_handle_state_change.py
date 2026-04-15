@@ -195,8 +195,8 @@ class TestWrongPassword:
   def test_wrong_key_debounced_after_recent_dispatch(self, wm, mocker):
     """Regression: if the user retries with fresh credentials right after
     a WRONG_KEY fired, a delayed second WRONG_KEY from the prior attempt
-    must not clobber the new pending password. The debounce window lets
-    the fresh attempt's real outcome surface as the next real event."""
+    must not clobber the new pending password. The debounce window
+    allows the fresh attempt's real outcome to surface as the next event."""
     import time
     cb = mocker.MagicMock()
     wm.add_callbacks(need_auth=cb)
@@ -555,6 +555,32 @@ class TestListNetworkIdsDecoding:
     ]) + "\n"
 
     assert wm._list_network_ids("HomeNet") == ["0", "2"]
+
+
+class TestConnectBlockedDuringTethering:
+  def test_connect_to_network_noop_while_tethering(self, wm, mocker):
+    """Backend guard: connect_to_network must refuse while tethering is
+    active. The AP daemon can't service ADD_NETWORK/SELECT_NETWORK for
+    STA networks, so dispatching would churn UI state and could disrupt
+    the running hotspot."""
+    wm._tethering_active = True
+    mocker.patch.object(wifi_manager_module.threading, "Thread")
+
+    wm.connect_to_network("HomeNet", "password", hidden=False)
+
+    # No state change: wifi_state untouched, no pending connection.
+    assert wm._wifi_state.status == ConnectStatus.DISCONNECTED
+    assert wm._pending_connection is None
+    wifi_manager_module.threading.Thread.assert_not_called()
+
+  def test_activate_connection_noop_while_tethering(self, wm, mocker):
+    wm._tethering_active = True
+    mocker.patch.object(wifi_manager_module.threading, "Thread")
+
+    wm.activate_connection("HomeNet")
+
+    assert wm._wifi_state.status == ConnectStatus.DISCONNECTED
+    wifi_manager_module.threading.Thread.assert_not_called()
 
 
 class TestConnectPersistence:

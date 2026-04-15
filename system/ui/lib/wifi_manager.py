@@ -1344,6 +1344,14 @@ class WifiManager:
   # ---------------------------------------------------------------------------
 
   def connect_to_network(self, ssid: str, password: str, hidden: bool = False):
+    # Backend guard: reject station-connect attempts while tethering is
+    # active. UI list taps are already filtered at the widget layer but
+    # other entry points (hidden-network dialogs, automation) can still
+    # reach here, and sending ADD_NETWORK/SELECT_NETWORK to the AP-mode
+    # wpa_supplicant fails noisily and churns UI state.
+    if self._tethering_active:
+      cloudlog.warning(f"Ignoring connect to {ssid!r} while tethering is active")
+      return
     self._set_connecting(ssid)
     self._set_pending_connection(ssid, password, hidden)
 
@@ -1395,6 +1403,9 @@ class WifiManager:
       threading.Thread(target=worker, daemon=True).start()
 
   def activate_connection(self, ssid: str, block: bool = False):
+    if self._tethering_active:
+      cloudlog.warning(f"Ignoring activate {ssid!r} while tethering is active")
+      return
     self._set_connecting(ssid)
     self._clear_pending_connection()
 
