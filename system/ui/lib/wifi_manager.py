@@ -603,6 +603,19 @@ class WifiManager:
     result = subprocess.run(["sudo", "nmcli", "dev", "set", "wlan0", "managed", "no"], capture_output=True)
     cloudlog.info(f"nmcli dev set wlan0 managed no: rc={result.returncode}")
 
+  def _our_wpa_supplicant_running(self) -> bool:
+    """Return True iff a wpa_supplicant process running our config exists.
+
+    Used to pick the fast path in _ensure_wpa_supplicant: if our daemon is
+    alive we attach directly, without disturbing NM or waiting for a
+    teardown we don't need.
+    """
+    result = subprocess.run(
+      ["pgrep", "-f", rf"wpa_supplicant.*{re.escape(WPA_SUPPLICANT_CONF)}"],
+      capture_output=True,
+    )
+    return result.returncode == 0
+
   def _try_attach_ctrl(self) -> bool:
     """Attach to an already-running wpa_supplicant via its ctrl socket.
 
@@ -621,10 +634,11 @@ class WifiManager:
   def _ensure_wpa_supplicant(self):
     """Attach to a running wpa_supplicant, or spawn one if none is running.
 
-    There must never be more than one wpa_supplicant on wlan0. We always
-    prefer attaching to whatever is already running — ours or a
-    system-managed daemon — and only spawn our own when nothing answers
-    on the ctrl socket. We never kill a daemon we didn't spawn.
+    There must never be more than one wpa_supplicant on wlan0. We prefer
+    attaching to a daemon we already own, and only spawn when no such
+    daemon exists. We never attach to NM's daemon: NM drives its
+    wpa_supplicant over DBus, and our ctrl-socket connection would be
+    torn down asynchronously the moment NM releases wlan0.
     """
     # Wait for wlan0 to appear before touching NM. On cold boot the kernel
     # brings wlan0 up ~40s after openpilot starts, and `nmcli dev set wlan0
@@ -636,31 +650,36 @@ class WifiManager:
         break
       time.sleep(0.5)
 
-    # Tell NM to release wlan0. On AGNOS, NM auto-manages wlan0 on boot
-    # and autoconnects a stored profile, which parks NM's own wpa_supplicant
-    # on /var/run/wpa_supplicant/wlan0 before our UI even starts. Without
-    # this call the attach-first branch below would latch onto NM's daemon
-    # — and since its cmdline has no config path, our narrow `pkill` in
-    # _start_tethering can't displace it and AP bringup fails with
-    # "ctrl_iface exists and seems to be in use".
-    self._unmanage_wlan0()
-
-    # Fast path: attach to whatever is already running. ENABLE_NETWORK is
-    # safe on any daemon — it just enables all networks in whatever config
-    # the running daemon is using. We don't RECONFIGURE here: on a
-    # system-managed daemon it'd force an unrelated config reload, and on
-    # our own daemon new networks get pushed via ADD_NETWORK at runtime.
-    if self._try_attach_ctrl():
+    # Fast path: our own daemon from a previous UI bringup is still alive.
+    # Attach directly — no need to disturb NM or wait for a teardown.
+    if self._our_wpa_supplicant_running() and self._try_attach_ctrl():
       try:
         self._ctrl.request("ENABLE_NETWORK all")
       except Exception:
         pass
       return
 
-    # No daemon is answering — clean up our own stale state and spawn.
-    # Target only wpa_supplicants running *our* config so we don't touch
-    # a system-managed daemon that happens to be on a different config
-    # or a different interface.
+    # No daemon we own. Tell NM to release wlan0 so its wpa_supplicant
+    # removes the ctrl socket, then spawn our own. On AGNOS, NM
+    # auto-manages wlan0 on boot and autoconnects a stored profile, which
+    # parks NM's wpa_supplicant on /var/run/wpa_supplicant/wlan0.
+    self._unmanage_wlan0()
+
+    # NM's teardown is asynchronous: nmcli returns immediately, then NM
+    # tells wpa_supplicant over DBus to deinit wlan0, which removes
+    # /var/run/wpa_supplicant/wlan0. Wait for that to finish — attaching
+    # or spawning before it completes binds us to a socket NM is about to
+    # delete, or collides with "ctrl_iface exists and seems to be in use".
+    for _ in range(30):
+      if self._exit:
+        return
+      if not os.path.exists("/var/run/wpa_supplicant/wlan0"):
+        break
+      time.sleep(0.1)
+
+    # Clean up our own stale state. Target only wpa_supplicants running
+    # *our* config so we don't touch a system-managed daemon that happens
+    # to be on a different config or a different interface.
     subprocess.run(["sudo", "pkill", "-f", rf"wpa_supplicant.*{re.escape(WPA_SUPPLICANT_CONF)}"], check=False)
     subprocess.run(["sudo", "killall", "-q", "dnsmasq"], check=False)
     subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
@@ -1473,11 +1492,10 @@ class WifiManager:
     # Flush AP IP
     subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
 
-    # Restore STA. Use the attach-first-spawn-second path so we don't
-    # spawn a second daemon on top of a system-managed or NM supplicant
-    # if _start_tethering bailed out because another daemon owned wlan0
-    # (e.g. the mode != AP rollback). _generate_wpa_conf refreshes our
-    # config for the spawn fallback; the attach path ignores it.
+    # Restore STA. _ensure_wpa_supplicant attaches to our own daemon if
+    # one survived _start_tethering, or unmanages NM and spawns a fresh
+    # one. _generate_wpa_conf refreshes our config for the spawn path;
+    # the attach path reuses the running daemon's existing config.
     _generate_wpa_conf(self._store)
     self._ensure_wpa_supplicant()
 
