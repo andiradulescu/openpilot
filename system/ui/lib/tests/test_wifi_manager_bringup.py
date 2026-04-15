@@ -50,7 +50,8 @@ class TestAttachFirst:
   def test_attach_success_skips_nmcli_pkill_and_spawn(self, wm, mocker):
     """Fast path: when our own daemon is already running, we attach
     directly. No nmcli, no pkill, no spawn — we do not disturb NM at all,
-    because there's nothing to release."""
+    because there's nothing to release. (pgrep for our AP-config daemon
+    is allowed — it's read-only and gates the AP-mode fast path.)"""
     mocker.patch.object(wm, "_our_wpa_supplicant_running", return_value=True)
     ctrl = mocker.MagicMock()
     mocker.patch.object(wifi_manager_module, "WpaCtrl", return_value=ctrl)
@@ -60,7 +61,9 @@ class TestAttachFirst:
 
     assert wm._ctrl is ctrl
     ctrl.open.assert_called_once()
-    mock_run.assert_not_called()
+    commands = [tuple(call.args[0]) for call in mock_run.call_args_list]
+    mutating = [c for c in commands if c[:1] == ("sudo",) or "iptables" in c]
+    assert mutating == [], f"fast path must not mutate anything: {mutating}"
 
   def test_attach_success_enables_networks(self, wm, mocker):
     """On attach, all networks are re-enabled (no RECONFIGURE — that would
@@ -224,7 +227,7 @@ class TestSpawnFallback:
 class TestMultipleDaemonsPrevented:
   def test_attach_short_circuits_before_pkill_and_spawn(self, wm, mocker):
     """Regression guard: when our daemon is alive and attach succeeds, we
-    must not run any subprocess at all — no nmcli, no pkill, no spawn."""
+    must not mutate anything — no nmcli, no pkill, no spawn."""
     mocker.patch.object(wm, "_our_wpa_supplicant_running", return_value=True)
     ctrl = mocker.MagicMock()
     mocker.patch.object(wifi_manager_module, "WpaCtrl", return_value=ctrl)
@@ -233,7 +236,40 @@ class TestMultipleDaemonsPrevented:
 
     wm._ensure_wpa_supplicant()
 
-    mock_run.assert_not_called()
+    commands = [tuple(call.args[0]) for call in mock_run.call_args_list]
+    mutating = [c for c in commands if c[:1] == ("sudo",) or "iptables" in c]
+    assert mutating == [], f"fast path must not mutate anything: {mutating}"
+    mock_unmanage.assert_not_called()
+
+
+class TestAPModeAdoption:
+  def test_ap_daemon_alive_adopts_before_sta_cleanup(self, wm, mocker):
+    """P1 regression: if tethering was active before UI restart, the AP
+    daemon (WPA_AP_CONF) still owns wlan0. _ensure_wpa_supplicant must
+    detect this and attach directly — otherwise the STA cleanup path kills
+    dnsmasq / flushes wlan0 / pkills STA-config and tears down the
+    hotspot while it's still running."""
+    # Only the AP daemon exists. Our STA daemon check must still return False.
+    def pgrep_side_effect(conf):
+      return conf == wifi_manager_module.WPA_AP_CONF
+    mocker.patch.object(wifi_manager_module, "_wpa_supplicant_running", side_effect=pgrep_side_effect)
+    mocker.patch.object(wm, "_our_wpa_supplicant_running", return_value=False)
+
+    ctrl = mocker.MagicMock()
+    mocker.patch.object(wifi_manager_module, "WpaCtrl", return_value=ctrl)
+    mock_run = mocker.patch.object(wifi_manager_module.subprocess, "run")
+    mock_unmanage = mocker.patch.object(wm, "_unmanage_wlan0")
+
+    wm._ensure_wpa_supplicant()
+
+    # We attached to the AP daemon...
+    assert wm._ctrl is ctrl
+    ctrl.open.assert_called_once()
+    # ...and did nothing destructive. Especially: no killall dnsmasq, no
+    # ip addr flush wlan0, no pkill wpa_supplicant, no NM unmanage.
+    commands = [tuple(call.args[0]) for call in mock_run.call_args_list]
+    mutating = [c for c in commands if c[:1] == ("sudo",) or "iptables" in c]
+    assert mutating == [], f"AP adoption must not mutate anything: {mutating}"
     mock_unmanage.assert_not_called()
 
 

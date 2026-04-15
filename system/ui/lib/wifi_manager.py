@@ -734,7 +734,17 @@ class WifiManager:
         break
       time.sleep(0.5)
 
-    # Fast path: our own daemon from a previous UI bringup is still alive.
+    # AP-mode fast path: if tethering was active before the UI restart, the
+    # hotspot's wpa_supplicant is still running with WPA_AP_CONF. Adopt it
+    # directly — the STA cleanup path below would otherwise kill dnsmasq,
+    # flush wlan0 (dropping TETHERING_IP_ADDRESS), and pkill the STA-config
+    # daemon while our AP daemon still holds the ctrl socket, tearing the
+    # live hotspot down mid-bringup. _init_wifi_state's mode=AP branch then
+    # re-publishes state without disturbing the interface.
+    if _wpa_supplicant_running(WPA_AP_CONF) and self._try_attach_ctrl():
+      return
+
+    # Fast path: our own STA daemon from a previous UI bringup is still alive.
     # Attach directly — no need to disturb NM or wait for a teardown.
     if self._our_wpa_supplicant_running() and self._try_attach_ctrl():
       try:
