@@ -30,9 +30,13 @@ def _patch_bringup_sideeffects(wm, mocker):
 
 
 class TestAttachFirst:
+  # The wm fixture sets _exit=True, which short-circuits the wait-for-wlan0
+  # loop at the top of _ensure_wpa_supplicant, so these tests don't need to
+  # mock os.path.exists or time.sleep.
+
   def test_attach_success_skips_pkill_and_spawn(self, wm, mocker):
     """Happy path: existing daemon answers on ctrl socket → no pkill, no
-    spawn. The upfront _unmanage_wlan0 still runs (one nmcli call) so NM
+    spawn. The _unmanage_wlan0 call still runs (one nmcli invocation) so NM
     releases wlan0 before we commit to attaching."""
     ctrl = mocker.MagicMock()
     mocker.patch.object(wifi_manager_module, "WpaCtrl", return_value=ctrl)

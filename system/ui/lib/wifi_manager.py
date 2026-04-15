@@ -626,13 +626,23 @@ class WifiManager:
     system-managed daemon — and only spawn our own when nothing answers
     on the ctrl socket. We never kill a daemon we didn't spawn.
     """
-    # Tell NM to release wlan0 up-front. On AGNOS, NM auto-manages wlan0
-    # on boot and autoconnects a stored profile, which parks NM's own
-    # wpa_supplicant on /var/run/wpa_supplicant/wlan0 before our UI even
-    # starts. Without this call the attach-first branch below would latch
-    # onto NM's daemon — and since its cmdline has no config path, our
-    # narrow `pkill` in _start_tethering can't displace it and AP bringup
-    # fails with "ctrl_iface exists and seems to be in use".
+    # Wait for wlan0 to appear before touching NM. On cold boot the kernel
+    # brings wlan0 up ~40s after openpilot starts, and `nmcli dev set wlan0
+    # managed no` fails with "Device wlan0 does not exist" when the device
+    # isn't registered yet — so NM silently keeps wlan0 managed and grabs
+    # it the moment the kernel creates it.
+    while not self._exit:
+      if os.path.exists("/sys/class/net/wlan0"):
+        break
+      time.sleep(0.5)
+
+    # Tell NM to release wlan0. On AGNOS, NM auto-manages wlan0 on boot
+    # and autoconnects a stored profile, which parks NM's own wpa_supplicant
+    # on /var/run/wpa_supplicant/wlan0 before our UI even starts. Without
+    # this call the attach-first branch below would latch onto NM's daemon
+    # — and since its cmdline has no config path, our narrow `pkill` in
+    # _start_tethering can't displace it and AP bringup fails with
+    # "ctrl_iface exists and seems to be in use".
     self._unmanage_wlan0()
 
     # Fast path: attach to whatever is already running. ENABLE_NETWORK is
@@ -662,12 +672,6 @@ class WifiManager:
         os.unlink(f)
       except OSError:
         subprocess.run(["sudo", "rm", "-f", f], check=False)
-
-    # Wait for wlan0 to appear (NM or kernel may not have it ready yet)
-    while not self._exit:
-      if os.path.exists("/sys/class/net/wlan0"):
-        break
-      time.sleep(0.5)
 
     subprocess.run(["sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", WPA_SUPPLICANT_CONF, "-D", "nl80211"], check=False)
 
