@@ -220,7 +220,7 @@ class WifiButton(BigButton):
       elif self._is_connected:
         self.set_value("tethering" if self._network.is_tethering else "connected")
       elif self._network_missing:
-        # after connecting/connected since NM will still attempt to connect/stay connected for a while
+        # after connecting/connected since wpa_supplicant will still attempt to connect/stay connected for a while
         self.set_value("not in range")
       else:
         self.set_value("unsupported")
@@ -297,7 +297,6 @@ class WifiUIMici(NavScroller):
   def show_event(self):
     # Re-sort scroller items and update from latest scan results
     super().show_event()
-    self._wifi_manager.set_active(True)
     self._networks = {n.ssid: n for n in self._wifi_manager.networks}
     self._update_buttons(re_sort=True)
 
@@ -339,6 +338,9 @@ class WifiUIMici(NavScroller):
     self._move_network_to_front(ssid, scroll=True)
 
   def _connect_to_network(self, ssid: str):
+    if self._wifi_manager.is_tethering_active():
+      return
+
     network = self._networks.get(ssid)
     if network is None:
       cloudlog.warning(f"Trying to connect to unknown network: {ssid}")
@@ -356,11 +358,14 @@ class WifiUIMici(NavScroller):
 
   def _on_need_auth(self, ssid, incorrect_password=True):
     if incorrect_password:
+      found = False
       for btn in self._scroller.items:
         if isinstance(btn, WifiButton) and btn.network.ssid == ssid:
           btn.set_wrong_password()
+          found = True
           break
-      return
+      if found:
+        return
 
     dlg = BigInputDialog("enter password...", "", minimum_length=8,
                          confirm_callback=lambda _password: self._connect_with_password(ssid, _password))

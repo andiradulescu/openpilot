@@ -25,7 +25,6 @@ except Exception:
   ui_state = None
   PrimeType = None
 
-NM_DEVICE_STATE_NEED_AUTH = 60
 MIN_PASSWORD_LENGTH = 8
 MAX_PASSWORD_LENGTH = 64
 ITEM_HEIGHT = 160
@@ -107,7 +106,11 @@ class AdvancedNetworkSettings(Widget):
   def __init__(self, wifi_manager: WifiManager):
     super().__init__()
     self._wifi_manager = wifi_manager
-    self._wifi_manager.add_callbacks(networks_updated=self._on_network_updated)
+    self._wifi_manager.add_callbacks(
+      networks_updated=self._on_network_updated,
+      activated=lambda: self._on_tethering_finished(),
+      disconnected=lambda: self._on_tethering_finished(),
+    )
     self._params = Params()
 
     self._keyboard = Keyboard(max_text_size=MAX_PASSWORD_LENGTH, min_text_size=MIN_PASSWORD_LENGTH, show_password_toggle=True)
@@ -158,11 +161,13 @@ class AdvancedNetworkSettings(Widget):
     metered = self._params.get_bool("GsmMetered")
     self._wifi_manager.update_gsm_settings(roaming_enabled, self._params.get("GsmApn") or "", metered)
 
-  def _on_network_updated(self, networks: list[Network]):
+  def _on_tethering_finished(self):
     self._tethering_action.set_enabled(True)
     self._tethering_action.set_state(self._wifi_manager.is_tethering_active())
     self._tethering_password_action.set_enabled(True)
+    self._on_network_updated(self._wifi_manager.networks)
 
+  def _on_network_updated(self, networks: list[Network]):
     if self._wifi_manager.is_tethering_active() or self._wifi_manager.ipv4_address == "":
       self._wifi_metered_action.set_enabled(False)
       self._wifi_metered_action.selected_button = 0
@@ -251,7 +256,13 @@ class AdvancedNetworkSettings(Widget):
 
       password = self._keyboard.text
       self._wifi_manager.set_tethering_password(password)
-      self._tethering_password_action.set_enabled(False)
+      # Only debounce while tethering is actually bouncing — when tethering
+      # is off, set_tethering_password is a synchronous file write that
+      # doesn't emit activated/disconnected, so _on_tethering_finished
+      # (the only re-enable path) would never fire and the button would
+      # be stuck disabled until the widget is recreated.
+      if self._wifi_manager.is_tethering_active():
+        self._tethering_password_action.set_enabled(False)
 
     self._keyboard.reset(min_text_size=MIN_PASSWORD_LENGTH)
     self._keyboard.set_title(tr("Enter new tethering password"), "")
@@ -294,15 +305,6 @@ class WifiManagerUI(Widget):
                                      forgotten=self._on_forgotten,
                                      networks_updated=self._on_network_updated,
                                      disconnected=self._on_disconnected)
-
-  def show_event(self):
-    super().show_event()
-    # start/stop scanning when widget is visible
-    self._wifi_manager.set_active(True)
-
-  def hide_event(self):
-    super().hide_event()
-    self._wifi_manager.set_active(False)
 
   def _load_icons(self):
     for icon in STRENGTH_ICONS + ["icons/checkmark.png", "icons/circled_slash.png", "icons/lock_closed.png"]:
@@ -403,6 +405,9 @@ class WifiManagerUI(Widget):
     self._draw_signal_strength_icon(signal_icon_rect, network)
 
   def _networks_buttons_callback(self, network):
+    if self._wifi_manager.is_tethering_active():
+      return
+
     if not self._wifi_manager.is_connection_saved(network.ssid) and network.security_type != SecurityType.OPEN:
       self.state = UIState.NEEDS_AUTH
       self._state_network = network
@@ -437,6 +442,9 @@ class WifiManagerUI(Widget):
     rl.draw_texture_v(gui_app.texture(STRENGTH_ICONS[strength_level], ICON_SIZE, ICON_SIZE), rl.Vector2(rect.x, rect.y), rl.WHITE)
 
   def connect_to_network(self, network: Network, password=''):
+    if self._wifi_manager.is_tethering_active():
+      return
+
     self.state = UIState.CONNECTING
     self._state_network = network
     if self._wifi_manager.is_connection_saved(network.ssid) and not password:
@@ -461,6 +469,8 @@ class WifiManagerUI(Widget):
 
   def _on_need_auth(self, ssid):
     network = next((n for n in self._networks if n.ssid == ssid), None)
+    if network is None and self._state_network is not None and self._state_network.ssid == ssid:
+      network = self._state_network
     if network:
       self.state = UIState.NEEDS_AUTH
       self._state_network = network
