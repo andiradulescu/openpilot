@@ -197,17 +197,23 @@ def decode_ssid(encoded: str) -> str:
 
     nxt = encoded[i]
     if nxt == "\\":
-      out.append(ord("\\")); i += 1
+      out.append(ord("\\"))
+      i += 1
     elif nxt == '"':
-      out.append(ord('"')); i += 1
+      out.append(ord('"'))
+      i += 1
     elif nxt == "n":
-      out.append(ord("\n")); i += 1
+      out.append(ord("\n"))
+      i += 1
     elif nxt == "r":
-      out.append(ord("\r")); i += 1
+      out.append(ord("\r"))
+      i += 1
     elif nxt == "t":
-      out.append(ord("\t")); i += 1
+      out.append(ord("\t"))
+      i += 1
     elif nxt == "e":
-      out.append(0x1b); i += 1
+      out.append(0x1b)
+      i += 1
     elif nxt == "x":
       i += 1  # consume 'x'
       if i + 1 < n and encoded[i] in _HEX and encoded[i + 1] in _HEX:
