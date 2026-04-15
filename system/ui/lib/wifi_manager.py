@@ -1478,7 +1478,14 @@ class WifiManager:
     self._ipv4_forward = enabled
 
   def set_tethering_active(self, active: bool):
-    self._tethering_active = active
+    # On enable, assert the flag synchronously so scan/reconcile and
+    # station-connect UI paths see "tethering is in progress" from the
+    # first instant. On disable, leave the flag True until _stop_tethering
+    # has actually switched _ctrl back to STA mode — otherwise a user
+    # tapping a network immediately after hitting the toggle could race
+    # the teardown and send ADD_NETWORK/SELECT_NETWORK to the AP daemon.
+    if active:
+      self._tethering_active = True
     def worker():
       if active:
         try:
@@ -1500,7 +1507,13 @@ class WifiManager:
             self._wifi_state = WifiState()
             self._enqueue_callbacks(self._disconnected)
       else:
-        self._stop_tethering()
+        try:
+          self._stop_tethering()
+        except Exception:
+          cloudlog.exception("Failed to stop tethering")
+          # Force-clear the flag even if teardown failed so the UI isn't
+          # wedged reporting tethering active forever.
+          self._tethering_active = False
     threading.Thread(target=worker, daemon=True).start()
 
   def _start_tethering(self):
