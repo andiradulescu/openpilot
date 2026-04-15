@@ -683,3 +683,18 @@ class TestInitWifiState:
 
     assert wm._wifi_state.status == ConnectStatus.DISCONNECTED
     wm._dhcp.start.assert_not_called()
+
+  @pytest.mark.parametrize("wpa_state", [
+    "SCANNING", "AUTHENTICATING", "ASSOCIATING", "ASSOCIATED",
+    "4WAY_HANDSHAKE", "GROUP_HANDSHAKE",
+  ])
+  def test_mid_connect_states_adopt_connecting(self, wm, wpa_state):
+    """On UI/daemon restart during any transient wpa_supplicant state, the
+    manager must start in CONNECTING so recovery paths (stale reconcile,
+    WRONG_KEY dispatch) keyed on CONNECTING still run for that attempt."""
+    wm._ctrl.request.return_value = f"wpa_state={wpa_state}\nmode=station\nssid=HomeNet\n"
+
+    wm._init_wifi_state()
+
+    assert wm._wifi_state.status == ConnectStatus.CONNECTING, f"{wpa_state} must map to CONNECTING"
+    assert wm._wifi_state.ssid == "HomeNet"

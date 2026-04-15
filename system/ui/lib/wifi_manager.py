@@ -844,7 +844,11 @@ class WifiManager:
 
       if wpa_state == "COMPLETED":
         new_status = ConnectStatus.CONNECTED
-      elif wpa_state in ("ASSOCIATING", "ASSOCIATED", "4WAY_HANDSHAKE", "GROUP_HANDSHAKE"):
+      elif wpa_state in ("SCANNING", "AUTHENTICATING", "ASSOCIATING", "ASSOCIATED", "4WAY_HANDSHAKE", "GROUP_HANDSHAKE"):
+        # Adopt mid-connect state on restart. SCANNING/AUTHENTICATING used
+        # to fall through to DISCONNECTED, which skipped the connect-in-
+        # progress recovery path and let a wrong-password TEMP-DISABLED
+        # event bypass its current_ssid check.
         new_status = ConnectStatus.CONNECTING
       else:
         new_status = ConnectStatus.DISCONNECTED
