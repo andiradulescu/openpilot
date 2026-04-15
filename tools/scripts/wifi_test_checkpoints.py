@@ -8,8 +8,14 @@ from dataclasses import dataclass
 from datetime import datetime, UTC
 from pathlib import Path
 
-from openpilot.system.ui.lib.wifi_manager import WifiManager
-from openpilot.system.ui.lib.wpa_ctrl import parse_status
+from openpilot.system.ui.lib.wifi_manager import NetworkStore
+from openpilot.system.ui.lib.wpa_ctrl import (
+  SecurityType,
+  dbm_to_percent,
+  flags_to_security_type,
+  parse_scan_results,
+  parse_status,
+)
 
 
 NM_CONNECTIONS_DIR = Path("/data/etc/NetworkManager/system-connections")
@@ -236,33 +242,90 @@ def collect_nmconnections() -> list[dict[str, str | int]]:
 
 
 def collect_daemon_snapshot() -> dict:
-  manager = None
+  """Snapshot the live wifi state without instantiating a WifiManager.
+
+  WifiManager.__init__ kicks off _initialize(), which can reconfigure
+  wlan0/wpa_supplicant and then stop() tears it back down. For a
+  validation tool that is supposed to *measure* state, constructing a
+  second manager would perturb the thing under test and return stale
+  defaults. Read wpa_supplicant directly via wpa_cli and the filesystem.
+  """
   try:
-    manager = WifiManager()
-    wifi_state = manager.wifi_state
+    status_raw = run_command(["wpa_cli", "-i", "wlan0", "status"])
+    try:
+      status = parse_status(status_raw)
+    except Exception:
+      status = {}
+
+    wpa_state = status.get("wpa_state", "")
+    mode = status.get("mode", "")
+    ssid = status.get("ssid")
+
+    if mode == "AP":
+      tethering_active = True
+      wifi_state_ssid = ssid
+      wifi_state_status = 2  # ConnectStatus.CONNECTED
+    else:
+      tethering_active = False
+      if wpa_state == "COMPLETED" and ssid:
+        wifi_state_ssid = ssid
+        wifi_state_status = 2
+      elif wpa_state in ("ASSOCIATING", "AUTHENTICATING", "4WAY_HANDSHAKE",
+                         "GROUP_HANDSHAKE", "SCANNING"):
+        wifi_state_ssid = ssid
+        wifi_state_status = 1  # CONNECTING
+      else:
+        wifi_state_ssid = None
+        wifi_state_status = 0  # DISCONNECTED
+
+    ipv4_address = ""
+    addr_raw = run_command(["ip", "-4", "-o", "addr", "show", "dev", "wlan0"])
+    for line in addr_raw.splitlines():
+      parts = line.split()
+      if "inet" in parts:
+        cidr = parts[parts.index("inet") + 1]
+        ipv4_address = cidr.split("/", 1)[0]
+        break
+
+    scan_raw = run_command(["wpa_cli", "-i", "wlan0", "scan_results"])
+    try:
+      scan_results = parse_scan_results(scan_raw)
+    except Exception:
+      scan_results = []
+    seen_ssids: set[str] = set()
+    networks: list[dict] = []
+    for result in scan_results:
+      if not result.ssid or result.ssid in seen_ssids:
+        continue
+      seen_ssids.add(result.ssid)
+      try:
+        security = flags_to_security_type(result.flags)
+      except Exception:
+        security = SecurityType.UNSUPPORTED
+      networks.append({
+        "ssid": result.ssid,
+        "strength": dbm_to_percent(result.signal),
+        "security_type": int(security),
+        "is_tethering": False,
+      })
+
+    try:
+      saved_ssids = sorted(NetworkStore().saved_ssids())
+    except Exception:
+      saved_ssids = []
+
     return {
       "wifi_state": {
-        "ssid": wifi_state.ssid,
-        "status": int(wifi_state.status),
+        "ssid": wifi_state_ssid,
+        "status": wifi_state_status,
       },
-      "ipv4_address": manager.ipv4_address,
-      "saved_ssids": sorted(manager._store.saved_ssids()),
-      "networks": [
-        {
-          "ssid": network.ssid,
-          "strength": network.strength,
-          "security_type": int(network.security_type),
-          "is_tethering": network.is_tethering,
-        }
-        for network in manager.networks
-      ],
-      "tethering_active": manager.is_tethering_active(),
+      "ipv4_address": ipv4_address,
+      "saved_ssids": saved_ssids,
+      "networks": networks,
+      "tethering_active": tethering_active,
     }
   except Exception as e:
     return {"error": str(e)}
-  finally:
-    if manager is not None:
-      manager.stop()
 
 
 def collect_snapshot() -> dict:
