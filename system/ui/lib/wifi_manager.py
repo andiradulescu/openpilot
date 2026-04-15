@@ -31,6 +31,11 @@ DEFAULT_TETHERING_PASSWORD = "swagswagcomma"
 TETHERING_PASSWORD_FILE = "/data/tethering_password"
 SCAN_PERIOD_SECONDS = 5
 CONNECTING_STALE_TIMEOUT_SECONDS = 5
+# Ignore WRONG_KEY events within this window of the previous dispatch.
+# wpa_supplicant can queue multiple events from a single attempt (or a
+# prior attempt the user has already retried past), and acting on each
+# one clobbers the pending credentials of the current in-flight attempt.
+WRONG_KEY_DEBOUNCE_SECONDS = 2.0
 
 WPA_SUPPLICANT_CONF = "/tmp/wpa_supplicant.conf"
 NM_CONNECTIONS_DIR = "/data/etc/NetworkManager/system-connections"
@@ -629,6 +634,7 @@ class WifiManager:
     self._last_network_scan: float = 0.0
     self._last_connecting_at: float = 0.0
     self._last_connected_recheck: float = 0.0
+    self._last_wrong_key_dispatch_at: float = 0.0
     self._callback_queue: list[Callable] = []
     self._callback_lock = threading.Lock()
     # Coalesced dirty flag for periodic networks_updated; the scan worker
@@ -1095,6 +1101,14 @@ class WifiManager:
     elif "TEMP-DISABLED" in event and "reason=WRONG_KEY" in event:
       event_ssid = parse_event_ssid(event)
       if event_ssid is not None:
+        # Debounce: suppress stale events from a prior attempt for the
+        # same SSID. If the user just retried with fresh credentials, an
+        # in-flight WRONG_KEY from the earlier attempt can arrive and
+        # clobber the new pending password; the real outcome of the new
+        # attempt will surface as a later event.
+        now = time.monotonic()
+        if now - self._last_wrong_key_dispatch_at < WRONG_KEY_DEBOUNCE_SECONDS:
+          return
         current_ssid = self._wifi_state.ssid
         # Auto-connect can land us in CONNECTING with ssid=None when STATUS
         # was briefly unavailable at set-connecting time. In that window
@@ -1105,6 +1119,7 @@ class WifiManager:
           and current_ssid is None
         )
         if connecting_unknown or (current_ssid and event_ssid == current_ssid):
+          self._last_wrong_key_dispatch_at = now
           self._clear_pending_connection(event_ssid)
           self._enqueue_callbacks(self._need_auth, event_ssid)
           self._set_connecting(None)

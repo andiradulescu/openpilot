@@ -192,6 +192,31 @@ class TestWrongPassword:
     wm.process_callbacks()
     cb.assert_not_called()
 
+  def test_wrong_key_debounced_after_recent_dispatch(self, wm, mocker):
+    """Regression: if the user retries with fresh credentials right after
+    a WRONG_KEY fired, a delayed second WRONG_KEY from the prior attempt
+    must not clobber the new pending password. The debounce window lets
+    the fresh attempt's real outcome surface as the next real event."""
+    import time
+    cb = mocker.MagicMock()
+    wm.add_callbacks(need_auth=cb)
+    # Simulate: a WRONG_KEY was dispatched a moment ago.
+    wm._last_wrong_key_dispatch_at = time.monotonic()
+    # User retried, new pending credentials are in flight.
+    wm._set_connecting("SecNet")
+    wm._set_pending_connection("SecNet", "retry-password", False)
+
+    # Stale WRONG_KEY event from the previous attempt arrives.
+    fire(wm, "CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid=\"SecNet\" auth_failures=1 duration=10 reason=WRONG_KEY")
+
+    # Fresh pending credentials must survive.
+    assert wm._pending_connection is not None
+    assert wm._pending_connection.password == "retry-password"
+    # And we stay in CONNECTING waiting for the real outcome.
+    assert wm._wifi_state.status == ConnectStatus.CONNECTING
+    wm.process_callbacks()
+    cb.assert_not_called()
+
   def test_wrong_key_connecting_with_unknown_ssid_accepts_event(self, wm, mocker):
     """Auto-connect path sets CONNECTING with ssid=None when STATUS was
     briefly unavailable. A subsequent WRONG_KEY event is still the
