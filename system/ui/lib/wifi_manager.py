@@ -1180,7 +1180,15 @@ class WifiManager:
       status_ssid = status.get("ssid")
       if wpa_state == "COMPLETED" and status_ssid == current_state.ssid:
         return
-      # Disconnected under us (or roamed to a different SSID we don't track).
+      if wpa_state == "COMPLETED" and status_ssid:
+        # Roamed to a different SSID while the monitor socket was down.
+        # Adopt the new network via the normal connected path instead of
+        # synthesizing a disconnect — the latter would flush wlan0's IP
+        # (dropping the live lease) and fire a spurious disconnected
+        # callback before the next loop figured out we're still up.
+        self._handle_connected(status_ssid)
+        return
+      # Actually disconnected under us.
       self._wifi_state = WifiState(ssid=None, status=ConnectStatus.DISCONNECTED)
       self._dhcp.stop()
       self._ipv4_address = ""

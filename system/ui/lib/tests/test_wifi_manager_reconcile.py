@@ -181,6 +181,30 @@ def test_reconcile_connected_stable_when_still_completed(wm, mocker):
   disconnected.assert_not_called()
 
 
+def test_reconcile_connected_adopts_roamed_ssid(wm, mocker):
+  """If STATUS reports COMPLETED on a different SSID than we think we're
+  on (monitor socket down during a roam A→B), adopt the new network via
+  _handle_connected. Synthesizing DISCONNECTED would flush wlan0's IP and
+  fire a spurious disconnected callback before the next loop recovers."""
+  activated = mocker.MagicMock()
+  disconnected = mocker.MagicMock()
+  wm._activated.append(activated)
+  wm._disconnected.append(disconnected)
+  wm._wifi_state = WifiState(ssid="HomeA", status=ConnectStatus.CONNECTED)
+  wm._ipv4_address = "192.168.1.50"
+  wm._last_connected_recheck = 0.0
+  wm._ctrl.request.return_value = "wpa_state=COMPLETED\nssid=HomeB\n"
+
+  wm._reconcile_connecting_state()
+  wm.process_callbacks()
+
+  assert wm._wifi_state.status == ConnectStatus.CONNECTED
+  assert wm._wifi_state.ssid == "HomeB"
+  wm._dhcp.stop.assert_not_called()
+  disconnected.assert_not_called()
+  activated.assert_called_once()
+
+
 def test_reconcile_connected_gated_by_scan_period(wm, mocker):
   """STATUS must not be polled on every scanner tick — only once per
   SCAN_PERIOD_SECONDS — otherwise we spam wpa_supplicant at 2Hz."""
