@@ -626,6 +626,7 @@ class WifiManager:
 
     self._last_network_scan: float = 0.0
     self._last_connecting_at: float = 0.0
+    self._last_connected_recheck: float = 0.0
     self._callback_queue: list[Callable] = []
     self._callback_lock = threading.Lock()
     # Coalesced dirty flag for periodic networks_updated; the scan worker
@@ -913,9 +914,17 @@ class WifiManager:
     if ssid != pending.ssid or pending.epoch != self._user_epoch:
       return
 
+    # Clear _pending_connection only on successful persistence. If the
+    # filesystem write fails, keep the credentials so a later retry can
+    # save them, and swallow the exception so _handle_connected can still
+    # fire DHCP start and the activated callbacks for this connect event.
+    try:
+      self._store.save_network(ssid, psk=pending.password, hidden=pending.hidden)
+      _generate_wpa_conf(self._store)
+    except Exception:
+      cloudlog.exception("Failed to persist pending connection for %s", ssid)
+      return
     self._pending_connection = None
-    self._store.save_network(ssid, psk=pending.password, hidden=pending.hidden)
-    _generate_wpa_conf(self._store)
 
   def _enqueue_callbacks(self, cbs: list[Callable], *args):
     with self._callback_lock:
@@ -1116,6 +1125,33 @@ class WifiManager:
         return
       if status.get("wpa_state") == "COMPLETED" and status.get("ssid"):
         self._handle_connected(status["ssid"])
+      return
+
+    # Detect missed DISCONNECTED event. If the monitor socket dropped and
+    # reconnected, a CTRL-EVENT-DISCONNECTED may have been lost, leaving
+    # self._wifi_state stuck at CONNECTED while wpa_supplicant is actually
+    # disconnected. Poll STATUS at SCAN_PERIOD_SECONDS cadence (not every
+    # scanner tick, to avoid STATUS spam) and synthesize a disconnect if
+    # wpa_supplicant has moved on.
+    if current_state.status == ConnectStatus.CONNECTED:
+      now = time.monotonic()
+      if now - self._last_connected_recheck < SCAN_PERIOD_SECONDS:
+        return
+      self._last_connected_recheck = now
+      try:
+        status = parse_status(self._ctrl.request("STATUS"))
+      except Exception:
+        return
+      wpa_state = status.get("wpa_state", "")
+      status_ssid = status.get("ssid")
+      if wpa_state == "COMPLETED" and status_ssid == current_state.ssid:
+        return
+      # Disconnected under us (or roamed to a different SSID we don't track).
+      self._wifi_state = WifiState(ssid=None, status=ConnectStatus.DISCONNECTED)
+      self._dhcp.stop()
+      self._ipv4_address = ""
+      self._current_network_metered = MeteredType.UNKNOWN
+      self._enqueue_callbacks(self._disconnected)
       return
 
     # Even if ssid is None (e.g. the auto-connect path couldn't read STATUS

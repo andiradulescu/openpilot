@@ -138,6 +138,85 @@ def test_reconcile_scanning_keeps_connecting(wm, mocker):
   assert wm._last_connecting_at >= before
 
 
+def test_reconcile_connected_detects_stale_wifi_state(wm, mocker):
+  """Monitor socket drop/reconnect can drop a CTRL-EVENT-DISCONNECTED,
+  leaving self._wifi_state stuck at CONNECTED while wpa_supplicant has
+  actually moved on. The scanner-driven reconcile must detect this and
+  synthesize a disconnect so DHCP stops, IP/metered clear, and the UI
+  fires the disconnected callback."""
+  disconnected = mocker.MagicMock()
+  wm._disconnected.append(disconnected)
+  wm._wifi_state = WifiState(ssid="systeam", status=ConnectStatus.CONNECTED)
+  wm._ipv4_address = "192.168.1.105"
+  wm._last_connected_recheck = 0.0
+  wm._ctrl.request.return_value = "wpa_state=DISCONNECTED\n"
+
+  wm._reconcile_connecting_state()
+  wm.process_callbacks()
+
+  assert wm._wifi_state.status == ConnectStatus.DISCONNECTED
+  assert wm._wifi_state.ssid is None
+  assert wm._ipv4_address == ""
+  wm._dhcp.stop.assert_called_once()
+  disconnected.assert_called_once()
+
+
+def test_reconcile_connected_stable_when_still_completed(wm, mocker):
+  """If STATUS still reports COMPLETED on the same SSID, leave state
+  untouched — no spurious disconnect callback fan-out."""
+  disconnected = mocker.MagicMock()
+  wm._disconnected.append(disconnected)
+  wm._wifi_state = WifiState(ssid="systeam", status=ConnectStatus.CONNECTED)
+  wm._ipv4_address = "192.168.1.105"
+  wm._last_connected_recheck = 0.0
+  wm._ctrl.request.return_value = "wpa_state=COMPLETED\nssid=systeam\n"
+
+  wm._reconcile_connecting_state()
+  wm.process_callbacks()
+
+  assert wm._wifi_state.status == ConnectStatus.CONNECTED
+  assert wm._wifi_state.ssid == "systeam"
+  assert wm._ipv4_address == "192.168.1.105"
+  wm._dhcp.stop.assert_not_called()
+  disconnected.assert_not_called()
+
+
+def test_reconcile_connected_gated_by_scan_period(wm, mocker):
+  """STATUS must not be polled on every scanner tick — only once per
+  SCAN_PERIOD_SECONDS — otherwise we spam wpa_supplicant at 2Hz."""
+  wm._wifi_state = WifiState(ssid="systeam", status=ConnectStatus.CONNECTED)
+  wm._last_connected_recheck = time.monotonic()  # just rechecked
+
+  wm._reconcile_connecting_state()
+
+  wm._ctrl.request.assert_not_called()
+
+
+def test_persist_pending_connection_keeps_creds_on_write_failure(wm, mocker):
+  """If save_network fails (e.g. /data write error), credentials must
+  survive so a later retry can persist them. The exception must not
+  propagate — _handle_connected needs to continue to DHCP start."""
+  wm._pending_connection = PendingConnection(ssid="systeam", password="secret", hidden=False, epoch=wm._user_epoch)
+  wm._store.save_network.side_effect = OSError("disk full")
+
+  # Should not raise
+  wm._persist_pending_connection("systeam")
+
+  assert wm._pending_connection is not None
+  assert wm._pending_connection.password == "secret"
+
+
+def test_persist_pending_connection_clears_on_success(wm, mocker):
+  """Happy path: persistence succeeds, pending credentials are cleared."""
+  mocker.patch("openpilot.system.ui.lib.wifi_manager._generate_wpa_conf")
+  wm._pending_connection = PendingConnection(ssid="systeam", password="secret", hidden=False, epoch=wm._user_epoch)
+
+  wm._persist_pending_connection("systeam")
+
+  assert wm._pending_connection is None
+  wm._store.save_network.assert_called_once_with("systeam", psk="secret", hidden=False)
+
+
 def test_reconcile_scanning_then_disconnected_fires_need_auth(wm, mocker):
   """Once SCANNING transitions to DISCONNECTED/INACTIVE, the terminal
   failure path still runs — we just don't run it prematurely on SCANNING."""
