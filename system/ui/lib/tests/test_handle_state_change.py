@@ -510,11 +510,11 @@ class TestListNetworkIdsDecoding:
     forget_connection / activate_connection silently leak runtime
     entries for any UTF-8 network name."""
     # "café" → 5 UTF-8 bytes, printf_encoded as caf\\xc3\\xa9
-    wm._ctrl.request.return_value = (
-      "network id / ssid / bssid / flags\n"
-      "0\tcaf\\xc3\\xa9\tany\t[CURRENT]\n"
-      "1\tOtherNet\tany\t\n"
-    )
+    wm._ctrl.request.return_value = "\n".join([
+      "network id / ssid / bssid / flags",
+      "0\tcaf\\xc3\\xa9\tany\t[CURRENT]",
+      "1\tOtherNet\tany\t",
+    ]) + "\n"
 
     ids = wm._list_network_ids("café")
 
@@ -522,12 +522,12 @@ class TestListNetworkIdsDecoding:
 
   def test_list_network_ids_matches_plain_ascii(self, wm):
     """Regression guard: decoding must be a no-op for pure ASCII SSIDs."""
-    wm._ctrl.request.return_value = (
-      "network id / ssid / bssid / flags\n"
-      "0\tHomeNet\tany\t[CURRENT]\n"
-      "1\tOtherNet\tany\t\n"
-      "2\tHomeNet\tany\t\n"
-    )
+    wm._ctrl.request.return_value = "\n".join([
+      "network id / ssid / bssid / flags",
+      "0\tHomeNet\tany\t[CURRENT]",
+      "1\tOtherNet\tany\t",
+      "2\tHomeNet\tany\t",
+    ]) + "\n"
 
     assert wm._list_network_ids("HomeNet") == ["0", "2"]
 

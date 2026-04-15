@@ -256,7 +256,6 @@ def _patch_tethering_sideeffects(wm, mocker):
       return None
 
   mocker.patch.object(wifi_manager_module.os, "fdopen", return_value=_DummyFd())
-  mocker.patch.object(wifi_manager_module, "_get_upstream_iface", return_value="wwan0")
   wm._tethering_ssid = "weedle-test"
   wm._tethering_psk = "hotspot-psk-1234"
   wm._ipv4_forward = False
@@ -311,6 +310,35 @@ class TestTetheringBringupVerification:
 
     broken_ctrl.close.assert_called_once()
     assert wm._ctrl is None
+
+  def test_start_tethering_installs_source_based_masquerade(self, wm, mocker):
+    """NAT rule must match on source subnet, not -o <iface>, so a mid-
+    session uplink change (cable unplug, SIM drop, 3G→4G) doesn't strand
+    tethered clients. Mirrors NetworkManager's shared-connection rule."""
+    _patch_tethering_sideeffects(wm, mocker)
+    ap_ctrl = mocker.MagicMock()
+    ap_ctrl.request.return_value = f"wpa_state=COMPLETED\nmode=AP\nssid={wm._tethering_ssid}\n"
+    mocker.patch.object(wifi_manager_module, "WpaCtrl", return_value=ap_ctrl)
+
+    wm._start_tethering()
+
+    from openpilot.system.ui.lib.wifi_manager import (
+      TETHERING_NAT_COMMENT,
+      TETHERING_SUBNET,
+    )
+    commands = [tuple(c.args[0]) for c in wifi_manager_module.subprocess.run.call_args_list]
+    # The insert must be present in the exact NM-style form.
+    insert_cmds = [c for c in commands
+                   if len(c) >= 5 and c[0] == "sudo" and c[1] == "iptables"
+                   and "-A" in c and "POSTROUTING" in c and "MASQUERADE" in c]
+    assert insert_cmds, f"no MASQUERADE insert in commands: {commands}"
+    cmd = insert_cmds[0]
+    assert "-s" in cmd and TETHERING_SUBNET in cmd, f"missing source subnet: {cmd}"
+    assert "!" in cmd and "-d" in cmd, f"missing negated destination: {cmd}"
+    # And it must NOT bind to a specific uplink interface.
+    assert "-o" not in cmd, f"MASQUERADE should not bind to -o <iface>: {cmd}"
+    # Comment tag for iptables -S hygiene.
+    assert TETHERING_NAT_COMMENT in cmd, f"missing comment tag: {cmd}"
 
 
 class TestStopTetheringRollback:

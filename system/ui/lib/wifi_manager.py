@@ -25,6 +25,8 @@ except Exception:
   Params = None
 
 TETHERING_IP_ADDRESS = "192.168.43.1"
+TETHERING_SUBNET = "192.168.43.0/24"
+TETHERING_NAT_COMMENT = "openpilot-tethering"
 DEFAULT_TETHERING_PASSWORD = "swagswagcomma"
 TETHERING_PASSWORD_FILE = "/data/tethering_password"
 SCAN_PERIOD_SECONDS = 5
@@ -585,20 +587,21 @@ def _generate_wpa_conf(store: NetworkStore, path: str = WPA_SUPPLICANT_CONF):
 
 # ---------------------------------------------------------------------------
 # WifiManager
-def _get_upstream_iface() -> str:
-  """Return the non-wlan default route interface (e.g. wwan0, rmnet_data0, eth0)."""
-  try:
-    result = subprocess.run(["ip", "-4", "route", "show", "default"],
-                            capture_output=True, text=True, timeout=2)
-    for line in result.stdout.strip().split("\n"):
-      parts = line.split()
-      if "dev" in parts:
-        iface = parts[parts.index("dev") + 1]
-        if not iface.startswith("wlan"):
-          return iface
-  except Exception:
-    pass
-  return "wwan0"
+def _tethering_nat_rule(op: str) -> list[str]:
+  """Build the iptables MASQUERADE rule for the tethering subnet.
+
+  Matches NetworkManager's shared-connection rule (see NM
+  nm-firewall-utils.c:_share_iptables_set_masquerade_sync): source-subnet
+  + negated destination, no `-o <iface>`, tagged with a comment so
+  iptables -S surfaces it. Not binding to an uplink is what allows the
+  session to survive a default-route change (ETH unplug, SIM drop, 3G↔4G).
+  """
+  return ["sudo", "iptables",
+          "-t", "nat",
+          op, "POSTROUTING",
+          "-s", TETHERING_SUBNET, "!", "-d", TETHERING_SUBNET,
+          "-j", "MASQUERADE",
+          "-m", "comment", "--comment", TETHERING_NAT_COMMENT]
 
 
 # ---------------------------------------------------------------------------
@@ -620,7 +623,6 @@ class WifiManager:
     self._current_network_metered: MeteredType = MeteredType.UNKNOWN
     self._ipv4_forward = False
     self._tethering_active = False
-    self._tethering_upstream_iface: str = ""
     self._dnsmasq_proc: subprocess.Popen | None = None
     self._pending_connection: PendingConnection | None = None
 
@@ -825,12 +827,6 @@ class WifiManager:
         if self._user_epoch != epoch:
           return
         self._tethering_active = True
-        # Recompute the upstream interface from the live default route so
-        # _stop_tethering tears down the right MASQUERADE rule. Without
-        # this, the empty init value falls back to wwan0 in _stop_tethering
-        # and leaves a stray NAT rule behind on the actual uplink
-        # (eth0, rmnet_data0, etc.).
-        self._tethering_upstream_iface = _get_upstream_iface()
         self._wifi_state = WifiState(ssid=ssid or self._tethering_ssid, status=ConnectStatus.CONNECTED)
         self._ipv4_address = TETHERING_IP_ADDRESS
         self._enqueue_callbacks(self._activated)
@@ -1588,16 +1584,26 @@ class WifiManager:
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
       start_new_session=True)
 
-    # NAT — use whichever upstream interface has the default route.
-    # Flush any stale MASQUERADE rules from previous sessions first (idempotent).
-    self._tethering_upstream_iface = _get_upstream_iface()
-    for iface in {"wwan0", "rmnet_data0", "eth0", self._tethering_upstream_iface}:
+    # NAT: MASQUERADE traffic from the tethering subnet regardless of
+    # which uplink has the default route. Source-subnet matching (no
+    # `-o <iface>`) survives a mid-session uplink change — unplugging
+    # ETH, pulling the SIM, 3G→4G, rmnet_data0 rename — without any
+    # watchdog logic, because the rule describes *our* network, not
+    # whichever interface happens to carry traffic out.
+    # Flush any stale copies from previous sessions first (idempotent),
+    # plus legacy `-o <iface>` rules from older openpilot versions that
+    # bound MASQUERADE to a specific uplink.
+    for _ in range(4):
+      result = subprocess.run(_tethering_nat_rule("-D"), capture_output=True, check=False)
+      if result.returncode != 0:
+        break
+    for iface in ("wwan0", "rmnet_data0", "eth0"):
       for _ in range(4):
         result = subprocess.run(["sudo", "iptables", "-t", "nat", "-D", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"],
                                 capture_output=True, check=False)
         if result.returncode != 0:
           break
-    subprocess.run(["sudo", "iptables", "-t", "nat", "-A", "POSTROUTING", "-o", self._tethering_upstream_iface, "-j", "MASQUERADE"], check=False)
+    subprocess.run(_tethering_nat_rule("-A"), check=False)
     if self._ipv4_forward:
       subprocess.run(["sudo", "sysctl", "net.ipv4.ip_forward=1"], check=False)
 
@@ -1636,9 +1642,11 @@ class WifiManager:
         pass
       self._dnsmasq_proc = None
 
-    # Remove NAT
-    iface = self._tethering_upstream_iface or "wwan0"
-    subprocess.run(["sudo", "iptables", "-t", "nat", "-D", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"], check=False)
+    # Remove NAT. Loop in case a prior start left duplicates.
+    for _ in range(4):
+      result = subprocess.run(_tethering_nat_rule("-D"), capture_output=True, check=False)
+      if result.returncode != 0:
+        break
 
     # Close control socket
     if self._ctrl:
