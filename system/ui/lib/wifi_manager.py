@@ -1084,11 +1084,20 @@ class WifiManager:
 
     elif "TEMP-DISABLED" in event and "reason=WRONG_KEY" in event:
       event_ssid = parse_event_ssid(event)
-      current_ssid = self._wifi_state.ssid
-      if current_ssid and event_ssid == current_ssid:
-        self._clear_pending_connection(event_ssid)
-        self._enqueue_callbacks(self._need_auth, event_ssid)
-        self._set_connecting(None)
+      if event_ssid is not None:
+        current_ssid = self._wifi_state.ssid
+        # Auto-connect can land us in CONNECTING with ssid=None when STATUS
+        # was briefly unavailable at set-connecting time. In that window
+        # the supplicant's SSID in the WRONG_KEY event is the most
+        # authoritative identifier of the target network, so accept it.
+        connecting_unknown = (
+          self._wifi_state.status == ConnectStatus.CONNECTING
+          and current_ssid is None
+        )
+        if connecting_unknown or (current_ssid and event_ssid == current_ssid):
+          self._clear_pending_connection(event_ssid)
+          self._enqueue_callbacks(self._need_auth, event_ssid)
+          self._set_connecting(None)
 
     elif "Trying to associate with" in event or "Associated with" in event:
       # Auto-connect case: wpa_supplicant is connecting on its own
@@ -1421,13 +1430,20 @@ class WifiManager:
       raise RuntimeError(f"SET_NETWORK {net_id} {key} failed: {resp}")
 
   def _list_network_ids(self, ssid: str) -> list[str]:
-    """Return all wpa_supplicant network ids matching SSID."""
+    """Return all wpa_supplicant network ids matching SSID.
+
+    LIST_NETWORKS emits SSIDs in wpa_ssid_txt (printf_encode) form, so
+    non-ASCII or escaped bytes must be decoded before comparing to the
+    caller's already-decoded SSID — otherwise `forget_connection` and
+    `activate_connection` silently miss entries for any SSID containing
+    bytes outside the printable-ASCII range.
+    """
     if self._ctrl is None:
       return []
     try:
       raw = self._ctrl.request("LIST_NETWORKS")
       return [parts[0] for line in raw.strip().split("\n")[1:]
-              if len(parts := line.split("\t")) >= 2 and parts[1] == ssid]
+              if len(parts := line.split("\t")) >= 2 and decode_ssid(parts[1]) == ssid]
     except Exception:
       cloudlog.exception("Failed to list networks")
       return []

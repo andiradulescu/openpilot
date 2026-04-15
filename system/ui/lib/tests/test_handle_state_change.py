@@ -192,6 +192,21 @@ class TestWrongPassword:
     wm.process_callbacks()
     cb.assert_not_called()
 
+  def test_wrong_key_connecting_with_unknown_ssid_accepts_event(self, wm, mocker):
+    """Auto-connect path sets CONNECTING with ssid=None when STATUS was
+    briefly unavailable. A subsequent WRONG_KEY event is still the
+    authoritative target identifier and must fire need_auth — otherwise
+    the user sees a silent auth failure with no password prompt."""
+    cb = mocker.MagicMock()
+    wm.add_callbacks(need_auth=cb)
+    wm._wifi_state = WifiState(ssid=None, status=ConnectStatus.CONNECTING)
+
+    fire(wm, "CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid=\"AutoNet\" auth_failures=1 duration=10 reason=WRONG_KEY")
+
+    assert wm._wifi_state.status == ConnectStatus.DISCONNECTED
+    wm.process_callbacks()
+    cb.assert_called_once_with("AutoNet")
+
 
 class TestAutoConnect:
   def test_trying_to_associate_sets_connecting(self, wm):
@@ -486,6 +501,35 @@ class TestAddAndSelectNetworkResponseChecks:
     wm._add_and_select_network("Net", psk63, hidden=False)
 
     assert f'SET_NETWORK 10 psk "{psk63}"' in calls
+
+
+class TestListNetworkIdsDecoding:
+  def test_list_network_ids_decodes_printf_encoded_ssids(self, wm):
+    """LIST_NETWORKS emits SSIDs in printf_encode form. Without decoding,
+    non-ASCII SSIDs never match the caller's already-decoded string, so
+    forget_connection / activate_connection silently leak runtime
+    entries for any UTF-8 network name."""
+    # "café" → 5 UTF-8 bytes, printf_encoded as caf\\xc3\\xa9
+    wm._ctrl.request.return_value = (
+      "network id / ssid / bssid / flags\n"
+      "0\tcaf\\xc3\\xa9\tany\t[CURRENT]\n"
+      "1\tOtherNet\tany\t\n"
+    )
+
+    ids = wm._list_network_ids("café")
+
+    assert ids == ["0"]
+
+  def test_list_network_ids_matches_plain_ascii(self, wm):
+    """Regression guard: decoding must be a no-op for pure ASCII SSIDs."""
+    wm._ctrl.request.return_value = (
+      "network id / ssid / bssid / flags\n"
+      "0\tHomeNet\tany\t[CURRENT]\n"
+      "1\tOtherNet\tany\t\n"
+      "2\tHomeNet\tany\t\n"
+    )
+
+    assert wm._list_network_ids("HomeNet") == ["0", "2"]
 
 
 class TestConnectPersistence:
