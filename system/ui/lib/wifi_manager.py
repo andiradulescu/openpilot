@@ -35,6 +35,26 @@ NM_CONNECTIONS_DIR = "/data/etc/NetworkManager/system-connections"
 
 WPA_AP_CONF = "/tmp/wpa_supplicant_ap.conf"
 
+
+def _wpa_supplicant_running(conf: str) -> bool:
+  """Return True iff a wpa_supplicant process running the given config exists.
+
+  Matches on cmdline via pgrep -f so we never conflate a system-managed
+  daemon on another interface or config with one we own.
+  """
+  pattern = rf"wpa_supplicant.*{re.escape(conf)}"
+  return subprocess.run(["pgrep", "-f", pattern], capture_output=True).returncode == 0
+
+
+def _pkill_wpa_supplicant(conf: str) -> None:
+  """Terminate any wpa_supplicant processes running the given config.
+
+  Narrow-matched via pkill -f so a system-managed daemon on another
+  interface or config survives untouched.
+  """
+  pattern = rf"wpa_supplicant.*{re.escape(conf)}"
+  subprocess.run(["sudo", "pkill", "-f", pattern], check=False)
+
 # Matches ssid="…" in wpa_supplicant events, allowing escaped quotes inside.
 TEMP_DISABLED_SSID_RE = re.compile(r'\bssid="((?:\\.|[^"])*)"')
 
@@ -610,11 +630,7 @@ class WifiManager:
     alive we attach directly, without disturbing NM or waiting for a
     teardown we don't need.
     """
-    result = subprocess.run(
-      ["pgrep", "-f", rf"wpa_supplicant.*{re.escape(WPA_SUPPLICANT_CONF)}"],
-      capture_output=True,
-    )
-    return result.returncode == 0
+    return _wpa_supplicant_running(WPA_SUPPLICANT_CONF)
 
   def _try_attach_ctrl(self) -> bool:
     """Attach to an already-running wpa_supplicant via its ctrl socket.
@@ -680,7 +696,7 @@ class WifiManager:
     # Clean up our own stale state. Target only wpa_supplicants running
     # *our* config so we don't touch a system-managed daemon that happens
     # to be on a different config or a different interface.
-    subprocess.run(["sudo", "pkill", "-f", rf"wpa_supplicant.*{re.escape(WPA_SUPPLICANT_CONF)}"], check=False)
+    _pkill_wpa_supplicant(WPA_SUPPLICANT_CONF)
     subprocess.run(["sudo", "killall", "-q", "dnsmasq"], check=False)
     subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
     time.sleep(0.5)
@@ -1392,7 +1408,7 @@ class WifiManager:
     # Stop STA wpa_supplicant (only the one running our config — never touch a
     # system-managed daemon on another interface or config).
     self._monitor_epoch += 1
-    subprocess.run(["sudo", "pkill", "-f", f"wpa_supplicant.*{re.escape(WPA_SUPPLICANT_CONF)}"], check=False)
+    _pkill_wpa_supplicant(WPA_SUPPLICANT_CONF)
     self._dhcp.stop()
     time.sleep(0.5)
 
@@ -1486,7 +1502,7 @@ class WifiManager:
 
     # Stop AP wpa_supplicant (only the one running our AP config).
     self._monitor_epoch += 1
-    subprocess.run(["sudo", "pkill", "-f", f"wpa_supplicant.*{re.escape(WPA_AP_CONF)}"], check=False)
+    _pkill_wpa_supplicant(WPA_AP_CONF)
     time.sleep(0.5)
 
     # Flush AP IP
