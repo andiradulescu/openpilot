@@ -298,7 +298,8 @@ def parse_status(raw: str) -> dict[str, str]:
 
 def dbm_to_percent(dbm: int) -> int:
   """Convert dBm to percentage [0, 100], matching NetworkManager's scale."""
-  return max(0, min(100, 2 * (dbm + 100)))
+  v = abs(max(-100, min(-40, dbm)) + 40)
+  return 100 - (100 * v) // 60
 
 
 TEMP_DISABLED_SSID_RE = re.compile(r'\bssid="((?:\\.|[^"])*)"')

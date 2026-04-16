@@ -70,14 +70,20 @@ class TestFlagsToSecurityType:
 class TestDbmToPercent:
   def test_boundaries(self):
     assert dbm_to_percent(-100) == 0
-    assert dbm_to_percent(-50) == 100
+    assert dbm_to_percent(-40) == 100
 
   def test_clamps(self):
     assert dbm_to_percent(-120) == 0
     assert dbm_to_percent(-30) == 100
 
   def test_mid(self):
-    assert dbm_to_percent(-75) == 50
+    assert dbm_to_percent(-70) == 50
+
+  def test_nm_parity(self):
+    # matches nm_wifi_utils_level_to_quality test vectors
+    assert dbm_to_percent(-74) == 44
+    assert dbm_to_percent(-81) == 32
+    assert dbm_to_percent(-92) == 14
 
 
 class TestParseScanResults:
