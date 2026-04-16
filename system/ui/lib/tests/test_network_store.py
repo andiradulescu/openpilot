@@ -4,8 +4,8 @@ import tempfile
 
 from pytest_mock import MockerFixture
 
-from openpilot.system.ui.lib.wifi_manager import _generate_wpa_conf, _format_psk_value, _is_raw_psk
 from openpilot.system.ui.lib.wifi_network_store import NetworkStore
+from openpilot.system.ui.lib.wpa_ctrl import _generate_wpa_conf, _format_psk_value, _is_raw_psk
 
 
 class TestNetworkStore:

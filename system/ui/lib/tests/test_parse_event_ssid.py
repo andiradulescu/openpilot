@@ -1,5 +1,5 @@
 """Tests for parse_event_ssid (wpa_supplicant CTRL-EVENT ssid= extraction)."""
-from openpilot.system.ui.lib.wifi_manager import parse_event_ssid
+from openpilot.system.ui.lib.wpa_ctrl import parse_event_ssid
 
 
 class TestParseEventSsid:

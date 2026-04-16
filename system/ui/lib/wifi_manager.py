@@ -1,7 +1,6 @@
 import atexit
 import glob
 import os
-import re
 import subprocess
 import threading
 import time
@@ -15,6 +14,10 @@ from openpilot.system.ui.lib.dhcp_client import DhcpClient
 from openpilot.system.ui.lib.gsm_manager import _GsmManager
 from openpilot.system.ui.lib.wifi_network_store import MeteredType, NetworkStore, NM_CONNECTIONS_DIR
 from openpilot.system.ui.lib.wpa_ctrl import (WpaCtrl, WpaCtrlMonitor, SecurityType,
+                                               WPA_SUPPLICANT_CONF, WPA_AP_CONF,
+                                               _wpa_supplicant_running, _pkill_wpa_supplicant,
+                                               _sanitize_for_conf, _format_psk_value,
+                                               _generate_wpa_conf, parse_event_ssid,
                                                parse_scan_results, flags_to_security_type,
                                                parse_status, dbm_to_percent, decode_ssid)
 
@@ -35,49 +38,6 @@ CONNECTING_STALE_TIMEOUT_SECONDS = 5
 # prior attempt the user has already retried past), and acting on each
 # one clobbers the pending credentials of the current in-flight attempt.
 WRONG_KEY_DEBOUNCE_SECONDS = 2.0
-
-WPA_SUPPLICANT_CONF = "/tmp/wpa_supplicant.conf"
-
-WPA_AP_CONF = "/tmp/wpa_supplicant_ap.conf"
-
-
-def _wpa_supplicant_running(conf: str) -> bool:
-  """Return True iff a wpa_supplicant process running the given config exists.
-
-  Matches on cmdline via pgrep -f so we never conflate a system-managed
-  daemon on another interface or config with one we own.
-  """
-  pattern = rf"wpa_supplicant.*{re.escape(conf)}"
-  return subprocess.run(["pgrep", "-f", pattern], capture_output=True).returncode == 0
-
-
-def _pkill_wpa_supplicant(conf: str) -> None:
-  """Terminate any wpa_supplicant processes running the given config.
-
-  Narrow-matched via pkill -f so a system-managed daemon on another
-  interface or config survives untouched.
-  """
-  pattern = rf"wpa_supplicant.*{re.escape(conf)}"
-  subprocess.run(["sudo", "pkill", "-f", pattern], check=False)
-
-# Matches ssid="…" in wpa_supplicant events, allowing escaped quotes inside.
-TEMP_DISABLED_SSID_RE = re.compile(r'\bssid="((?:\\.|[^"])*)"')
-
-
-def normalize_ssid(ssid: str) -> str:
-  return ssid.replace("\u2019", "'")  # for iPhone hotspots
-
-
-def parse_event_ssid(event: str) -> str | None:
-  """Extract ssid="…" from a wpa_supplicant control event, or None.
-
-  The captured value is printf_encode'd (wpa_ssid_txt), so run it through
-  decode_ssid to unescape hex/octal/backslash sequences.
-  """
-  match = TEMP_DISABLED_SSID_RE.search(event)
-  if match is None:
-    return None
-  return decode_ssid(match.group(1))
 
 
 @dataclass(frozen=True)
@@ -111,64 +71,6 @@ class PendingConnection:
   password: str
   hidden: bool
   epoch: int
-
-
-# ---------------------------------------------------------------------------
-# wpa_supplicant.conf generation
-# ---------------------------------------------------------------------------
-
-def _sanitize_for_conf(value: str) -> str:
-  """Escape characters that could break wpa_supplicant.conf quoting."""
-  return value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '').replace('\r', '')
-
-
-def _is_raw_psk(psk: str) -> bool:
-  """True if psk is a 64-char hex string (a pre-hashed WPA PSK).
-
-  wpa_supplicant parses a quoted `psk` as an 8-63 char passphrase and an
-  unquoted `psk` as 64 hex chars (hostap config.c:620-694). Quoting a
-  64-char value makes it a too-long passphrase and always FAILs, so raw
-  PSKs must go through unquoted.
-  """
-  return len(psk) == 64 and all(c in "0123456789abcdefABCDEF" for c in psk)
-
-
-def _format_psk_value(psk: str) -> str:
-  """Render a psk value for wpa_supplicant: raw 64-hex unquoted, else quoted."""
-  if _is_raw_psk(psk):
-    return psk
-  return f'"{_sanitize_for_conf(psk)}"'
-
-
-def _generate_wpa_conf(store: NetworkStore, path: str = WPA_SUPPLICANT_CONF):
-  """Write wpa_supplicant.conf from NetworkStore (STA networks only)."""
-  lines = [
-    "ctrl_interface=/var/run/wpa_supplicant",
-    "update_config=0",
-    "p2p_disabled=1",
-    "",
-  ]
-
-  for ssid, entry in store.get_all().items():
-    psk = entry.get("psk", "")
-    hidden = entry.get("hidden", False)
-    safe_ssid = _sanitize_for_conf(ssid)
-    if not safe_ssid:
-      continue
-    lines.append("network={")
-    lines.append(f'  ssid="{safe_ssid}"')
-    if psk:
-      lines.append(f'  psk={_format_psk_value(psk)}')
-      lines.append("  key_mgmt=WPA-PSK")
-    else:
-      lines.append("  key_mgmt=NONE")
-    if hidden:
-      lines.append("  scan_ssid=1")
-    lines.append("}")
-    lines.append("")
-
-  with atomic_write(path, overwrite=True) as f:
-    f.write("\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
