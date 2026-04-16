@@ -104,7 +104,7 @@ class WifiManager:
     self._last_network_scan: float = 0.0
     self._last_connecting_at: float = 0.0
     self._last_connected_recheck: float = 0.0
-    self._last_wrong_key_dispatch_at: float = 0.0
+    self._last_wrong_key_dispatch: dict[str, float] = {}
     self._callback_queue: list[Callable] = []
     self._callback_lock = threading.Lock()
     # Coalesced so an undrained queue (user on another tab) can't grow unboundedly.
@@ -420,10 +420,6 @@ class WifiManager:
     elif "TEMP-DISABLED" in event and "reason=WRONG_KEY" in event:
       event_ssid = parse_event_ssid(event)
       if event_ssid is not None:
-        # Debounce stale events so a fresh retry's pending password isn't clobbered.
-        now = time.monotonic()
-        if now - self._last_wrong_key_dispatch_at < WRONG_KEY_DEBOUNCE_SECONDS:
-          return
         current_ssid = self._wifi_state.ssid
         # Auto-connect may leave us in CONNECTING with ssid=None; the event's SSID is authoritative.
         connecting_unknown = (
@@ -431,7 +427,12 @@ class WifiManager:
           and current_ssid is None
         )
         if connecting_unknown or (current_ssid and event_ssid == current_ssid):
-          self._last_wrong_key_dispatch_at = now
+          # Per-SSID debounce: suppress stale repeats for this SSID without
+          # masking a legitimate WRONG_KEY on a different network.
+          now = time.monotonic()
+          if now - self._last_wrong_key_dispatch.get(event_ssid, 0.0) < WRONG_KEY_DEBOUNCE_SECONDS:
+            return
+          self._last_wrong_key_dispatch[event_ssid] = now
           self._clear_pending_connection(event_ssid)
           # SELECT_NETWORK disabled every other saved network; re-enable so the
           # device can auto-fall-back after a failed manual connect.

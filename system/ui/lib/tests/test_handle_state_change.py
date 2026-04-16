@@ -200,8 +200,8 @@ class TestWrongPassword:
     import time
     cb = mocker.MagicMock()
     wm.add_callbacks(need_auth=cb)
-    # Simulate: a WRONG_KEY was dispatched a moment ago.
-    wm._last_wrong_key_dispatch_at = time.monotonic()
+    # Simulate: a WRONG_KEY was dispatched a moment ago for this SSID.
+    wm._last_wrong_key_dispatch["SecNet"] = time.monotonic()
     # User retried, new pending credentials are in flight.
     wm._set_connecting("SecNet")
     wm._set_pending_connection("SecNet", "retry-password", False)
