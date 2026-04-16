@@ -6,7 +6,7 @@ import pyray as rl
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.scroll_panel import GuiScrollPanel
-from openpilot.system.ui.lib.wifi_manager import MeteredType, Network, SecurityType, WifiManager
+from openpilot.system.ui.lib.wifi_manager import WifiManager, SecurityType, Network, MeteredType
 from openpilot.system.ui.lib.wpa_ctrl import normalize_ssid
 from openpilot.system.ui.widgets import DialogResult, Widget
 from openpilot.system.ui.widgets.button import ButtonStyle, Button
