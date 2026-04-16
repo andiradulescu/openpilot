@@ -1,5 +1,4 @@
 import atexit
-import glob
 import os
 import subprocess
 import threading
@@ -15,11 +14,12 @@ from openpilot.system.ui.lib.gsm_manager import _GsmManager
 from openpilot.system.ui.lib.wifi_network_store import MeteredType, NetworkStore, NM_CONNECTIONS_DIR
 from openpilot.system.ui.lib.wpa_ctrl import (WpaCtrl, WpaCtrlMonitor, SecurityType,
                                                WPA_SUPPLICANT_CONF, WPA_AP_CONF,
-                                               _wpa_supplicant_running, _pkill_wpa_supplicant,
+                                               _pkill_wpa_supplicant,
                                                _sanitize_for_conf, _format_psk_value,
                                                _generate_wpa_conf, parse_event_ssid,
                                                parse_scan_results, flags_to_security_type,
-                                               parse_status, dbm_to_percent, decode_ssid)
+                                               parse_status, dbm_to_percent, decode_ssid,
+                                               ensure_wpa_supplicant, try_attach_ctrl)
 
 try:
   from openpilot.common.params import Params
@@ -159,88 +159,10 @@ class WifiManager:
 
     threading.Thread(target=worker, daemon=True).start()
 
-  def _unmanage_wlan0(self):
-    """Tell NetworkManager to stop managing wlan0."""
-    result = subprocess.run(["sudo", "nmcli", "dev", "set", "wlan0", "managed", "no"], capture_output=True)
-    cloudlog.info(f"nmcli dev set wlan0 managed no: rc={result.returncode}")
-
-  def _our_wpa_supplicant_running(self) -> bool:
-    return _wpa_supplicant_running(WPA_SUPPLICANT_CONF)
-
-  def _try_attach_ctrl(self) -> bool:
-    """Pure attach to a running wpa_supplicant ctrl socket. Never spawns, never kills."""
-    try:
-      ctrl = WpaCtrl()
-      ctrl.open()
-      self._ctrl = ctrl
-      return True
-    except (OSError, ConnectionRefusedError):
-      return False
-
   def _ensure_wpa_supplicant(self):
-    """Attach to a wpa_supplicant we own, or spawn one. Never attach to NM's daemon."""
-    # Kernel brings wlan0 up ~40s after openpilot starts on cold boot; nmcli fails
-    # silently before that and NM grabs wlan0 the instant it appears.
-    while not self._exit:
-      if os.path.exists("/sys/class/net/wlan0"):
-        break
-      time.sleep(0.5)
-
-    # AP-mode adoption: a hotspot from a prior UI run is still up (dnsmasq/iptables/
-    # AP daemon all survived via start_new_session). Falling through to STA cleanup
-    # would flush wlan0 and tear the live hotspot down.
-    if _wpa_supplicant_running(WPA_AP_CONF) and self._try_attach_ctrl():
-      return
-
-    # Our own STA daemon is still alive — attach without disturbing NM.
-    if self._our_wpa_supplicant_running() and self._try_attach_ctrl():
-      try:
-        self._ctrl.request("ENABLE_NETWORK all")
-      except Exception:
-        pass
-      return
-
-    self._unmanage_wlan0()
-
-    # NM teardown is async (~800ms): wait for NM's ctrl socket to disappear before
-    # attaching or spawning, otherwise we bind to a socket NM is about to delete.
-    for _ in range(30):
-      if self._exit:
-        return
-      if not os.path.exists("/var/run/wpa_supplicant/wlan0"):
-        break
-      time.sleep(0.1)
-    else:
-      # Socket still held by NM; the post-spawn pgrep gate below is the fallback.
-      cloudlog.warning("/var/run/wpa_supplicant/wlan0 still present after NM unmanage; spawn will refuse to attach to foreign daemon")
-
-    # Target only OUR config so a system-managed daemon on another config survives.
-    _pkill_wpa_supplicant(WPA_SUPPLICANT_CONF)
-    subprocess.run(["sudo", "killall", "-q", "dnsmasq"], check=False)
-    subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
-    time.sleep(0.5)
-
-    for f in glob.glob(os.path.join(NM_CONNECTIONS_DIR, "*.nmmeta")):
-      try:
-        os.unlink(f)
-      except OSError:
-        subprocess.run(["sudo", "rm", "-f", f], check=False)
-
-    subprocess.run(["sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", WPA_SUPPLICANT_CONF, "-D", "nl80211"], check=False)
-
-    # Gate on pgrep matching OUR config so we refuse to attach to NM's daemon if its
-    # teardown didn't finish above.
-    for _ in range(30):
-      if self._exit:
-        return
-      if self._our_wpa_supplicant_running() and self._try_attach_ctrl():
-        try:
-          self._ctrl.request("ENABLE_NETWORK all")
-        except Exception:
-          pass
-        return
-      time.sleep(1)
-    cloudlog.error("wpa_supplicant did not start after 30 attempts")
+    ctrl = ensure_wpa_supplicant(lambda: self._exit, NM_CONNECTIONS_DIR)
+    if ctrl is not None:
+      self._ctrl = ctrl
 
   def _init_wifi_state(self, block: bool = True):
     def worker():
@@ -401,9 +323,11 @@ class WifiManager:
     while not self._exit:
       if self._ctrl is None:
         # Silent retry: manager self-recovers if the daemon shows up later.
-        if not self._try_attach_ctrl():
+        ctrl = try_attach_ctrl()
+        if ctrl is None:
           time.sleep(2)
           continue
+        self._ctrl = ctrl
       monitor = None
       try:
         epoch = self._monitor_epoch
@@ -411,7 +335,9 @@ class WifiManager:
         monitor.open()
         if was_down:
           # Monitor reconnected; refresh the main ctrl socket in case the daemon restarted.
-          self._try_attach_ctrl()
+          ctrl = try_attach_ctrl()
+          if ctrl is not None:
+            self._ctrl = ctrl
           was_down = False
         while not self._exit and self._monitor_epoch == epoch:
           event = monitor.recv(timeout=1.0)

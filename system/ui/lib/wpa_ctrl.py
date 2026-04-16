@@ -1,10 +1,13 @@
 """wpa_supplicant control socket wrapper and parsing helpers."""
+import glob
 import os
 import re
 import socket
 import select
 import subprocess
 import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
 
@@ -376,3 +379,97 @@ def _generate_wpa_conf(store, path: str = WPA_SUPPLICANT_CONF):
 
   with atomic_write(path, overwrite=True) as f:
     f.write("\n".join(lines))
+
+
+def try_attach_ctrl() -> WpaCtrl | None:
+  """Pure attach to a running wpa_supplicant ctrl socket. Never spawns, never kills."""
+  try:
+    ctrl = WpaCtrl()
+    ctrl.open()
+    return ctrl
+  except (OSError, ConnectionRefusedError):
+    return None
+
+
+def _unmanage_wlan0():
+  """Tell NetworkManager to stop managing wlan0."""
+  # Lazy import: wpa_ctrl is imported by system.hardware.tici.hardware, which is
+  # imported during cloudlog init. Top-level `import cloudlog` would deadlock.
+  from openpilot.common.swaglog import cloudlog
+  result = subprocess.run(["sudo", "nmcli", "dev", "set", "wlan0", "managed", "no"], capture_output=True)
+  cloudlog.info(f"nmcli dev set wlan0 managed no: rc={result.returncode}")
+
+
+def ensure_wpa_supplicant(should_exit: Callable[[], bool], nm_connections_dir: str) -> WpaCtrl | None:
+  """Attach to a wpa_supplicant we own, or spawn one. Never attach to NM's daemon.
+  Returns the attached WpaCtrl, or None if exit was signaled or spawn timed out."""
+  from openpilot.common.swaglog import cloudlog
+  # Kernel brings wlan0 up ~40s after openpilot starts on cold boot; nmcli fails
+  # silently before that and NM grabs wlan0 the instant it appears.
+  while not should_exit():
+    if os.path.exists("/sys/class/net/wlan0"):
+      break
+    time.sleep(0.5)
+
+  # AP-mode adoption: a hotspot from a prior UI run is still up (dnsmasq/iptables/
+  # AP daemon all survived via start_new_session). Falling through to STA cleanup
+  # would flush wlan0 and tear the live hotspot down.
+  if _wpa_supplicant_running(WPA_AP_CONF):
+    ctrl = try_attach_ctrl()
+    if ctrl is not None:
+      return ctrl
+
+  # Our own STA daemon is still alive — attach without disturbing NM.
+  if _wpa_supplicant_running(WPA_SUPPLICANT_CONF):
+    ctrl = try_attach_ctrl()
+    if ctrl is not None:
+      try:
+        ctrl.request("ENABLE_NETWORK all")
+      except Exception:
+        pass
+      return ctrl
+
+  _unmanage_wlan0()
+
+  # NM teardown is async (~800ms): wait for NM's ctrl socket to disappear before
+  # attaching or spawning, otherwise we bind to a socket NM is about to delete.
+  for _ in range(30):
+    if should_exit():
+      return None
+    if not os.path.exists("/var/run/wpa_supplicant/wlan0"):
+      break
+    time.sleep(0.1)
+  else:
+    # Socket still held by NM; the post-spawn pgrep gate below is the fallback.
+    cloudlog.warning("/var/run/wpa_supplicant/wlan0 still present after NM unmanage; spawn will refuse to attach to foreign daemon")
+
+  # Target only OUR config so a system-managed daemon on another config survives.
+  _pkill_wpa_supplicant(WPA_SUPPLICANT_CONF)
+  subprocess.run(["sudo", "killall", "-q", "dnsmasq"], check=False)
+  subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
+  time.sleep(0.5)
+
+  for f in glob.glob(os.path.join(nm_connections_dir, "*.nmmeta")):
+    try:
+      os.unlink(f)
+    except OSError:
+      subprocess.run(["sudo", "rm", "-f", f], check=False)
+
+  subprocess.run(["sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", WPA_SUPPLICANT_CONF, "-D", "nl80211"], check=False)
+
+  # Gate on pgrep matching OUR config so we refuse to attach to NM's daemon if its
+  # teardown didn't finish above.
+  for _ in range(30):
+    if should_exit():
+      return None
+    if _wpa_supplicant_running(WPA_SUPPLICANT_CONF):
+      ctrl = try_attach_ctrl()
+      if ctrl is not None:
+        try:
+          ctrl.request("ENABLE_NETWORK all")
+        except Exception:
+          pass
+        return ctrl
+    time.sleep(1)
+  cloudlog.error("wpa_supplicant did not start after 30 attempts")
+  return None
