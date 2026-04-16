@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, UTC
 from pathlib import Path
 
-from openpilot.system.ui.lib.wifi_manager import NetworkStore
+from openpilot.system.ui.lib.wifi_network_store import NetworkStore
 from openpilot.system.ui.lib.wpa_ctrl import (
   SecurityType,
   dbm_to_percent,

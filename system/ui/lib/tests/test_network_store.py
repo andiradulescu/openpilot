@@ -4,7 +4,8 @@ import tempfile
 
 from pytest_mock import MockerFixture
 
-from openpilot.system.ui.lib.wifi_manager import NetworkStore, _generate_wpa_conf, _format_psk_value, _is_raw_psk
+from openpilot.system.ui.lib.wifi_manager import _generate_wpa_conf, _format_psk_value, _is_raw_psk
+from openpilot.system.ui.lib.wifi_network_store import NetworkStore
 
 
 class TestNetworkStore:
@@ -79,7 +80,7 @@ method=auto
     with open(fpath, "w") as f:
       f.write(content)
 
-    mocker.patch("openpilot.system.ui.lib.wifi_manager.sudo_read", return_value=content)
+    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", return_value=content)
     store = NetworkStore(directory=self.tmpdir)
 
     entry = store.get("MyWifi")
@@ -103,7 +104,7 @@ mode=ap
     with open(fpath, "w") as f:
       f.write(content)
 
-    mocker.patch("openpilot.system.ui.lib.wifi_manager.sudo_read", return_value=content)
+    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", return_value=content)
     store = NetworkStore(directory=self.tmpdir)
 
     assert store.get("Hotspot") is None
