@@ -433,6 +433,13 @@ class WifiManager:
         if connecting_unknown or (current_ssid and event_ssid == current_ssid):
           self._last_wrong_key_dispatch_at = now
           self._clear_pending_connection(event_ssid)
+          # SELECT_NETWORK disabled every other saved network; re-enable so the
+          # device can auto-fall-back after a failed manual connect.
+          if self._ctrl is not None:
+            try:
+              self._ctrl.request("ENABLE_NETWORK all")
+            except Exception:
+              cloudlog.exception("Failed to re-enable saved networks after WRONG_KEY")
           self._enqueue_callbacks(self._need_auth, event_ssid)
           self._set_connecting(None)
 
