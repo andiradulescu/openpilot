@@ -841,6 +841,16 @@ class WifiManager:
           self._tethering_active = False
     threading.Thread(target=worker, daemon=True).start()
 
+  def set_current_network_metered(self, metered: MeteredType):
+    def worker():
+      if self._tethering_active:
+        return
+      ssid = self._wifi_state.ssid
+      if ssid:
+        self._store.set_metered(ssid, int(metered))
+        self._current_network_metered = metered
+    threading.Thread(target=worker, daemon=True).start()
+
   def _start_tethering(self):
     # TODO: kill-and-respawn is incompatible with a system-managed wpa_supplicant.
     # Switch to a single-daemon flip: ADD_NETWORK mode=2/freq=2437, DISABLE/ENABLE_NETWORK.
@@ -964,16 +974,6 @@ class WifiManager:
     self._wifi_state = WifiState(ssid=None, status=ConnectStatus.DISCONNECTED)
     self._ipv4_address = ""
     self._enqueue_callbacks(self._disconnected)
-
-  def set_current_network_metered(self, metered: MeteredType):
-    def worker():
-      if self._tethering_active:
-        return
-      ssid = self._wifi_state.ssid
-      if ssid:
-        self._store.set_metered(ssid, int(metered))
-        self._current_network_metered = metered
-    threading.Thread(target=worker, daemon=True).start()
 
   def update_gsm_settings(self, roaming: bool, apn: str, metered: bool):
     def worker():
