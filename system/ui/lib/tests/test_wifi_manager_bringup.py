@@ -289,7 +289,9 @@ def _patch_tethering_sideeffects(wm, mocker):
   """Silence all the subprocess / filesystem plumbing _start_tethering
   executes so we can exercise just the ctrl-socket bringup check."""
   mocker.patch.object(wifi_manager_module.subprocess, "run")
-  mocker.patch.object(wifi_manager_module.subprocess, "Popen")
+  popen = mocker.patch.object(wifi_manager_module.subprocess, "Popen")
+  # Simulate a live dnsmasq so the post-spawn liveness gate doesn't trip.
+  popen.return_value.poll.return_value = None
   mocker.patch.object(wifi_manager_module.time, "sleep")
   mocker.patch.object(wifi_manager_module.os, "open", return_value=0)
 
@@ -357,6 +359,20 @@ class TestTetheringBringupVerification:
       wm._start_tethering()
 
     broken_ctrl.close.assert_called_once()
+    assert wm._ctrl is None
+
+  def test_start_tethering_raises_when_dnsmasq_exits_immediately(self, wm, mocker):
+    """dnsmasq failing to bind (busy port, stale leasefile, etc.) must surface
+    as a bringup failure so rollback runs. Otherwise the UI would advertise
+    tethering while clients can never obtain a DHCP lease."""
+    _patch_tethering_sideeffects(wm, mocker)
+    wifi_manager_module.subprocess.Popen.return_value.poll.return_value = 2
+    wifi_manager_module.subprocess.Popen.return_value.returncode = 2
+
+    with pytest.raises(RuntimeError, match="dnsmasq exited"):
+      wm._start_tethering()
+
+    assert wm._dnsmasq_proc is None
     assert wm._ctrl is None
 
   def test_start_tethering_installs_source_based_masquerade(self, wm, mocker):

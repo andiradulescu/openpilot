@@ -906,6 +906,13 @@ class WifiManager:
       "--no-daemon", "--log-queries",
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
       start_new_session=True)
+    # Clients can't obtain leases without dnsmasq; fail fast so rollback runs
+    # instead of advertising a broken hotspot.
+    time.sleep(0.2)
+    if self._dnsmasq_proc.poll() is not None:
+      rc = self._dnsmasq_proc.returncode
+      self._dnsmasq_proc = None
+      raise RuntimeError(f"dnsmasq exited during tethering bringup (rc={rc})")
 
     # Flush stale copies (idempotent), plus legacy `-o <iface>` rules from older openpilot.
     for _ in range(4):
