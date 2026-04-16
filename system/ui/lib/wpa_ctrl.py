@@ -167,27 +167,13 @@ class WpaCtrlMonitor(_WpaCtrlBase):
     super().close()
 
 
-# ---------------------------------------------------------------------------
-# Parsing helpers
-# ---------------------------------------------------------------------------
-
 _HEX = "0123456789abcdefABCDEF"
 
 
 def decode_ssid(encoded: str) -> str:
   """Decode a wpa_supplicant printf_encode'd SSID (hostap common.c:526).
-
-  This branch talks to wpa_supplicant over the text control socket (no
-  D-Bus), so SSIDs arrive with escapes: `\\\\`, `\\"`, `\\e/n/r/t`,
-  `\\xNN`/`\\xN`, octal `\\0..\\777`. Unknown escapes drop the
-  backslash, trailing `\\` is dropped.
-
-  Byte stream is reinterpreted as UTF-8 (errors="replace"), not
-  one-codepoint-per-byte: a `\\xc3\\xa9` AP ("é") decoded as Latin-1
-  becomes "Ã©", which re-encodes to 7 bytes on SET_NETWORK and can't
-  match the 5-byte AP. All-null SSIDs (hidden APs) normalize to "" so
-  the wifi_manager empty-SSID filter drops them.
-  """
+  Escapes: \\\\, \\", \\e/n/r/t, \\xNN/\\xN, octal \\0..\\777.
+  Bytes are reinterpreted as UTF-8; all-null SSIDs (hidden APs) normalize to ""."""
   out = bytearray()
   i = 0
   n = len(encoded)
@@ -299,11 +285,7 @@ def flags_to_security_type(flags: str) -> SecurityType:
 
 
 def parse_status(raw: str) -> dict[str, str]:
-  """Parse wpa_supplicant STATUS output (key=value lines).
-
-  The `ssid` field is emitted via `wpa_ssid_txt()` (printf_encode'd), so
-  decode it here; every caller gets a raw, usable SSID.
-  """
+  """Parse wpa_supplicant STATUS output (key=value lines). `ssid` is decoded."""
   result = {}
   for line in raw.strip().split("\n"):
     if "=" in line:
@@ -319,11 +301,6 @@ def dbm_to_percent(dbm: int) -> int:
   return max(0, min(100, 2 * (dbm + 100)))
 
 
-# ---------------------------------------------------------------------------
-# Event SSID parsing
-# ---------------------------------------------------------------------------
-
-# Matches ssid="…" in wpa_supplicant events, allowing escaped quotes inside.
 TEMP_DISABLED_SSID_RE = re.compile(r'\bssid="((?:\\.|[^"])*)"')
 
 
@@ -332,44 +309,25 @@ def normalize_ssid(ssid: str) -> str:
 
 
 def parse_event_ssid(event: str) -> str | None:
-  """Extract ssid="…" from a wpa_supplicant control event, or None.
-
-  The captured value is printf_encode'd (wpa_ssid_txt), so run it through
-  decode_ssid to unescape hex/octal/backslash sequences.
-  """
+  """Extract ssid="…" from a wpa_supplicant control event (printf_encode'd), or None."""
   match = TEMP_DISABLED_SSID_RE.search(event)
   if match is None:
     return None
   return decode_ssid(match.group(1))
 
 
-# ---------------------------------------------------------------------------
-# Process management (our-daemon-only, narrow-matched by config path)
-# ---------------------------------------------------------------------------
-
 def _wpa_supplicant_running(conf: str) -> bool:
-  """Return True iff a wpa_supplicant process running the given config exists.
-
-  Matches on cmdline via pgrep -f so we never conflate a system-managed
-  daemon on another interface or config with one we own.
-  """
+  """True iff a wpa_supplicant running the given config exists. Narrow pgrep so
+  a system-managed daemon on another config isn't conflated with ours."""
   pattern = rf"wpa_supplicant.*{re.escape(conf)}"
   return subprocess.run(["pgrep", "-f", pattern], capture_output=True).returncode == 0
 
 
 def _pkill_wpa_supplicant(conf: str) -> None:
-  """Terminate any wpa_supplicant processes running the given config.
-
-  Narrow-matched via pkill -f so a system-managed daemon on another
-  interface or config survives untouched.
-  """
+  """Kill only wpa_supplicant processes running our config; a system-managed daemon survives."""
   pattern = rf"wpa_supplicant.*{re.escape(conf)}"
   subprocess.run(["sudo", "pkill", "-f", pattern], check=False)
 
-
-# ---------------------------------------------------------------------------
-# wpa_supplicant.conf rendering
-# ---------------------------------------------------------------------------
 
 def _sanitize_for_conf(value: str) -> str:
   """Escape characters that could break wpa_supplicant.conf quoting."""
@@ -377,13 +335,8 @@ def _sanitize_for_conf(value: str) -> str:
 
 
 def _is_raw_psk(psk: str) -> bool:
-  """True if psk is a 64-char hex string (a pre-hashed WPA PSK).
-
-  wpa_supplicant parses a quoted `psk` as an 8-63 char passphrase and an
-  unquoted `psk` as 64 hex chars (hostap config.c:620-694). Quoting a
-  64-char value makes it a too-long passphrase and always FAILs, so raw
-  PSKs must go through unquoted.
-  """
+  """True if psk is a pre-hashed 64-hex WPA PSK. Quoted 64-char values fail as
+  too-long passphrases, so raw PSKs must be passed unquoted."""
   return len(psk) == 64 and all(c in "0123456789abcdefABCDEF" for c in psk)
 
 

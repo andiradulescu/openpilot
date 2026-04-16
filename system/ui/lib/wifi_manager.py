@@ -33,10 +33,7 @@ DEFAULT_TETHERING_PASSWORD = "swagswagcomma"
 TETHERING_PASSWORD_FILE = "/data/tethering_password"
 SCAN_PERIOD_SECONDS = 5
 CONNECTING_STALE_TIMEOUT_SECONDS = 5
-# Ignore WRONG_KEY events within this window of the previous dispatch.
-# wpa_supplicant can queue multiple events from a single attempt (or a
-# prior attempt the user has already retried past), and acting on each
-# one clobbers the pending credentials of the current in-flight attempt.
+# Suppress WRONG_KEY events from prior attempts that can clobber fresh credentials on a fast retry.
 WRONG_KEY_DEBOUNCE_SECONDS = 2.0
 
 
@@ -73,17 +70,9 @@ class PendingConnection:
   epoch: int
 
 
-# ---------------------------------------------------------------------------
-# WifiManager
 def _tethering_nat_rule(op: str) -> list[str]:
-  """Build the iptables MASQUERADE rule for the tethering subnet.
-
-  Matches NetworkManager's shared-connection rule (see NM
-  nm-firewall-utils.c:_share_iptables_set_masquerade_sync): source-subnet
-  + negated destination, no `-o <iface>`, tagged with a comment so
-  iptables -S surfaces it. Not binding to an uplink is what allows the
-  session to survive a default-route change (ETH unplug, SIM drop, 3G↔4G).
-  """
+  # Source-subnet MASQUERADE (no `-o <iface>`) so the session survives uplink changes.
+  # Mirrors NM's nm-firewall-utils.c:_share_iptables_set_masquerade_sync.
   return ["sudo", "iptables",
           "-t", "nat",
           op, "POSTROUTING",
@@ -91,8 +80,6 @@ def _tethering_nat_rule(op: str) -> list[str]:
           "-j", "MASQUERADE",
           "-m", "comment", "--comment", TETHERING_NAT_COMMENT]
 
-
-# ---------------------------------------------------------------------------
 
 class WifiManager:
   def __init__(self):
@@ -120,10 +107,7 @@ class WifiManager:
     self._last_wrong_key_dispatch_at: float = 0.0
     self._callback_queue: list[Callable] = []
     self._callback_lock = threading.Lock()
-    # Coalesced dirty flag for periodic networks_updated; the scan worker
-    # sets this instead of enqueueing a lambda per scan, so when the panel
-    # isn't draining callbacks (e.g. user on another tab) the queue can't
-    # grow unboundedly.
+    # Coalesced so an undrained queue (user on another tab) can't grow unboundedly.
     self._networks_updated_pending = False
 
     self._tethering_ssid = "weedle"
@@ -181,21 +165,10 @@ class WifiManager:
     cloudlog.info(f"nmcli dev set wlan0 managed no: rc={result.returncode}")
 
   def _our_wpa_supplicant_running(self) -> bool:
-    """Return True iff a wpa_supplicant process running our config exists.
-
-    Used to pick the fast path in _ensure_wpa_supplicant: if our daemon is
-    alive we attach directly, without disturbing NM or waiting for a
-    teardown we don't need.
-    """
     return _wpa_supplicant_running(WPA_SUPPLICANT_CONF)
 
   def _try_attach_ctrl(self) -> bool:
-    """Attach to an already-running wpa_supplicant via its ctrl socket.
-
-    Works for both our own previously-spawned daemon and a system-managed
-    one (e.g. a future systemd/OpenRC unit on tici). Pure attach — never
-    spawns, never kills. Returns True if self._ctrl is now live.
-    """
+    """Pure attach to a running wpa_supplicant ctrl socket. Never spawns, never kills."""
     try:
       ctrl = WpaCtrl()
       ctrl.open()
@@ -205,36 +178,21 @@ class WifiManager:
       return False
 
   def _ensure_wpa_supplicant(self):
-    """Attach to a running wpa_supplicant, or spawn one if none is running.
-
-    There must never be more than one wpa_supplicant on wlan0. We prefer
-    attaching to a daemon we already own, and only spawn when no such
-    daemon exists. We never attach to NM's daemon: NM drives its
-    wpa_supplicant over DBus, and our ctrl-socket connection would be
-    torn down asynchronously the moment NM releases wlan0.
-    """
-    # Wait for wlan0 to appear before touching NM. On cold boot the kernel
-    # brings wlan0 up ~40s after openpilot starts, and `nmcli dev set wlan0
-    # managed no` fails with "Device wlan0 does not exist" when the device
-    # isn't registered yet — so NM silently keeps wlan0 managed and grabs
-    # it the moment the kernel creates it.
+    """Attach to a wpa_supplicant we own, or spawn one. Never attach to NM's daemon."""
+    # Kernel brings wlan0 up ~40s after openpilot starts on cold boot; nmcli fails
+    # silently before that and NM grabs wlan0 the instant it appears.
     while not self._exit:
       if os.path.exists("/sys/class/net/wlan0"):
         break
       time.sleep(0.5)
 
-    # AP-mode fast path: if tethering was active before the UI restart, the
-    # hotspot's wpa_supplicant is still running with WPA_AP_CONF. Adopt it
-    # directly — the STA cleanup path below would otherwise kill dnsmasq,
-    # flush wlan0 (dropping TETHERING_IP_ADDRESS), and pkill the STA-config
-    # daemon while our AP daemon still holds the ctrl socket, tearing the
-    # live hotspot down mid-bringup. _init_wifi_state's mode=AP branch then
-    # re-publishes state without disturbing the interface.
+    # AP-mode adoption: a hotspot from a prior UI run is still up (dnsmasq/iptables/
+    # AP daemon all survived via start_new_session). Falling through to STA cleanup
+    # would flush wlan0 and tear the live hotspot down.
     if _wpa_supplicant_running(WPA_AP_CONF) and self._try_attach_ctrl():
       return
 
-    # Fast path: our own STA daemon from a previous UI bringup is still alive.
-    # Attach directly — no need to disturb NM or wait for a teardown.
+    # Our own STA daemon is still alive — attach without disturbing NM.
     if self._our_wpa_supplicant_running() and self._try_attach_ctrl():
       try:
         self._ctrl.request("ENABLE_NETWORK all")
@@ -242,17 +200,10 @@ class WifiManager:
         pass
       return
 
-    # No daemon we own. Tell NM to release wlan0 so its wpa_supplicant
-    # removes the ctrl socket, then spawn our own. On AGNOS, NM
-    # auto-manages wlan0 on boot and autoconnects a stored profile, which
-    # parks NM's wpa_supplicant on /var/run/wpa_supplicant/wlan0.
     self._unmanage_wlan0()
 
-    # NM's teardown is asynchronous: nmcli returns immediately, then NM
-    # tells wpa_supplicant over DBus to deinit wlan0, which removes
-    # /var/run/wpa_supplicant/wlan0. Wait for that to finish — attaching
-    # or spawning before it completes binds us to a socket NM is about to
-    # delete, or collides with "ctrl_iface exists and seems to be in use".
+    # NM teardown is async (~800ms): wait for NM's ctrl socket to disappear before
+    # attaching or spawning, otherwise we bind to a socket NM is about to delete.
     for _ in range(30):
       if self._exit:
         return
@@ -260,21 +211,15 @@ class WifiManager:
         break
       time.sleep(0.1)
     else:
-      # Timeout with the socket still present. NM hasn't released wlan0.
-      # Don't bail — the spawn-and-verify path below will refuse to adopt
-      # a foreign daemon via the pgrep gate on _try_attach_ctrl, so we
-      # either cleanly take over or log an error and give up.
+      # Socket still held by NM; the post-spawn pgrep gate below is the fallback.
       cloudlog.warning("/var/run/wpa_supplicant/wlan0 still present after NM unmanage; spawn will refuse to attach to foreign daemon")
 
-    # Clean up our own stale state. Target only wpa_supplicants running
-    # *our* config so we don't touch a system-managed daemon that happens
-    # to be on a different config or a different interface.
+    # Target only OUR config so a system-managed daemon on another config survives.
     _pkill_wpa_supplicant(WPA_SUPPLICANT_CONF)
     subprocess.run(["sudo", "killall", "-q", "dnsmasq"], check=False)
     subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
     time.sleep(0.5)
 
-    # Clean up NM metadata files
     for f in glob.glob(os.path.join(NM_CONNECTIONS_DIR, "*.nmmeta")):
       try:
         os.unlink(f)
@@ -283,10 +228,8 @@ class WifiManager:
 
     subprocess.run(["sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", WPA_SUPPLICANT_CONF, "-D", "nl80211"], check=False)
 
-    # Wait for it to come up. Gate the attach on pgrep matching OUR config
-    # so that if the wait-for-teardown loop above timed out and NM's daemon
-    # is still on the socket, we refuse to attach to it (which would
-    # silently let NM reconfigure or stop wpa_supplicant underneath us).
+    # Gate on pgrep matching OUR config so we refuse to attach to NM's daemon if its
+    # teardown didn't finish above.
     for _ in range(30):
       if self._exit:
         return
@@ -316,13 +259,8 @@ class WifiManager:
       ssid = status.get("ssid")
 
       if status.get("mode") == "AP":
-        # Process restart while hotspot was active. STATUS reports
-        # wpa_state=COMPLETED in AP mode too, so the station path below
-        # would call _handle_connected → _dhcp.start() → ip addr flush
-        # wlan0, which drops TETHERING_IP_ADDRESS and kills the running
-        # hotspot. dnsmasq/iptables/AP wpa_supplicant are still up from
-        # the pre-restart bringup (dnsmasq was spawned with
-        # start_new_session=True); just adopt the state.
+        # Hotspot adoption after UI restart. STATUS reports COMPLETED in AP mode too,
+        # so the STA path below would flush wlan0 and kill the live hotspot.
         if self._user_epoch != epoch:
           return
         self._tethering_active = True
@@ -334,10 +272,7 @@ class WifiManager:
       if wpa_state == "COMPLETED":
         new_status = ConnectStatus.CONNECTED
       elif wpa_state in ("SCANNING", "AUTHENTICATING", "ASSOCIATING", "ASSOCIATED", "4WAY_HANDSHAKE", "GROUP_HANDSHAKE"):
-        # Adopt mid-connect state on restart. SCANNING/AUTHENTICATING used
-        # to fall through to DISCONNECTED, which skipped the connect-in-
-        # progress recovery path and let a wrong-password TEMP-DISABLED
-        # event bypass its current_ssid check.
+        # Adopt mid-connect state; otherwise a WRONG_KEY event would bypass its current_ssid check.
         new_status = ConnectStatus.CONNECTING
       else:
         new_status = ConnectStatus.DISCONNECTED
@@ -347,10 +282,7 @@ class WifiManager:
         return
 
       if new_status == ConnectStatus.CONNECTED and ssid is not None:
-        # Adopt an already-connected daemon (UI restart, or attach to a
-        # system-managed daemon that was already associated). We own DHCP,
-        # so we must (re)start udhcpc — the previous UI's udhcpc died with
-        # its parent, so without this the interface has no IPv4 lease.
+        # We own DHCP — must (re)start udhcpc since the previous UI's died with its parent.
         self._handle_connected(ssid)
       else:
         self._wifi_state = WifiState(ssid=ssid, status=new_status)
@@ -428,10 +360,8 @@ class WifiManager:
     if ssid != pending.ssid or pending.epoch != self._user_epoch:
       return
 
-    # Clear _pending_connection only on successful persistence. If the
-    # filesystem write fails, keep the credentials so a later retry can
-    # save them, and swallow the exception so _handle_connected can still
-    # fire DHCP start and the activated callbacks for this connect event.
+    # On filesystem error, keep credentials for later retry and swallow so
+    # _handle_connected can still fire DHCP/activated callbacks.
     try:
       self._store.save_network(ssid, psk=pending.password, hidden=pending.hidden)
       _generate_wpa_conf(self._store)
@@ -446,8 +376,7 @@ class WifiManager:
         self._callback_queue.append(lambda _cb=cb: _cb(*args))
 
   def _mark_networks_updated(self):
-    """Flag a pending networks_updated notification. Coalesces across scans
-    so callback accumulation stays O(1) when the UI isn't draining."""
+    # Coalesces across scans so the queue stays O(1) when the UI isn't draining.
     with self._callback_lock:
       self._networks_updated_pending = True
 
@@ -462,24 +391,16 @@ class WifiManager:
     for cb in to_run:
       cb()
     if networks_cbs:
-      # Always fire with the latest snapshot, not a value captured at the
-      # time we were flagged.
+      # Fire with the latest snapshot, not one captured when we were flagged.
       snapshot = self.networks
       for cb in networks_cbs:
         cb(snapshot)
-
-  # ---------------------------------------------------------------------------
-  # Monitor thread: wpa_supplicant events
-  # ---------------------------------------------------------------------------
 
   def _monitor_state(self):
     was_down = False
     while not self._exit:
       if self._ctrl is None:
-        # wpa_supplicant not reachable yet (CI/dev, or _ensure_wpa_supplicant
-        # exhausted its 30 retries at init). Retry attach silently so the
-        # manager self-recovers if the daemon shows up later — without the
-        # retry-spam of a full monitor-reconnect loop.
+        # Silent retry: manager self-recovers if the daemon shows up later.
         if not self._try_attach_ctrl():
           time.sleep(2)
           continue
@@ -489,9 +410,7 @@ class WifiManager:
         monitor = WpaCtrlMonitor()
         monitor.open()
         if was_down:
-          # Monitor reconnected after a prior failure — if wpa_supplicant
-          # restarted (e.g. systemd brought it back), our main ctrl socket
-          # is stale too. Refresh it without touching any service manager.
+          # Monitor reconnected; refresh the main ctrl socket in case the daemon restarted.
           self._try_attach_ctrl()
           was_down = False
         while not self._exit and self._monitor_epoch == epoch:
@@ -511,24 +430,16 @@ class WifiManager:
         time.sleep(2)
 
   def _handle_connected(self, ssid: str):
-    """Transition to CONNECTED: persist credentials, start DHCP, notify UI.
-
-    Idempotent: if we're already reporting CONNECTED to the same ssid, skip
-    the DHCP restart and callback fan-out. Without this, the scanner's
-    reconcile loop and the monitor thread's CTRL-EVENT-CONNECTED handler can
-    both call in for the same transition, and each `_dhcp.start()` kills the
-    previous udhcpc."""
+    """Transition to CONNECTED. Idempotent on (ssid, CONNECTED) so the monitor and
+    reconcile paths can both call in without each one killing the previous udhcpc."""
     if (self._wifi_state.status == ConnectStatus.CONNECTED
         and self._wifi_state.ssid == ssid):
       return
     self._last_connecting_at = 0.0
     self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTED)
     self._persist_pending_connection(ssid)
-    # Re-enable all saved networks so wpa_supplicant can auto-roam if the
-    # current AP disappears. SELECT_NETWORK (in _add_and_select_network /
-    # activate_connection) disables every other network as a side effect,
-    # so without this call the runtime daemon has only one enabled network
-    # and cannot fall back to another saved AP when the current one fades.
+    # Re-enable saved networks so wpa_supplicant can auto-roam: SELECT_NETWORK disables
+    # every other network as a side effect.
     if self._ctrl is not None:
       try:
         self._ctrl.request("ENABLE_NETWORK all")
@@ -584,19 +495,12 @@ class WifiManager:
     elif "TEMP-DISABLED" in event and "reason=WRONG_KEY" in event:
       event_ssid = parse_event_ssid(event)
       if event_ssid is not None:
-        # Debounce: suppress stale events from a prior attempt for the
-        # same SSID. If the user just retried with fresh credentials, an
-        # in-flight WRONG_KEY from the earlier attempt can arrive and
-        # clobber the new pending password; the real outcome of the new
-        # attempt will surface as a later event.
+        # Debounce stale events so a fresh retry's pending password isn't clobbered.
         now = time.monotonic()
         if now - self._last_wrong_key_dispatch_at < WRONG_KEY_DEBOUNCE_SECONDS:
           return
         current_ssid = self._wifi_state.ssid
-        # Auto-connect can land us in CONNECTING with ssid=None when STATUS
-        # was briefly unavailable at set-connecting time. In that window
-        # the supplicant's SSID in the WRONG_KEY event is the most
-        # authoritative identifier of the target network, so accept it.
+        # Auto-connect may leave us in CONNECTING with ssid=None; the event's SSID is authoritative.
         connecting_unknown = (
           self._wifi_state.status == ConnectStatus.CONNECTING
           and current_ssid is None
@@ -622,10 +526,6 @@ class WifiManager:
           return
         self._last_connecting_at = time.monotonic()
         self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTING)
-
-  # ---------------------------------------------------------------------------
-  # Scanner thread
-  # ---------------------------------------------------------------------------
 
   def _network_scanner(self):
     while not self._exit:
@@ -659,12 +559,8 @@ class WifiManager:
         self._handle_connected(status["ssid"])
       return
 
-    # Detect missed DISCONNECTED event. If the monitor socket dropped and
-    # reconnected, a CTRL-EVENT-DISCONNECTED may have been lost, leaving
-    # self._wifi_state stuck at CONNECTED while wpa_supplicant is actually
-    # disconnected. Poll STATUS at SCAN_PERIOD_SECONDS cadence (not every
-    # scanner tick, to avoid STATUS spam) and synthesize a disconnect if
-    # wpa_supplicant has moved on.
+    # Detect missed DISCONNECTED if the monitor dropped an event. Gated at
+    # SCAN_PERIOD_SECONDS to avoid STATUS spam.
     if current_state.status == ConnectStatus.CONNECTED:
       now = time.monotonic()
       if now - self._last_connected_recheck < SCAN_PERIOD_SECONDS:
@@ -679,11 +575,8 @@ class WifiManager:
       if wpa_state == "COMPLETED" and status_ssid == current_state.ssid:
         return
       if wpa_state == "COMPLETED" and status_ssid:
-        # Roamed to a different SSID while the monitor socket was down.
-        # Adopt the new network via the normal connected path instead of
-        # synthesizing a disconnect — the latter would flush wlan0's IP
-        # (dropping the live lease) and fire a spurious disconnected
-        # callback before the next loop figured out we're still up.
+        # Roamed while the monitor was down; adopt the new network instead of
+        # synthesizing a disconnect that would flush the live lease.
         self._handle_connected(status_ssid)
         return
       # Actually disconnected under us.
@@ -694,9 +587,7 @@ class WifiManager:
       self._enqueue_callbacks(self._disconnected)
       return
 
-    # Even if ssid is None (e.g. the auto-connect path couldn't read STATUS
-    # when it set CONNECTING), we still need to reconcile — a subsequent
-    # STATUS query below will tell us definitively whether we're up.
+    # Reconcile even if ssid is None — STATUS below tells us definitively.
     if current_state.status != ConnectStatus.CONNECTING:
       return
     if time.monotonic() - self._last_connecting_at < CONNECTING_STALE_TIMEOUT_SECONDS:
@@ -714,11 +605,7 @@ class WifiManager:
     if wpa_state == "COMPLETED" and status_ssid:
       self._handle_connected(status_ssid)
     elif wpa_state == "SCANNING":
-      # Still actively probing — hidden-SSID joins can legitimately stay in
-      # SCANNING past the stale window. Don't synthesize a failure; defer
-      # the next check by another full window so we avoid STATUS spam and
-      # let wpa_supplicant either find the AP or transition to a terminal
-      # state we'll recognize.
+      # Hidden-SSID joins can legitimately stay in SCANNING past the stale window; defer, don't fail.
       self._last_connecting_at = time.monotonic()
     elif wpa_state in ("DISCONNECTED", "INACTIVE"):
       network = next((n for n in self._networks if n.ssid == current_state.ssid), None)
@@ -822,16 +709,8 @@ class WifiManager:
     self._ipv4_address = ipv4_address
     self._current_network_metered = metered
 
-  # ---------------------------------------------------------------------------
-  # Connection management
-  # ---------------------------------------------------------------------------
-
   def connect_to_network(self, ssid: str, password: str, hidden: bool = False):
-    # Backend guard: reject station-connect attempts while tethering is
-    # active. UI list taps are already filtered at the widget layer but
-    # other entry points (hidden-network dialogs, automation) can still
-    # reach here, and sending ADD_NETWORK/SELECT_NETWORK to the AP-mode
-    # wpa_supplicant fails noisily and churns UI state.
+    # Backend guard: non-UI entry points (hidden-network dialog, automation) can still reach here.
     if self._tethering_active:
       cloudlog.warning(f"Ignoring connect to {ssid!r} while tethering is active")
       return
@@ -920,13 +799,8 @@ class WifiManager:
       threading.Thread(target=worker, daemon=True).start()
 
   def _add_and_select_network(self, ssid: str, psk: str = "", hidden: bool = False):
-    """Add a network to wpa_supplicant and select it.
-
-    Each SET_NETWORK / SELECT_NETWORK response is checked — a short PSK or
-    bad key_mgmt returns "FAIL", and without this check SELECT_NETWORK
-    would still run, producing a delayed/confusing WRONG_KEY instead of an
-    immediate error. On any failure we REMOVE_NETWORK the orphan so we
-    don't leak zombie entries across retries."""
+    """Add a network and select it. Every SET_NETWORK is checked so a bad PSK/key_mgmt
+    surfaces an immediate error instead of a delayed WRONG_KEY; orphans get REMOVE_NETWORK'd."""
     net_id = self._ctrl.request("ADD_NETWORK").strip()
     if not net_id.isdigit():
       raise RuntimeError(f"ADD_NETWORK failed: {net_id}")
@@ -957,14 +831,8 @@ class WifiManager:
       raise RuntimeError(f"SET_NETWORK {net_id} {key} failed: {resp}")
 
   def _list_network_ids(self, ssid: str) -> list[str]:
-    """Return all wpa_supplicant network ids matching SSID.
-
-    LIST_NETWORKS emits SSIDs in wpa_ssid_txt (printf_encode) form, so
-    non-ASCII or escaped bytes must be decoded before comparing to the
-    caller's already-decoded SSID — otherwise `forget_connection` and
-    `activate_connection` silently miss entries for any SSID containing
-    bytes outside the printable-ASCII range.
-    """
+    """Return all wpa_supplicant network ids matching SSID. LIST_NETWORKS emits
+    printf_encode'd SSIDs — decode before comparing or non-ASCII SSIDs silently miss."""
     if self._ctrl is None:
       return []
     try:
@@ -995,13 +863,8 @@ class WifiManager:
       with atomic_write(TETHERING_PASSWORD_FILE, overwrite=True) as f:
         f.write(password)
       if self._tethering_active:
-        # Restart tethering with new password. _stop_tethering clears
-        # _tethering_active, and _start_tethering doesn't set it back — so
-        # we re-assert the flag before the restart to keep UI/backend
-        # state in sync (otherwise is_tethering_active() reports False
-        # while the hotspot is still running). Mirror set_tethering_active's
-        # rollback on bringup failure so a wedged AP doesn't leave the flag
-        # stuck True (which would block scan/reconcile loops).
+        # Re-assert the flag during restart so is_tethering_active() stays in sync
+        # while the hotspot is still running; mirror set_tethering_active's rollback.
         self._stop_tethering()
         self._tethering_active = True
         try:
@@ -1021,12 +884,8 @@ class WifiManager:
     self._ipv4_forward = enabled
 
   def set_tethering_active(self, active: bool):
-    # On enable, assert the flag synchronously so scan/reconcile and
-    # station-connect UI paths see "tethering is in progress" from the
-    # first instant. On disable, leave the flag True until _stop_tethering
-    # has actually switched _ctrl back to STA mode — otherwise a user
-    # tapping a network immediately after hitting the toggle could race
-    # the teardown and send ADD_NETWORK/SELECT_NETWORK to the AP daemon.
+    # Enable: assert flag synchronously so UI/reconcile see "tethering in progress" immediately.
+    # Disable: _stop_tethering clears the flag at the end, after _ctrl is back in STA mode.
     if active:
       self._tethering_active = True
     def worker():
@@ -1040,9 +899,7 @@ class WifiManager:
         except Exception:
           cloudlog.exception("Failed to start tethering, rolling back")
           try:
-            # _stop_tethering cleans up dnsmasq, iptables, AP wpa_supplicant,
-            # restarts STA wpa_supplicant, and resets state. Safe to call on
-            # a partial bringup.
+            # Safe on a partial bringup.
             self._stop_tethering()
           except Exception:
             cloudlog.exception("Tethering rollback also failed")
@@ -1054,20 +911,13 @@ class WifiManager:
           self._stop_tethering()
         except Exception:
           cloudlog.exception("Failed to stop tethering")
-          # Force-clear the flag even if teardown failed so the UI isn't
-          # wedged reporting tethering active forever.
+          # Force-clear so the UI isn't stuck reporting tethering active.
           self._tethering_active = False
     threading.Thread(target=worker, daemon=True).start()
 
   def _start_tethering(self):
-    # TODO: tethering is currently a kill-and-respawn: kill our STA daemon,
-    # spawn a second daemon with an AP-mode config. That's incompatible
-    # with a system-managed wpa_supplicant (we can't kill it, and we can't
-    # run two daemons on one interface). The clean model is to keep one
-    # daemon and flip networks: ADD_NETWORK with mode=2/frequency=2437,
-    # DISABLE_NETWORK all the STA networks, ENABLE_NETWORK the AP one.
-    # _stop_tethering becomes the reverse. Needed before we can run under
-    # a systemd-managed wpa_supplicant on tici.
+    # TODO: kill-and-respawn is incompatible with a system-managed wpa_supplicant.
+    # Switch to a single-daemon flip: ADD_NETWORK mode=2/freq=2437, DISABLE/ENABLE_NETWORK.
     self._set_connecting(self._tethering_ssid)
 
     psk = self._tethering_psk
@@ -1077,8 +927,7 @@ class WifiManager:
       self._ctrl.close()
       self._ctrl = None
 
-    # Stop STA wpa_supplicant (only the one running our config — never touch a
-    # system-managed daemon on another interface or config).
+    # Target only our config — never touch a system-managed daemon.
     self._monitor_epoch += 1
     _pkill_wpa_supplicant(WPA_SUPPLICANT_CONF)
     self._dhcp.stop()
@@ -1115,15 +964,7 @@ class WifiManager:
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
       start_new_session=True)
 
-    # NAT: MASQUERADE traffic from the tethering subnet regardless of
-    # which uplink has the default route. Source-subnet matching (no
-    # `-o <iface>`) survives a mid-session uplink change — unplugging
-    # ETH, pulling the SIM, 3G→4G, rmnet_data0 rename — without any
-    # watchdog logic, because the rule describes *our* network, not
-    # whichever interface happens to carry traffic out.
-    # Flush any stale copies from previous sessions first (idempotent),
-    # plus legacy `-o <iface>` rules from older openpilot versions that
-    # bound MASQUERADE to a specific uplink.
+    # Flush stale copies (idempotent), plus legacy `-o <iface>` rules from older openpilot.
     for _ in range(4):
       result = subprocess.run(_tethering_nat_rule("-D"), capture_output=True, check=False)
       if result.returncode != 0:
@@ -1138,11 +979,8 @@ class WifiManager:
     if self._ipv4_forward:
       subprocess.run(["sudo", "sysctl", "net.ipv4.ip_forward=1"], check=False)
 
-    # Reconnect control socket — doubles as a bringup check. A bare attach
-    # isn't enough: a pre-existing STA daemon (system-managed, different
-    # config path) can still own the ctrl socket even when our AP spawn
-    # failed to take the interface. We also require STATUS to report
-    # mode=AP, so a surviving STA daemon can't masquerade as our hotspot.
+    # Verify bringup: attach + require STATUS mode=AP, so a surviving STA daemon
+    # can't masquerade as our hotspot.
     try:
       ctrl = WpaCtrl()
       ctrl.open()
@@ -1192,10 +1030,7 @@ class WifiManager:
     # Flush AP IP
     subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
 
-    # Restore STA. _ensure_wpa_supplicant attaches to our own daemon if
-    # one survived _start_tethering, or unmanages NM and spawns a fresh
-    # one. _generate_wpa_conf refreshes our config for the spawn path;
-    # the attach path reuses the running daemon's existing config.
+    # Refresh config for the spawn path; _ensure_wpa_supplicant picks attach vs spawn.
     _generate_wpa_conf(self._store)
     self._ensure_wpa_supplicant()
 

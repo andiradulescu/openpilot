@@ -21,14 +21,8 @@ class MeteredType(IntEnum):
 
 
 def _ssid_to_filename(ssid: str) -> str:
-  """Convert an SSID to a collision-free .nmconnection filename.
-
-  Uses percent-encoding so two SSIDs can never map to the same path
-  (e.g. `a/b` and `a_b` are distinct). Legacy files written with the
-  previous `_`-substitution scheme still load via the `ssid=` field
-  inside the file, and their original filename is remembered in the
-  store so remove/save keep operating on the correct path.
-  """
+  """Collision-free .nmconnection filename via percent-encoding. Legacy `_`-substituted
+  files still load via the in-file `ssid=` field; the store remembers their original name."""
   return urllib.parse.quote(ssid, safe="") + ".nmconnection"
 
 
@@ -73,8 +67,7 @@ class NetworkStore:
         "metered": cp.getint("connection", "metered", fallback=0),
         "hidden": cp.getboolean("wifi", "hidden", fallback=False),
         "uuid": cp.get("connection", "uuid", fallback=""),
-        # Remember the actual on-disk filename so save/remove stay
-        # consistent with legacy files that used a lossy naming scheme.
+        # Remember the on-disk filename so save/remove stay consistent with legacy files.
         "_filename": fname,
       }
 
@@ -83,8 +76,7 @@ class NetworkStore:
     entry = dict(entry)
     entry["uuid"] = file_uuid
 
-    # Preserve legacy filenames so we don't orphan files that were written
-    # with the previous non-lossless naming scheme.
+    # Preserve legacy filenames so we don't orphan non-lossless-named files.
     fname = entry.get("_filename") or _ssid_to_filename(ssid)
     entry["_filename"] = fname
 

@@ -9,9 +9,7 @@ from openpilot.common.swaglog import cloudlog
 class DhcpClient:
   """Manage udhcpc for DHCP on wlan0."""
 
-  # Higher than NM's wired default (metric 100), so a plugged-in eth0 keeps
-  # priority as the default route while it's up. Matches NM's own metric
-  # for wifi routes.
+  # Above NM's eth0 default (metric 100) so ETH keeps priority; matches NM's wifi metric.
   DEFAULT_ROUTE_METRIC = 600
 
   def __init__(self, iface: str = "wlan0"):
@@ -35,16 +33,10 @@ class DhcpClient:
     self._metric_thread.start()
 
   def _fix_default_route_metric(self):
-    """Replace udhcpc's metric-0 wlan0 default route with a metric-600 one.
-
-    busybox udhcpc has no way to set a route metric at bind time and its
-    default dispatcher script installs the default route at metric 0.
-    Without this fixup, wlan0 (metric 0) beats eth0 (NM's metric 100) and
-    every DHCP bind silently hijacks the default gateway to wifi even with
-    the cable plugged in. Poll briefly for the route to appear, then
-    replace it. Same-router renewals leave the route alone, so a one-shot
-    bump survives the lease.
-    """
+    """Replace udhcpc's metric-0 default route with metric 600.
+    busybox udhcpc can't set a bind-time metric; without this, wlan0 silently beats
+    eth0 on every DHCP bind. Same-router renewals skip the re-install, so a one-shot
+    bump survives the lease."""
     deadline = time.monotonic() + 10.0
     while not self._metric_stop.is_set() and time.monotonic() < deadline:
       try:
@@ -64,7 +56,6 @@ class DhcpClient:
           gw = parts[parts.index("via") + 1]
         except IndexError:
           continue
-        # Already at the target metric? Done.
         if "metric" in parts:
           try:
             if int(parts[parts.index("metric") + 1]) == self.DEFAULT_ROUTE_METRIC:
