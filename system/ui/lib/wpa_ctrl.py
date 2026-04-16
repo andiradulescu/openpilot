@@ -118,11 +118,8 @@ class WpaCtrl(_WpaCtrlBase):
       return sock.recv(RECV_BUF_SIZE).decode("utf-8", "replace")
 
   def close(self):
-    # Serialize against request() so a concurrent caller can't be mid-send/
-    # recv while we close the underlying fd. Without this, the other thread
-    # observes a closed socket and raises OSError (EBADF); callers swallow
-    # that today, but the cleaner contract is "close waits for in-flight
-    # requests to drain".
+    # Serialize against request() so close() waits for in-flight send/recv
+    # instead of ripping the fd out from under a concurrent caller.
     with self._request_lock:
       super().close()
 
@@ -404,16 +401,13 @@ def ensure_wpa_supplicant(should_exit: Callable[[], bool], nm_connections_dir: s
   """Attach to a wpa_supplicant we own, or spawn one. Never attach to NM's daemon.
   Returns the attached WpaCtrl, or None if exit was signaled or spawn timed out."""
   from openpilot.common.swaglog import cloudlog
-  # Kernel brings wlan0 up ~40s after openpilot starts on cold boot; nmcli fails
-  # silently before that and NM grabs wlan0 the instant it appears.
+  # Wait for wlan0 on cold boot; _unmanage_wlan0 below silently fails if it's missing.
   while not should_exit():
     if os.path.exists("/sys/class/net/wlan0"):
       break
     time.sleep(0.5)
 
-  # AP-mode adoption: a hotspot from a prior UI run is still up (dnsmasq/iptables/
-  # AP daemon all survived via start_new_session). Falling through to STA cleanup
-  # would flush wlan0 and tear the live hotspot down.
+  # AP adoption: hotspot from a prior UI run is still up; STA cleanup below would tear it down.
   if _wpa_supplicant_running(WPA_AP_CONF):
     ctrl = try_attach_ctrl()
     if ctrl is not None:

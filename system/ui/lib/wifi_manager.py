@@ -143,9 +143,8 @@ class WifiManager:
         _generate_wpa_conf(self._store)
         self._ensure_wpa_supplicant()
 
-        # Populate networks before wifi state so the connected network's
-        # strength is available when the UI first renders (avoids the
-        # "disconnected icon" flash for the connected SSID).
+        # Populate networks before wifi state so the connected SSID's strength is
+        # known on first render; otherwise it flashes the disconnected icon.
         self._update_networks(block=True)
 
         self._init_wifi_state()
