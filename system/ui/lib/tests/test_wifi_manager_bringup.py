@@ -275,6 +275,44 @@ class TestSpawnFallback:
     mock_run.assert_not_called()
 
 
+class TestMonitorRespawn:
+  def test_monitor_respawns_when_no_owned_daemon(self, wm, mocker):
+    """If _ctrl is None and no owned daemon is running (crash/kill, or failed
+    initial bringup), the monitor must call _ensure_wpa_supplicant so wifi
+    doesn't stay dead forever."""
+    wm._ctrl = None
+    wm._exit = False
+    wm._monitor_epoch = 0
+    mocker.patch.object(wifi_manager_module, "_wpa_supplicant_running", return_value=False)
+    mocker.patch.object(wifi_manager_module.time, "sleep")
+
+    def stop_after_ensure():
+      wm._exit = True
+    ensure = mocker.patch.object(wm, "_ensure_wpa_supplicant", side_effect=stop_after_ensure)
+
+    wm._monitor_state()
+
+    ensure.assert_called()
+
+  def test_monitor_does_not_respawn_when_owned_daemon_running(self, wm, mocker):
+    """If an owned daemon is running, the monitor must attach — not spawn."""
+    wm._ctrl = None
+    wm._exit = False
+    wm._monitor_epoch = 0
+    mocker.patch.object(wifi_manager_module, "_wpa_supplicant_running", return_value=True)
+    mocker.patch.object(wifi_manager_module.time, "sleep")
+    ctrl = mocker.MagicMock()
+    def stop_after_attach():
+      wm._exit = True
+      return ctrl
+    mocker.patch.object(wifi_manager_module, "try_attach_ctrl", side_effect=stop_after_attach)
+    ensure = mocker.patch.object(wm, "_ensure_wpa_supplicant")
+
+    wm._monitor_state()
+
+    ensure.assert_not_called()
+
+
 class TestMultipleDaemonsPrevented:
   def test_attach_short_circuits_before_pkill_and_spawn(self, wm, mocker):
     """Regression guard: when our daemon is alive and attach succeeds, we

@@ -321,17 +321,19 @@ class WifiManager:
     was_down = False
     while not self._exit:
       if self._ctrl is None:
-        # Silent retry: manager self-recovers if the daemon shows up later.
-        # Gate on pgrep for our config so we don't latch onto NM's wpa_supplicant
-        # if _ensure_wpa_supplicant intentionally left _ctrl unset.
-        if not (_wpa_supplicant_running(WPA_SUPPLICANT_CONF) or _wpa_supplicant_running(WPA_AP_CONF)):
-          time.sleep(2)
-          continue
-        ctrl = try_attach_ctrl()
-        if ctrl is None:
-          time.sleep(2)
-          continue
-        self._ctrl = ctrl
+        # No owned daemon? Spawn one so wifi doesn't stay dead after a failed
+        # initial bringup or a crash. Otherwise just attach.
+        if _wpa_supplicant_running(WPA_SUPPLICANT_CONF) or _wpa_supplicant_running(WPA_AP_CONF):
+          ctrl = try_attach_ctrl()
+          if ctrl is None:
+            time.sleep(2)
+            continue
+          self._ctrl = ctrl
+        else:
+          self._ensure_wpa_supplicant()
+          if self._ctrl is None:
+            time.sleep(2)
+            continue
       monitor = None
       try:
         epoch = self._monitor_epoch
