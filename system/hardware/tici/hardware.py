@@ -293,11 +293,11 @@ class Tici(HardwareBase):
             cp = configparser.ConfigParser(interpolation=None)
             try:
               cp.read_string(raw)
-            except configparser.Error:
+              if cp.get("wifi", "ssid", fallback="") != ssid:
+                continue
+              metered = cp.getint("connection", "metered", fallback=0)
+            except (configparser.Error, ValueError):
               continue
-            if cp.get("wifi", "ssid", fallback="") != ssid:
-              continue
-            metered = cp.getint("connection", "metered", fallback=0)
             if metered == 1:  # YES
               return True
             if metered == 2:  # NO
