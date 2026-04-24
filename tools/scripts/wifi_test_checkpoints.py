@@ -270,8 +270,8 @@ def collect_daemon_snapshot() -> dict:
       if wpa_state == "COMPLETED" and ssid:
         wifi_state_ssid = ssid
         wifi_state_status = 2
-      elif wpa_state in ("ASSOCIATING", "AUTHENTICATING", "4WAY_HANDSHAKE",
-                         "GROUP_HANDSHAKE", "SCANNING"):
+      elif wpa_state in ("SCANNING", "AUTHENTICATING", "ASSOCIATING", "ASSOCIATED",
+                         "4WAY_HANDSHAKE", "GROUP_HANDSHAKE"):
         wifi_state_ssid = ssid
         wifi_state_status = 1  # CONNECTING
       else:
