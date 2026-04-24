@@ -8,6 +8,7 @@ import pytest
 from openpilot.system.ui.lib import wifi_manager as wifi_manager_module
 from openpilot.system.ui.lib.wifi_manager import (
   ConnectStatus,
+  MeteredType,
   Network,
   PendingConnection,
   SecurityType,
@@ -168,6 +169,23 @@ class TestWrongPassword:
     fire(wm, "CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid=\"Net\" auth_failures=1 duration=10 reason=WRONG_KEY")
 
     assert len(wm._callback_queue) == 0
+
+  def test_wrong_key_tears_down_dhcp_state(self, wm, mocker):
+    """CTRL-EVENT-DISCONNECTED is dropped while CONNECTING; WRONG_KEY must
+    perform the same teardown itself so DHCP/IP/metered don't go stale."""
+    disconnected = mocker.MagicMock()
+    wm.add_callbacks(disconnected=disconnected)
+    wm._set_connecting("SecNet")
+    wm._ipv4_address = "10.0.0.5"
+    wm._current_network_metered = MeteredType.NO
+
+    fire(wm, "CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid=\"SecNet\" auth_failures=1 duration=10 reason=WRONG_KEY")
+
+    wm._dhcp.stop.assert_called_once()
+    assert wm._ipv4_address == ""
+    assert wm._current_network_metered == MeteredType.UNKNOWN
+    wm.process_callbacks()
+    disconnected.assert_called_once()
 
   def test_wrong_key_clears_pending_without_saving(self, wm):
     wm._set_connecting("SecNet")

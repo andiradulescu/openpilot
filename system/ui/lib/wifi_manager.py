@@ -452,6 +452,12 @@ class WifiManager:
               cloudlog.exception("Failed to re-enable saved networks after WRONG_KEY")
           self._enqueue_callbacks(self._need_auth, event_ssid)
           self._set_connecting(None)
+          # CTRL-EVENT-DISCONNECTED is ignored while CONNECTING, so tear down
+          # DHCP/IP/metered here ourselves in case it arrived before WRONG_KEY.
+          self._dhcp.stop()
+          self._ipv4_address = ""
+          self._current_network_metered = MeteredType.UNKNOWN
+          self._enqueue_callbacks(self._disconnected)
 
     elif "Trying to associate with" in event or "Associated with" in event:
       # Auto-connect case: wpa_supplicant is connecting on its own
