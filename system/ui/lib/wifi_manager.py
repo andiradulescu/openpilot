@@ -495,6 +495,9 @@ class WifiManager:
         status = parse_status(self._ctrl.request("STATUS"))
       except Exception:
         return
+      # wpa_supplicant also reports COMPLETED in AP mode; station DHCP would flush the hotspot.
+      if status.get("mode") == "AP":
+        return
       if status.get("wpa_state") == "COMPLETED" and status.get("ssid"):
         self._handle_connected(status["ssid"])
       return

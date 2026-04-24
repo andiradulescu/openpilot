@@ -108,6 +108,16 @@ def test_reconcile_disconnected_stays_disconnected(wm, mocker):
   activated.assert_not_called()
 
 
+def test_reconcile_disconnected_skips_ap_mode_status(wm):
+  wm._wifi_state = WifiState(ssid=None, status=ConnectStatus.DISCONNECTED)
+  wm._ctrl.request.return_value = "wpa_state=COMPLETED\nmode=AP\nssid=tether\n"
+
+  wm._reconcile_connecting_state()
+
+  assert wm._wifi_state.status == ConnectStatus.DISCONNECTED
+  wm._dhcp.start.assert_not_called()
+
+
 def test_reconcile_disconnected_skipped_during_tethering(wm):
   """Don't reconcile while tethering is active."""
   wm._tethering_active = True
