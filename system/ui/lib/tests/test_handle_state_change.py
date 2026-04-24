@@ -601,6 +601,47 @@ class TestConnectBlockedDuringTethering:
     wifi_manager_module.threading.Thread.assert_not_called()
 
 
+class TestConnectWithoutCtrl:
+  """When _ctrl is None (pre-attach init, post-daemon-loss), the worker must
+  reset the CONNECTING state inline. _init_wifi_state no-ops in that condition,
+  so relying on it leaves the UI wedged at CONNECTING forever."""
+
+  class ImmediateThread:
+    def __init__(self, target=None, daemon=None):
+      self._target = target
+
+    def start(self):
+      if self._target is not None:
+        self._target()
+
+  def test_connect_to_network_without_ctrl_resets_state(self, wm, mocker):
+    wm._ctrl = None
+    disconnected_cb = mocker.MagicMock()
+    wm.add_callbacks(disconnected=disconnected_cb)
+    mocker.patch.object(wifi_manager_module.threading, "Thread", self.ImmediateThread)
+
+    wm.connect_to_network("HomeNet", "password", hidden=False)
+
+    assert wm._wifi_state.status == ConnectStatus.DISCONNECTED
+    assert wm._wifi_state.ssid is None
+    assert wm._pending_connection is None
+    wm.process_callbacks()
+    disconnected_cb.assert_called_once()
+
+  def test_activate_connection_without_ctrl_resets_state(self, wm, mocker):
+    wm._ctrl = None
+    disconnected_cb = mocker.MagicMock()
+    wm.add_callbacks(disconnected=disconnected_cb)
+    mocker.patch.object(wifi_manager_module.threading, "Thread", self.ImmediateThread)
+
+    wm.activate_connection("HomeNet")
+
+    assert wm._wifi_state.status == ConnectStatus.DISCONNECTED
+    assert wm._wifi_state.ssid is None
+    wm.process_callbacks()
+    disconnected_cb.assert_called_once()
+
+
 class TestConnectPersistence:
   def test_connect_to_network_does_not_save_before_auth(self, wm, mocker):
     wm._remove_wpa_network = mocker.MagicMock()

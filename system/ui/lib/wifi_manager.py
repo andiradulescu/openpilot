@@ -691,7 +691,9 @@ class WifiManager:
       if self._ctrl is None:
         cloudlog.warning("No wpa_supplicant connection")
         self._clear_pending_connection(ssid)
-        self._init_wifi_state()
+        # _init_wifi_state is a no-op while _ctrl is None, so reset CONNECTING inline.
+        self._set_connecting(None)
+        self._enqueue_callbacks(self._disconnected)
         return
 
       try:
@@ -744,7 +746,9 @@ class WifiManager:
     def worker():
       if self._ctrl is None:
         cloudlog.warning(f"No wpa_supplicant connection for activate {ssid}")
-        self._init_wifi_state()
+        # _init_wifi_state is a no-op while _ctrl is None, so reset CONNECTING inline.
+        self._set_connecting(None)
+        self._enqueue_callbacks(self._disconnected)
         return
 
       try:
