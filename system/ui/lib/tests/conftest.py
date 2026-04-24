@@ -39,6 +39,7 @@ def wm(mocker):
   wm._last_connecting_at = time.monotonic() - CONNECTING_STALE_TIMEOUT_SECONDS - 1
   wm._last_connected_recheck = 0.0
   wm._last_wrong_key_dispatch = {}
+  wm._monitor_epoch = 0
   wm._update_active_connection_info = mocker.MagicMock()
   wm._poll_for_ip = mocker.MagicMock()
   wm._ctrl.request.return_value = "wpa_state=COMPLETED\nssid=TestNet\n"

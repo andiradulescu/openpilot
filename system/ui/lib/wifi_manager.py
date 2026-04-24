@@ -163,6 +163,22 @@ class WifiManager:
     if ctrl is not None:
       self._ctrl = ctrl
 
+  def _request(self, cmd: str) -> str:
+    ctrl = self._ctrl
+    if ctrl is None:
+      raise OSError("wpa_supplicant ctrl not attached")
+    try:
+      return ctrl.request(cmd)
+    except OSError:
+      # Monitor recv doesn't raise on daemon SIGKILL; the epoch bump kicks it to respawn.
+      try:
+        ctrl.close()
+      except Exception:
+        pass
+      self._ctrl = None
+      self._monitor_epoch += 1
+      raise
+
   def _init_wifi_state(self, block: bool = True):
     def worker():
       if self._ctrl is None:
@@ -171,7 +187,7 @@ class WifiManager:
       epoch = self._user_epoch
 
       try:
-        status = parse_status(self._ctrl.request("STATUS"))
+        status = parse_status(self._request("STATUS"))
       except Exception:
         cloudlog.exception("Failed to get wpa_supplicant status")
         return
@@ -374,7 +390,7 @@ class WifiManager:
     # every other network as a side effect.
     if self._ctrl is not None:
       try:
-        self._ctrl.request("ENABLE_NETWORK all")
+        self._request("ENABLE_NETWORK all")
       except Exception:
         cloudlog.exception("Failed to re-enable saved networks for auto-roam")
     self._dhcp.start()
@@ -394,7 +410,7 @@ class WifiManager:
       # Get actual SSID from STATUS
       if self._ctrl:
         try:
-          status = parse_status(self._ctrl.request("STATUS"))
+          status = parse_status(self._request("STATUS"))
           ssid = status.get("ssid", ssid)
         except Exception:
           pass
@@ -445,7 +461,7 @@ class WifiManager:
           # device can auto-fall-back after a failed manual connect.
           if self._ctrl is not None:
             try:
-              self._ctrl.request("ENABLE_NETWORK all")
+              self._request("ENABLE_NETWORK all")
             except Exception:
               cloudlog.exception("Failed to re-enable saved networks after WRONG_KEY")
           self._enqueue_callbacks(self._need_auth, event_ssid)
@@ -464,7 +480,7 @@ class WifiManager:
         ssid = None
         if self._ctrl:
           try:
-            status = parse_status(self._ctrl.request("STATUS"))
+            status = parse_status(self._request("STATUS"))
             ssid = status.get("ssid")
           except Exception:
             pass
@@ -486,7 +502,7 @@ class WifiManager:
     if self._ctrl is None:
       return
     try:
-      self._ctrl.request("SCAN")
+      self._request("SCAN")
     except Exception:
       cloudlog.exception("Failed to request scan")
 
@@ -498,7 +514,7 @@ class WifiManager:
     # Detect missed CONNECTED event (e.g. monitor was reconnecting after tethering stop)
     if current_state.status == ConnectStatus.DISCONNECTED:
       try:
-        status = parse_status(self._ctrl.request("STATUS"))
+        status = parse_status(self._request("STATUS"))
       except Exception:
         return
       # wpa_supplicant also reports COMPLETED in AP mode; station DHCP would flush the hotspot.
@@ -516,7 +532,7 @@ class WifiManager:
         return
       self._last_connected_recheck = now
       try:
-        status = parse_status(self._ctrl.request("STATUS"))
+        status = parse_status(self._request("STATUS"))
       except Exception:
         return
       wpa_state = status.get("wpa_state", "")
@@ -543,7 +559,7 @@ class WifiManager:
       return
 
     try:
-      status = parse_status(self._ctrl.request("STATUS"))
+      status = parse_status(self._request("STATUS"))
     except Exception:
       cloudlog.exception("Failed to reconcile wifi state from STATUS")
       return
@@ -563,7 +579,7 @@ class WifiManager:
       self._clear_pending_connection(current_state.ssid)
       # SELECT_NETWORK disabled every other saved network; re-enable so auto-fallback works.
       try:
-        self._ctrl.request("ENABLE_NETWORK all")
+        self._request("ENABLE_NETWORK all")
       except Exception:
         cloudlog.exception("Failed to re-enable saved networks after stale CONNECTING")
       self._set_connecting(None)
@@ -579,7 +595,7 @@ class WifiManager:
           return
 
         try:
-          raw = self._ctrl.request("SCAN_RESULTS")
+          raw = self._request("SCAN_RESULTS")
         except Exception:
           cloudlog.exception("Failed to get scan results")
           return
@@ -636,7 +652,7 @@ class WifiManager:
       # Try wpa_cli STATUS for ip_address first (works regardless of network namespace)
       if self._ctrl:
         try:
-          status = parse_status(self._ctrl.request("STATUS"))
+          status = parse_status(self._request("STATUS"))
           ipv4_address = status.get("ip_address", "")
         except Exception:
           pass
@@ -704,10 +720,10 @@ class WifiManager:
       if self._ctrl:
         try:
           if was_connected:
-            self._ctrl.request("DISCONNECT")
+            self._request("DISCONNECT")
           self._remove_wpa_network(ssid)
-          self._ctrl.request("ENABLE_NETWORK all")
-          self._ctrl.request("REASSOCIATE")
+          self._request("ENABLE_NETWORK all")
+          self._request("REASSOCIATE")
         except Exception:
           cloudlog.exception(f"Failed to reconfigure after forgetting {ssid}")
 
@@ -734,7 +750,7 @@ class WifiManager:
       try:
         ids = self._list_network_ids(ssid)
         if ids:
-          self._ctrl.request(f"SELECT_NETWORK {ids[0]}")
+          self._request(f"SELECT_NETWORK {ids[0]}")
         else:
           # Network not in wpa_supplicant's runtime list — add from store
           entry = self._store.get(ssid)
@@ -755,7 +771,7 @@ class WifiManager:
   def _add_and_select_network(self, ssid: str, psk: str = "", hidden: bool = False):
     """Add a network and select it. Every SET_NETWORK is checked so a bad PSK/key_mgmt
     surfaces an immediate error instead of a delayed WRONG_KEY; orphans get REMOVE_NETWORK'd."""
-    net_id = self._ctrl.request("ADD_NETWORK").strip()
+    net_id = self._request("ADD_NETWORK").strip()
     if not net_id.isdigit():
       raise RuntimeError(f"ADD_NETWORK failed: {net_id}")
 
@@ -768,19 +784,19 @@ class WifiManager:
         self._wpa_set_network(net_id, "key_mgmt", "NONE")
       if hidden:
         self._wpa_set_network(net_id, "scan_ssid", "1")
-      resp = self._ctrl.request(f"SELECT_NETWORK {net_id}").strip()
+      resp = self._request(f"SELECT_NETWORK {net_id}").strip()
       if not resp.startswith("OK"):
         raise RuntimeError(f"SELECT_NETWORK {net_id} failed: {resp}")
     except Exception:
       try:
-        self._ctrl.request(f"REMOVE_NETWORK {net_id}")
+        self._request(f"REMOVE_NETWORK {net_id}")
       except Exception:
         cloudlog.exception(f"Failed to clean up orphaned network {net_id}")
       raise
 
   def _wpa_set_network(self, net_id: str, key: str, value: str):
     """SET_NETWORK wrapper that raises on wpa_supplicant FAIL responses."""
-    resp = self._ctrl.request(f"SET_NETWORK {net_id} {key} {value}").strip()
+    resp = self._request(f"SET_NETWORK {net_id} {key} {value}").strip()
     if not resp.startswith("OK"):
       raise RuntimeError(f"SET_NETWORK {net_id} {key} failed: {resp}")
 
@@ -790,7 +806,7 @@ class WifiManager:
     if self._ctrl is None:
       return []
     try:
-      raw = self._ctrl.request("LIST_NETWORKS")
+      raw = self._request("LIST_NETWORKS")
       return [parts[0] for line in raw.strip().split("\n")[1:]
               if len(parts := line.split("\t")) >= 2 and decode_ssid(parts[1]) == ssid]
     except Exception:
@@ -801,7 +817,7 @@ class WifiManager:
     """Remove all wpa_supplicant network entries matching SSID."""
     for net_id in self._list_network_ids(ssid):
       try:
-        self._ctrl.request(f"REMOVE_NETWORK {net_id}")
+        self._request(f"REMOVE_NETWORK {net_id}")
       except Exception:
         cloudlog.exception(f"Failed to remove network {ssid}")
 
