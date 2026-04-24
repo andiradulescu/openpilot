@@ -255,6 +255,25 @@ class TestSpawnFallback:
     mock_pkill.assert_not_called()
     mock_run.assert_not_called()
 
+  def test_returns_when_stop_requested_after_wlan0_exists(self, mocker):
+    """If wlan0 is already present but stop() is requested before bringup
+    reaches the NM teardown path, _unmanage_wlan0 / pkill / ip flush / spawn
+    must not run. Covers the common case where stop() arrives after the
+    wait loop already observed wlan0."""
+    mocker.patch.object(wpa_ctrl_module.os.path, "exists", return_value=True)
+    mocker.patch.object(wpa_ctrl_module.time, "sleep")
+    mocker.patch.object(wpa_ctrl_module, "_wpa_supplicant_running", return_value=False)
+    mock_unmanage = mocker.patch.object(wpa_ctrl_module, "_unmanage_wlan0")
+    mock_pkill = mocker.patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant")
+    mock_run = mocker.patch.object(wpa_ctrl_module.subprocess, "run")
+
+    result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: True, "/tmp/ignored")
+
+    assert result is None
+    mock_unmanage.assert_not_called()
+    mock_pkill.assert_not_called()
+    mock_run.assert_not_called()
+
 
 class TestMultipleDaemonsPrevented:
   def test_attach_short_circuits_before_pkill_and_spawn(self, wm, mocker):

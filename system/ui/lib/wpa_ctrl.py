@@ -426,6 +426,10 @@ def ensure_wpa_supplicant(should_exit: Callable[[], bool], nm_connections_dir: s
         pass
       return ctrl
 
+  # Honor cancellation before mutating NM / killing daemons / flushing IPs.
+  if should_exit():
+    return None
+
   _unmanage_wlan0()
 
   # NM teardown is async (~800ms): wait for NM's ctrl socket to disappear before
