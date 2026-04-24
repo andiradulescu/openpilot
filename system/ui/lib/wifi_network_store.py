@@ -52,24 +52,25 @@ class NetworkStore:
           cp.read_string(raw)
         else:
           cp.read(fpath)
-      except configparser.Error:
-        continue
 
-      if not cp.has_section("wifi"):
-        continue
-      ssid = cp.get("wifi", "ssid", fallback="")
-      mode = cp.get("wifi", "mode", fallback="infrastructure")
-      if not ssid or mode == "ap":
-        continue
+        if not cp.has_section("wifi"):
+          continue
+        ssid = cp.get("wifi", "ssid", fallback="")
+        mode = cp.get("wifi", "mode", fallback="infrastructure")
+        if not ssid or mode == "ap":
+          continue
 
-      self._networks[ssid] = {
-        "psk": cp.get("wifi-security", "psk", fallback=""),
-        "metered": cp.getint("connection", "metered", fallback=0),
-        "hidden": cp.getboolean("wifi", "hidden", fallback=False),
-        "uuid": cp.get("connection", "uuid", fallback=""),
-        # Remember the on-disk filename so save/remove stay consistent with legacy files.
-        "_filename": fname,
-      }
+        # getint/getboolean can raise ValueError on malformed values; skip the bad profile.
+        self._networks[ssid] = {
+          "psk": cp.get("wifi-security", "psk", fallback=""),
+          "metered": cp.getint("connection", "metered", fallback=0),
+          "hidden": cp.getboolean("wifi", "hidden", fallback=False),
+          "uuid": cp.get("connection", "uuid", fallback=""),
+          # Remember the on-disk filename so save/remove stay consistent with legacy files.
+          "_filename": fname,
+        }
+      except (configparser.Error, ValueError):
+        continue
 
   def _render_nmconnection(self, ssid: str, entry: dict) -> tuple[str, dict]:
     file_uuid = entry.get("uuid") or str(uuid.uuid5(uuid.NAMESPACE_DNS, ssid))

@@ -89,6 +89,44 @@ method=auto
     assert entry["uuid"] == "test-uuid-123"
     assert entry["metered"] == 0
 
+  def test_load_skips_malformed_profile_and_keeps_going(self, mocker: MockerFixture):
+    """A single profile with a bad metered/hidden value must not abort _load."""
+    bad = """\
+[connection]
+id=Bad
+uuid=bad-uuid
+type=wifi
+metered=yes
+
+[wifi]
+ssid=Bad
+mode=infrastructure
+hidden=maybe
+"""
+    good = """\
+[connection]
+id=Good
+uuid=good-uuid
+type=wifi
+metered=0
+
+[wifi]
+ssid=Good
+mode=infrastructure
+"""
+    with open(os.path.join(self.tmpdir, "Bad.nmconnection"), "w") as f:
+      f.write(bad)
+    with open(os.path.join(self.tmpdir, "Good.nmconnection"), "w") as f:
+      f.write(good)
+
+    reads = {"Bad.nmconnection": bad, "Good.nmconnection": good}
+    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read",
+                 side_effect=lambda p: reads[os.path.basename(p)])
+    store = NetworkStore(directory=self.tmpdir)
+
+    assert store.get("Bad") is None
+    assert store.get("Good") is not None
+
   def test_load_skips_ap_mode(self, mocker: MockerFixture):
     content = """\
 [connection]
