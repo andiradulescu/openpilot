@@ -318,7 +318,6 @@ class WifiManager:
         cb(snapshot)
 
   def _monitor_state(self):
-    was_down = False
     while not self._exit:
       if self._ctrl is None:
         # No owned daemon? Spawn one so wifi doesn't stay dead after a failed
@@ -339,22 +338,21 @@ class WifiManager:
         epoch = self._monitor_epoch
         monitor = WpaCtrlMonitor()
         monitor.open()
-        if was_down:
-          # Monitor reconnected; refresh the main ctrl socket in case the daemon restarted.
-          # Same ownership gate as above: never attach to a daemon we don't own.
-          if _wpa_supplicant_running(WPA_SUPPLICANT_CONF) or _wpa_supplicant_running(WPA_AP_CONF):
-            ctrl = try_attach_ctrl()
-            if ctrl is not None:
-              self._ctrl = ctrl
-          was_down = False
         while not self._exit and self._monitor_epoch == epoch:
           event = monitor.recv(timeout=1.0)
           if event is None:
             continue
           self._handle_event(event)
       except Exception:
-        was_down = True
         cloudlog.exception("wpa_supplicant monitor error, reconnecting...")
+        # Drop the ctrl handle so the next iteration re-attaches (or respawns
+        # if the daemon actually died); otherwise we'd wedge on a dead socket.
+        if self._ctrl is not None:
+          try:
+            self._ctrl.close()
+          except Exception:
+            pass
+          self._ctrl = None
       finally:
         if monitor is not None:
           try:

@@ -312,6 +312,25 @@ class TestMonitorRespawn:
 
     ensure.assert_not_called()
 
+  def test_monitor_clears_ctrl_on_error_so_next_iter_recovers(self, wm, mocker):
+    """If WpaCtrlMonitor.open() raises (daemon crashed), the monitor must drop
+    self._ctrl so the next iteration's _ctrl-is-None branch re-attaches or
+    respawns. Otherwise a dead socket wedges the loop forever."""
+    dead_ctrl = mocker.MagicMock()
+    wm._ctrl = dead_ctrl
+    wm._exit = False
+    wm._monitor_epoch = 0
+    mocker.patch.object(wifi_manager_module, "_wpa_supplicant_running", return_value=False)
+    mocker.patch.object(wifi_manager_module.time, "sleep",
+                        side_effect=lambda *_: setattr(wm, "_exit", True))
+    mocker.patch.object(wifi_manager_module, "WpaCtrlMonitor",
+                        side_effect=OSError("socket gone"))
+
+    wm._monitor_state()
+
+    assert wm._ctrl is None
+    dead_ctrl.close.assert_called_once()
+
 
 class TestMultipleDaemonsPrevented:
   def test_attach_short_circuits_before_pkill_and_spawn(self, wm, mocker):
