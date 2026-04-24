@@ -14,7 +14,7 @@ from openpilot.system.ui.lib.gsm_manager import _GsmManager
 from openpilot.system.ui.lib.wifi_network_store import MeteredType, NetworkStore, NM_CONNECTIONS_DIR
 from openpilot.system.ui.lib.wpa_ctrl import (WpaCtrl, WpaCtrlMonitor, SecurityType,
                                                WPA_SUPPLICANT_CONF, WPA_AP_CONF,
-                                               _pkill_wpa_supplicant,
+                                               _pkill_wpa_supplicant, _wpa_supplicant_running,
                                                _sanitize_for_conf, _format_psk_value,
                                                _generate_wpa_conf, parse_event_ssid,
                                                parse_scan_results, flags_to_security_type,
@@ -322,6 +322,11 @@ class WifiManager:
     while not self._exit:
       if self._ctrl is None:
         # Silent retry: manager self-recovers if the daemon shows up later.
+        # Gate on pgrep for our config so we don't latch onto NM's wpa_supplicant
+        # if _ensure_wpa_supplicant intentionally left _ctrl unset.
+        if not (_wpa_supplicant_running(WPA_SUPPLICANT_CONF) or _wpa_supplicant_running(WPA_AP_CONF)):
+          time.sleep(2)
+          continue
         ctrl = try_attach_ctrl()
         if ctrl is None:
           time.sleep(2)
@@ -334,9 +339,11 @@ class WifiManager:
         monitor.open()
         if was_down:
           # Monitor reconnected; refresh the main ctrl socket in case the daemon restarted.
-          ctrl = try_attach_ctrl()
-          if ctrl is not None:
-            self._ctrl = ctrl
+          # Same ownership gate as above: never attach to a daemon we don't own.
+          if _wpa_supplicant_running(WPA_SUPPLICANT_CONF) or _wpa_supplicant_running(WPA_AP_CONF):
+            ctrl = try_attach_ctrl()
+            if ctrl is not None:
+              self._ctrl = ctrl
           was_down = False
         while not self._exit and self._monitor_epoch == epoch:
           event = monitor.recv(timeout=1.0)
