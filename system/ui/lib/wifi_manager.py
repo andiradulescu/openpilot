@@ -552,6 +552,11 @@ class WifiManager:
       if network is not None and network.security_type != SecurityType.OPEN:
         self._enqueue_callbacks(self._need_auth, current_state.ssid)
       self._clear_pending_connection(current_state.ssid)
+      # SELECT_NETWORK disabled every other saved network; re-enable so auto-fallback works.
+      try:
+        self._ctrl.request("ENABLE_NETWORK all")
+      except Exception:
+        cloudlog.exception("Failed to re-enable saved networks after stale CONNECTING")
       self._set_connecting(None)
       self._dhcp.stop()
       self._ipv4_address = ""

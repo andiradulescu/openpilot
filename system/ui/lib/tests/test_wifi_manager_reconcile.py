@@ -54,6 +54,16 @@ def test_reconcile_stale_connecting_adopts_actual_connected_ssid(wm, mocker):
   activated.assert_called_once()
 
 
+def test_reconcile_stale_connecting_to_disconnected_reenables_networks(wm, mocker):
+  wm._wifi_state = WifiState(ssid="systeam", status=ConnectStatus.CONNECTING)
+  wm._ctrl.request.return_value = "wpa_state=DISCONNECTED\n"
+
+  wm._reconcile_connecting_state()
+
+  requests = [call.args[0] for call in wm._ctrl.request.call_args_list]
+  assert "ENABLE_NETWORK all" in requests
+
+
 def test_reconcile_stale_secure_network_prompts_auth(wm, mocker):
   need_auth = mocker.MagicMock()
   wm._need_auth.append(need_auth)
