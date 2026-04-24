@@ -53,6 +53,7 @@ def _patch_sta_daemon_alive(mocker):
   """Fast-path setup: AP daemon absent, STA (our) daemon alive."""
   mocker.patch.object(wpa_ctrl_module, "_wpa_supplicant_running",
                       side_effect=lambda conf: conf == WPA_SUPPLICANT_CONF)
+  mocker.patch.object(wpa_ctrl_module.os.path, "exists", return_value=True)
 
 
 class TestAttachFirst:
@@ -236,6 +237,24 @@ class TestSpawnFallback:
     assert wm._ctrl is not ctrl
     ctrl.open.assert_not_called()
 
+  def test_returns_when_stop_requested_before_wlan0_appears(self, mocker):
+    """If shutdown is requested while wlan0 is still absent (cold boot), the
+    wait loop must bail without ever calling _unmanage_wlan0 / pkill / ip flush.
+    Otherwise a WifiManager.stop() during early boot can mutate networking
+    after teardown and race the next lifecycle."""
+    mocker.patch.object(wpa_ctrl_module.os.path, "exists", return_value=False)
+    mocker.patch.object(wpa_ctrl_module.time, "sleep")
+    mock_unmanage = mocker.patch.object(wpa_ctrl_module, "_unmanage_wlan0")
+    mock_pkill = mocker.patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant")
+    mock_run = mocker.patch.object(wpa_ctrl_module.subprocess, "run")
+
+    result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: True, "/tmp/ignored")
+
+    assert result is None
+    mock_unmanage.assert_not_called()
+    mock_pkill.assert_not_called()
+    mock_run.assert_not_called()
+
 
 class TestMultipleDaemonsPrevented:
   def test_attach_short_circuits_before_pkill_and_spawn(self, wm, mocker):
@@ -266,6 +285,7 @@ class TestAPModeAdoption:
     def pgrep_side_effect(conf):
       return conf == WPA_AP_CONF
     mocker.patch.object(wpa_ctrl_module, "_wpa_supplicant_running", side_effect=pgrep_side_effect)
+    mocker.patch.object(wpa_ctrl_module.os.path, "exists", return_value=True)
 
     ctrl = mocker.MagicMock()
     mocker.patch.object(wpa_ctrl_module, "WpaCtrl", return_value=ctrl)

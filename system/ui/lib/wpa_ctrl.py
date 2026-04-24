@@ -403,9 +403,11 @@ def ensure_wpa_supplicant(should_exit: Callable[[], bool], nm_connections_dir: s
   Returns the attached WpaCtrl, or None if exit was signaled or spawn timed out."""
   from openpilot.common.swaglog import cloudlog
   # Wait for wlan0 on cold boot; _unmanage_wlan0 below silently fails if it's missing.
-  while not should_exit():
-    if os.path.exists("/sys/class/net/wlan0"):
-      break
+  # If shutdown is requested while wlan0 is still absent, bail so stop() can't
+  # end up triggering _unmanage_wlan0 / pkill / ip flush after teardown.
+  while not os.path.exists("/sys/class/net/wlan0"):
+    if should_exit():
+      return None
     time.sleep(0.5)
 
   # AP adoption: hotspot from a prior UI run is still up; STA cleanup below would tear it down.
