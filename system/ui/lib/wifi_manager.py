@@ -833,9 +833,13 @@ class WifiManager:
 
   def set_tethering_password(self, password: str):
     def worker():
+      try:
+        with atomic_write(TETHERING_PASSWORD_FILE, overwrite=True) as f:
+          f.write(password)
+      except Exception:
+        cloudlog.exception("Failed to persist tethering password; runtime state unchanged")
+        return
       self._tethering_psk = password
-      with atomic_write(TETHERING_PASSWORD_FILE, overwrite=True) as f:
-        f.write(password)
       if self._tethering_active:
         # Re-assert the flag during restart so is_tethering_active() stays in sync
         # while the hotspot is still running; mirror set_tethering_active's rollback.
