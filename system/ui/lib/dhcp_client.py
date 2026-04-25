@@ -45,8 +45,10 @@ class DhcpClient:
           text=True, timeout=2,
         ).strip()
       except Exception:
+        # Transient: udhcpc may not have installed the route yet, or the iface is briefly down.
+        # Fall through to the throttled wait and retry until the deadline.
         cloudlog.exception("Failed to query wlan0 default route")
-        return
+        out = ""
 
       for line in out.splitlines():
         parts = line.split()
