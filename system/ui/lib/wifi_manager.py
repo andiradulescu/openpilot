@@ -334,18 +334,28 @@ class WifiManager:
         cb(snapshot)
 
   def _monitor_state(self):
+    # If pgrep keeps finding our daemon but try_attach_ctrl keeps returning None,
+    # the process is alive with a dead/missing ctrl socket. After this many
+    # consecutive attach failures, force a full respawn instead of looping forever.
+    ATTACH_FAILURES_BEFORE_RESPAWN = 3
+    attach_failures = 0
     while not self._exit:
       if self._ctrl is None:
         # No owned daemon? Spawn one so wifi doesn't stay dead after a failed
         # initial bringup or a crash. Otherwise just attach.
-        if _wpa_supplicant_running(WPA_SUPPLICANT_CONF) or _wpa_supplicant_running(WPA_AP_CONF):
+        daemon_alive = _wpa_supplicant_running(WPA_SUPPLICANT_CONF) or _wpa_supplicant_running(WPA_AP_CONF)
+        stale_daemon = daemon_alive and attach_failures >= ATTACH_FAILURES_BEFORE_RESPAWN
+        if daemon_alive and not stale_daemon:
           ctrl = try_attach_ctrl()
           if ctrl is None:
+            attach_failures += 1
             time.sleep(2)
             continue
           self._ctrl = ctrl
+          attach_failures = 0
         else:
           self._ensure_wpa_supplicant()
+          attach_failures = 0
           if self._ctrl is None:
             time.sleep(2)
             continue

@@ -356,6 +356,27 @@ class TestMonitorRespawn:
     assert wm._ctrl is None
     dead_ctrl.close.assert_called_once()
 
+  def test_monitor_respawns_after_repeated_attach_failures_with_pgrep_true(self, wm, mocker):
+    """P1 regression: pgrep can keep finding the daemon after its ctrl socket has
+    been deleted (NM-driven deinit, /var/run cleanup, etc.). try_attach_ctrl
+    returning None forever then wedges wifi recovery. The monitor must give up
+    on the stale process after a bounded number of attempts and call
+    _ensure_wpa_supplicant so the kill-and-respawn path runs."""
+    wm._ctrl = None
+    wm._exit = False
+    wm._monitor_epoch = 0
+    mocker.patch.object(wifi_manager_module, "_wpa_supplicant_running", return_value=True)
+    mocker.patch.object(wifi_manager_module, "try_attach_ctrl", return_value=None)
+    mocker.patch.object(wifi_manager_module.time, "sleep")
+
+    def stop_after_ensure():
+      wm._exit = True
+    ensure = mocker.patch.object(wm, "_ensure_wpa_supplicant", side_effect=stop_after_ensure)
+
+    wm._monitor_state()
+
+    ensure.assert_called()
+
 
 class TestMultipleDaemonsPrevented:
   def test_attach_short_circuits_before_pkill_and_spawn(self, wm, mocker):
