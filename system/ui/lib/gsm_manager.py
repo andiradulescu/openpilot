@@ -5,9 +5,15 @@ from jeepney.low_level import MessageType
 from jeepney.wrappers import Properties
 
 from openpilot.common.swaglog import cloudlog
-from openpilot.system.ui.lib.networkmanager import (NM, NM_PATH, NM_SETTINGS_PATH, NM_SETTINGS_IFACE,
-                                                    NM_CONNECTION_IFACE, NM_DEVICE_IFACE, NM_DEVICE_TYPE_MODEM)
 
+
+NM = "org.freedesktop.NetworkManager"
+NM_PATH = '/org/freedesktop/NetworkManager'
+NM_SETTINGS_PATH = '/org/freedesktop/NetworkManager/Settings'
+NM_SETTINGS_IFACE = NM + '.Settings'
+NM_CONNECTION_IFACE = NM + '.Settings.Connection'
+NM_DEVICE_IFACE = NM + '.Device'
+NM_DEVICE_TYPE_MODEM = 8
 
 # NM NMMetered values
 # https://networkmanager.dev/docs/api/latest/nm-dbus-types.html#NMMetered
