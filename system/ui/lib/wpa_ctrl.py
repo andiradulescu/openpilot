@@ -411,12 +411,18 @@ def ensure_wpa_supplicant(should_exit: Callable[[], bool], nm_connections_dir: s
     time.sleep(0.5)
 
   # AP adoption: hotspot from a prior UI run is still up; STA cleanup below would tear it down.
+  # Retry on transient ctrl unavailability (UI just restarted, AP socket briefly unbound)
+  # rather than falling through to STA cleanup, which would kill dnsmasq and flush wlan0.
   if _wpa_supplicant_running(WPA_AP_CONF):
-    if should_exit():
-      return None
-    ctrl = try_attach_ctrl()
-    if ctrl is not None:
-      return ctrl
+    for _ in range(3):
+      if should_exit():
+        return None
+      ctrl = try_attach_ctrl()
+      if ctrl is not None:
+        return ctrl
+      time.sleep(0.5)
+    cloudlog.warning("AP daemon detected but ctrl attach kept failing; refusing STA cleanup so hotspot survives")
+    return None
 
   # Our own STA daemon is still alive — attach without disturbing NM.
   if _wpa_supplicant_running(WPA_SUPPLICANT_CONF):

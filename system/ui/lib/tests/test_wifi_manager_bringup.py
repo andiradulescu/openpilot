@@ -397,6 +397,31 @@ class TestMultipleDaemonsPrevented:
 
 
 class TestAPModeAdoption:
+  def test_ap_attach_failure_aborts_instead_of_running_sta_cleanup(self, wm, mocker):
+    """P2 regression: when WPA_AP_CONF is detected but try_attach_ctrl() fails
+    transiently, falling through to STA cleanup kills dnsmasq / flushes wlan0
+    / unmanages NM, tearing down a live hotspot. After bounded retries the
+    function must abort (return None) so the caller's monitor retries the
+    whole bringup, leaving the hotspot intact."""
+    def pgrep_side_effect(conf):
+      return conf == WPA_AP_CONF
+    mocker.patch.object(wpa_ctrl_module, "_wpa_supplicant_running", side_effect=pgrep_side_effect)
+    mocker.patch.object(wpa_ctrl_module.os.path, "exists", return_value=True)
+    mocker.patch.object(wpa_ctrl_module.time, "sleep")
+    mocker.patch.object(wpa_ctrl_module, "try_attach_ctrl", return_value=None)
+    mock_unmanage = mocker.patch.object(wpa_ctrl_module, "_unmanage_wlan0")
+    mock_pkill = mocker.patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant")
+    mock_run = mocker.patch.object(wpa_ctrl_module.subprocess, "run")
+
+    result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False, "/tmp/ignored")
+
+    assert result is None
+    mock_unmanage.assert_not_called()
+    mock_pkill.assert_not_called()
+    spawn_cmds = [c for c in mock_run.call_args_list
+                  if len(c.args[0]) >= 2 and c.args[0][0] == "sudo" and c.args[0][1] == "wpa_supplicant"]
+    assert not spawn_cmds, f"AP-attach-failure must not trigger STA spawn: {spawn_cmds}"
+
   def test_ap_daemon_alive_adopts_before_sta_cleanup(self, wm, mocker):
     """P1 regression: if tethering was active before UI restart, the AP
     daemon (WPA_AP_CONF) still owns wlan0. ensure_wpa_supplicant must
