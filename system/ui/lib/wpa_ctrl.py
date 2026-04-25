@@ -318,7 +318,7 @@ def parse_event_ssid(event: str) -> str | None:
 
 
 def _wpa_supplicant_running(conf: str) -> bool:
-  """True iff a wpa_supplicant running the given config exists. Narrow pgrep so
+  """True if a wpa_supplicant running the given config exists. Narrow pgrep so
   a system-managed daemon on another config isn't conflated with ours."""
   pattern = rf"wpa_supplicant.*{re.escape(conf)}"
   return subprocess.run(["pgrep", "-f", pattern], capture_output=True).returncode == 0
