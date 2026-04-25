@@ -412,12 +412,16 @@ def ensure_wpa_supplicant(should_exit: Callable[[], bool], nm_connections_dir: s
 
   # AP adoption: hotspot from a prior UI run is still up; STA cleanup below would tear it down.
   if _wpa_supplicant_running(WPA_AP_CONF):
+    if should_exit():
+      return None
     ctrl = try_attach_ctrl()
     if ctrl is not None:
       return ctrl
 
   # Our own STA daemon is still alive — attach without disturbing NM.
   if _wpa_supplicant_running(WPA_SUPPLICANT_CONF):
+    if should_exit():
+      return None
     ctrl = try_attach_ctrl()
     if ctrl is not None:
       try:
