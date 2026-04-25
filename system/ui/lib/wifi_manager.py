@@ -934,6 +934,7 @@ class WifiManager:
     self.stop()
 
   def update_gsm_settings(self, roaming: bool, apn: str, metered: bool):
+    """Update GSM settings for cellular connection"""
     def worker():
       self._gsm.update_gsm_settings(roaming, apn, metered)
     threading.Thread(target=worker, daemon=True).start()
