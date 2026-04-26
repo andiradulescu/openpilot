@@ -1,0 +1,82 @@
+INFO: connecting to panda 18000d000651333334373931
+
+=== EPS identification ===
+   Spare part #                     5Q0909143P
+   HW part #                        5Q0909143E
+   SW version                       2051
+   System name                      MQB_PP_APA
+   ODX file                         EV_SteerAssisVWBSMQBA
+   ECU serial                       0002324690
+  [0xf180] NRC: READ_DATA_BY_IDENTIFIER - request out of range  (Boot SW ID)
+  [0xf181] NRC: READ_DATA_BY_IDENTIFIER - request out of range  (App SW ID)
+   App data ID                      0527T6070405
+
+=== VW Coding Value 0x0600 (7 bytes, decoded) ===
+   Raw: 01000011004000
+   byte 0 bit 0+1 = 1  ─ Counter steer support (DSR)                → active
+   byte 1 bit 0+1 = 0  ─ Parallel Parking Assistance (PLA)          → not active
+   byte 2 bit 0+2 = 0  ─ Pull compensation                          → not activated
+   byte 3 bit 0+1 = 1  ─ Lane Assist (HCA)                          → active
+   byte 3 bit 4+1 = 1  ─ Electronic Stability Program               → active
+   byte 4 bit 0+1 = 0  ─ Steering angle sensor                      → internal
+   byte 5 bit 0+1 = 0  ─ Hybrid propulsion                          → not present
+   byte 5 bit 4+1 = 0  ─ Start/stop function                        → not active
+   byte 5 bit 6+1 = 1  ─ Engine start through power steering        → active
+   byte 6 bit 0+1 = 0  ─ Driving profile selection (charisma)       → not active
+   byte 6 bit 4+1 = 0  ─ Yaw rate-dependent mid-shift               → not active
+
+=== Long coding 0x0407 / Subsystem coding 0x040F ===
+   0x0407 Long coding (10 B):  00010001000100020002
+   0x040F Subsystem coding (10 B):  000103e703e703e703e7
+
+=== Adaptations (current values — read-only here) ===
+   0x0502 LKU_Derating (★ openpilot torque cap)            = 0x00  → 100% (full LKU power)
+   0x1920 Steering_support_Characteristic_Line             = 0x00  → Driving profile selection button
+   0x0501 Calibration_protocol_XCP                         = 0x00  → not active
+   0x0930 Steering_assist_without_engine_running           = 0x00  → not active
+   0x0902 Activation of Development Messages               = 0x00  → not active
+   0x0513 Programming_without_restbus_simulation           = 0x00  → not active
+   0x1921 Software_Upper_Stop                              = 0x01  → active
+   0x2bca Straight_running_stability                       = 0x01  → active
+   0x1922 Driving_Mode_Changeover                          = 0x00  → Incremental, controlled over time (smooth ramp)
+
+=== Live data (MWB) — raw bytes (no A2L scaling applied) ===
+   0x0288 Status terminal 15                             01  (=1, signed=1)
+   0x0286 Voltage terminal 30                            316e  (first 2B as u16=12654, i16=12654)
+   0x028d Control module temperature                     0e44  (first 2B as u16=3652, i16=3652)
+   0x0295 Output stage temperature                       0cc3  (first 2B as u16=3267, i16=3267)
+   0x1800 Stator temperature                             0cee  (first 2B as u16=3310, i16=3310)
+   0x1801 Rotor temperature                              0c88  (first 2B as u16=3208, i16=3208)
+   0x2b16 Vehicle speed                                  0000  (first 2B as u16=0, i16=0)
+   0xf40c Engine RPM                                     0000  (first 2B as u16=0, i16=0)
+   0x1401 Wheel speed                                    0000000000000000  (first 2B as u16=0, i16=0)
+   0x1505 Steering torque sensor (actual)                ffec  (first 2B as u16=65516, i16=-20)
+   0x1807 Steering torque sensor signal 1                7f3b0000  (first 2B as u16=32571, i16=32571)
+   0x1808 Steering torque sensor signal 2                80970000  (first 2B as u16=32919, i16=-32617)
+   0x1805 Steering moment                                ffe80000  (first 2B as u16=65512, i16=-24)
+   0x1812 Steering angle (internal sensor)               ffceec5900  (first 2B as u16=65486, i16=-50)
+   0x1815 Steering angle angular rate                    000800  (first 2B as u16=8, i16=8)
+  [0x1480] NRC: READ_DATA_BY_IDENTIFIER - sub-function not supported in active session  (Steering angle plausibility)
+   0x1602 Force_target_steering_support_LKU (HCA target) ffae  (first 2B as u16=65454, i16=-82)
+   0x180b Steering_Support_Engine_Commanded_Torque       0000  (first 2B as u16=0, i16=0)
+   0x180c Steering_Support_Engine_Commanded_Power        0000  (first 2B as u16=0, i16=0)
+   0x180d Steering_Support_Engine_PWM_Signal             000000000000  (first 2B as u16=0, i16=0)
+   0x180e Steering_Support_Engine_Current                0000  (first 2B as u16=0, i16=0)
+   0x180f Steering_Support_Electromotive_Force           0000  (first 2B as u16=0, i16=0)
+   0x2bcb Steering_support (total assist)                04000000  (first 2B as u16=1024, i16=1024)
+   0x1824 Driver_Steering_Recommendation (DSR)           010102000003  (first 2B as u16=257, i16=257)
+   0x1825 Directional_Stability_Correction               00ffbbffbb00000001  (first 2B as u16=255, i16=255)
+   0x1826 Lane_Departure_Warning                         0101000000  (first 2B as u16=257, i16=257)
+   0x1827 Parallel_Parking_Assistant                     00000000000000  (first 2B as u16=0, i16=0)
+   0x182e Steering_pull_compensation                     0000fa1500  (first 2B as u16=0, i16=0)
+   0x182a State_Of_System                                040302010b020100  (first 2B as u16=1027, i16=1027)
+   0x182b State_Of_Hybrid                                00  (=0, signed=0)
+  [0x1124] NRC: READ_DATA_BY_IDENTIFIER - sub-function not supported in active session  (Variant)
+   0x0102 Basic Settings Status                          00  (=0, signed=0)
+   0x02bd Standard Freeze Frame                          0303b6231a041a10281e  (first 2B as u16=771, i16=771)
+
+=== Stored DTCs (ReadDTCInformation, status mask=ALL) ===
+   status availability mask: 0x19
+   P000000  status=0x10
+
+Done. No data was written.
