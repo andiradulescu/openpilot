@@ -56,6 +56,11 @@ MQB_EPS_RX = MQB_EPS_TX + RX_OFFSET   # 0x77C
 # Vendor-specific DIDs not in the standard ISO 14229 enum
 # ----------------------------------------------------------------------------
 class VW_DID(IntEnum):
+    # VW-specific identification (not in standard ISO 14229 DID enum)
+    FAZIT_IDENTIFICATION = 0xF17C   # ASCII, e.g. "TT1-BUD17.01.1800033797"
+    PARAM_SET_PART_NUMBER = 0xF1A0  # ASCII, e.g. "V03935255DC"
+    PARAM_SET_VERSION = 0xF1A1      # ASCII, e.g. "0001"
+
     # Coding values
     LONG_CODING = 0x0407            # 10 bytes, custom-handler
     SUBSYSTEM_CODING = 0x040F       # 10 bytes, custom-handler
@@ -292,6 +297,10 @@ def _section_identification(uds: UdsClient) -> None:
         (DATA_IDENTIFIER_TYPE.BOOT_SOFTWARE_IDENTIFICATION,                  "Boot SW ID"),
         (DATA_IDENTIFIER_TYPE.APPLICATION_SOFTWARE_IDENTIFICATION,           "App SW ID"),
         (DATA_IDENTIFIER_TYPE.APPLICATION_DATA_IDENTIFICATION,               "App data ID"),
+        # VW-specific extension DIDs (Car Scanner / VCDS show these)
+        (VW_DID.FAZIT_IDENTIFICATION,                                        "FAZIT ID"),
+        (VW_DID.PARAM_SET_PART_NUMBER,                                       "Parameter set part #"),
+        (VW_DID.PARAM_SET_VERSION,                                           "Parameter set version"),
     ]:
         _print_str_did(uds, did, label)
 
