@@ -84,7 +84,11 @@ class ACCESS_TYPE_LEVEL_2(IntEnum):
 MQB_EPS_TX = 0x712
 MQB_EPS_RX = 0x77C
 SECURITY_ACCESS_CONSTANT = 28183
-EPS_BUS = 1  # F-CAN behind comma3 panda — matches existing scripts
+DEFAULT_EPS_BUS = 1  # comma3 enumeration of the F-CAN segment behind J533;
+                     # validated empirically via LKU_Derating + dump_zdc.
+                     # On a standalone OBD-II panda the same physical segment
+                     # is bus 0 (per icanhack's pqflasher).
+EPS_BUS = DEFAULT_EPS_BUS  # overridden by --bus in main()
 
 
 # ─── XCP-side candidate list ──────────────────────────────────────────────────
@@ -348,13 +352,20 @@ def main():
     p.add_argument("--skip-disable", action="store_true",
                    help="don't write DID 0x0501 = 0 on exit "
                         "(useful for chaining into validate/dump script)")
+    p.add_argument("--bus", type=int, default=DEFAULT_EPS_BUS, choices=(0, 1, 2),
+                   help=f"CAN bus the EPS is on (default {DEFAULT_EPS_BUS} — "
+                        "comma3 + J533 harness on MQB; try 0 or 2 if no XCP reply)")
     args = p.parse_args()
     if args.debug:
         carlog.setLevel("DEBUG")
 
+    global EPS_BUS
+    EPS_BUS = args.bus
+
     panda = Panda()
     panda.set_safety_mode(CarParams.SafetyModel.elm327)
     uds = UdsClient(panda, MQB_EPS_TX, MQB_EPS_RX, EPS_BUS, timeout=0.2)
+    print(f"Using EPS bus {EPS_BUS}")
 
     print("Started:", time.strftime("%Y-%m-%dT%H:%M:%S"))
     print(f"INFO: connecting to panda {panda.get_serial()}")

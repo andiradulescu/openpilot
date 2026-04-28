@@ -41,7 +41,12 @@ from panda import Panda
 
 MQB_EPS_TX = 0x712
 MQB_EPS_RX = 0x77C
-EPS_BUS = 1
+DEFAULT_EPS_BUS = 1  # comma3 enumeration of the F-CAN segment behind J533;
+                     # validated empirically via LKU_Derating + dump_zdc.
+                     # On a standalone OBD-II panda this same physical segment
+                     # is bus 0 (per icanhack's pqflasher) — bus numbering
+                     # differs between standalone panda and comma3-internal.
+EPS_BUS = DEFAULT_EPS_BUS  # overridden by --bus in main()
 
 DEV_SESSION = 0x4F  # the headline target — "Development Session" per BV pool
 
@@ -370,13 +375,20 @@ def main():
                    help="--scan range start (default 0x01)")
     p.add_argument("--hi", type=lambda s: int(s, 0), default=0x7F,
                    help="--scan range end inclusive (default 0x7F)")
+    p.add_argument("--bus", type=int, default=DEFAULT_EPS_BUS, choices=(0, 1, 2),
+                   help=f"CAN bus the EPS is on (default {DEFAULT_EPS_BUS} — "
+                        "comma3 + J533 harness on MQB; try 0 or 2 if no UDS reply)")
     args = p.parse_args()
     if args.debug:
         carlog.setLevel("DEBUG")
 
+    global EPS_BUS
+    EPS_BUS = args.bus
+
     panda = Panda()
     panda.set_safety_mode(CarParams.SafetyModel.elm327)
     uds = UdsClient(panda, MQB_EPS_TX, MQB_EPS_RX, EPS_BUS, timeout=0.2)
+    print(f"Using EPS bus {EPS_BUS}")
 
     print("Started:", time.strftime("%Y-%m-%dT%H:%M:%S"))
     print(f"INFO: connecting to panda {panda.get_serial()}")
