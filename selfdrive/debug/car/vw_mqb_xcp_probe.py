@@ -22,6 +22,11 @@ STRICTLY READ-PROBE: this script issues only CONNECT, GET_STATUS, SHORT_UPLOAD,
                     DISCONNECT on the XCP side. No XCP DOWNLOAD, no XCP PROGRAM.
                     On the UDS side: only the documented enable/disable writes.
 
+XCP layer is delegated to opendbc's XcpClient (`opendbc.car.xcp.XcpClient`),
+which handles CONNECT/UPLOAD/SET_MTA/etc with proper response decoding,
+correct ASAM error-code mapping (0x25 = "Seed & Key required"), and
+slave_block_mode / max_cto / max_dto negotiation on CONNECT.
+
 Usage:
     cd ~/Projects/openpilot
     PYTHONPATH=opendbc_repo:panda python3 \\
@@ -29,6 +34,9 @@ Usage:
 
     # wider scan if the default candidate list misses:
     python3 vw_mqb_xcp_probe.py --scan-range 0x600 0x7FF
+
+    # one pair only (no collateral on other modules):
+    python3 vw_mqb_xcp_probe.py --tx-rx 0x780 0x788
 
 Vehicle requirements:
   * Ignition ON, engine OFF preferred
@@ -52,6 +60,12 @@ from opendbc.car.uds import (
     DATA_IDENTIFIER_TYPE,
     ACCESS_TYPE,
 )
+from opendbc.car.xcp import (
+    XcpClient,
+    ERROR_CODES,
+    CommandTimeoutError,
+    CommandResponseError,
+)
 from opendbc.car.structs import CarParams
 from panda import Panda
 
@@ -73,14 +87,7 @@ SECURITY_ACCESS_CONSTANT = 28183
 EPS_BUS = 1  # F-CAN behind comma3 panda — matches existing scripts
 
 
-# ─── XCP-side constants ───────────────────────────────────────────────────────
-
-XCP_PID_CONNECT      = 0xFF
-XCP_PID_DISCONNECT   = 0xFE
-XCP_PID_GET_STATUS   = 0xFD
-XCP_PID_SHORT_UPLOAD = 0xF4
-XCP_RESP_OK          = 0xFF  # positive response leading byte
-XCP_RESP_ERR         = 0xFE  # error/event leading byte
+# ─── XCP-side candidate list ──────────────────────────────────────────────────
 
 # Candidate XCP CAN ID pairs to probe (from XCP.md + agent research).
 # Ordered by prior likelihood for VAG / supplier conventions.
@@ -159,89 +166,54 @@ def disable_xcp(uds: UdsClient) -> None:
         print("  ⚠ MANUAL CLEANUP NEEDED: write DID 0x0501 = 0 with another tool")
 
 
-# ─── XCP-on-CAN raw frame helpers (no pyxcp yet — IDs are unknown) ────────────
+# ─── XCP probe operations (via opendbc XcpClient) ─────────────────────────────
 
-def xcp_send(panda: Panda, tx_id: int, payload: bytes) -> None:
-    """Pad payload to 8 bytes per CAN, send on EPS_BUS."""
-    frame = payload + b"\x00" * (8 - len(payload))
-    panda.can_send(tx_id, frame, EPS_BUS)
+def try_connect(panda: Panda, tx: int, rx: int, timeout: float, debug: bool):
+    """Return (client, info) on success, (None, fail_dict) on failure.
 
-
-def xcp_recv(panda: Panda, rx_id: int, timeout: float = 0.3) -> bytes | None:
-    """Wait up to `timeout` s for a frame on rx_id+EPS_BUS. Return data or None."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        for addr, _ts, data, src in panda.can_recv():
-            if addr == rx_id and src == EPS_BUS and len(data) >= 1:
-                return bytes(data)
-        time.sleep(0.005)
-    return None
-
-
-def xcp_drain(panda: Panda) -> None:
-    """Drain any pending RX so a stale frame doesn't masquerade as a response."""
-    deadline = time.time() + 0.05
-    while time.time() < deadline:
-        if not panda.can_recv():
-            break
-
-
-def decode_connect_response(resp: bytes) -> dict:
-    """Per ASAM XCP §3 CONNECT positive response.
-
-    Layout: FF RR CB MC MD0 MD1 PV TV
+    On success, the slave is in the connected state — caller MUST disconnect()
+    or keep using the client.
     """
-    if len(resp) < 8 or resp[0] != XCP_RESP_OK:
-        return {"raw": resp.hex(), "valid": False}
-    rr = resp[1]
-    cb = resp[2]
-    return {
-        "raw": resp.hex(),
-        "valid": True,
-        "resources": {
-            "CAL_PAG": bool(rr & 0x01),
-            "DAQ":     bool(rr & 0x04),
-            "STIM":    bool(rr & 0x08),
-            "PGM":     bool(rr & 0x10),
-        },
-        "byte_order_msb_first": bool(cb & 0x01),
-        "address_granularity": (cb >> 1) & 0x03,  # 0=BYTE, 1=WORD, 2=DWORD
-        "slave_block_mode":   bool(cb & 0x40),
-        "optional_comm_mode": bool(cb & 0x80),
-        "max_cto": resp[3],
-        "max_dto": struct.unpack(">H", resp[4:6])[0],  # default BE for CONNECT
-        "protocol_layer_version":  resp[6],
-        "transport_layer_version": resp[7],
-    }
+    client = XcpClient(panda, tx, rx, bus=EPS_BUS, timeout=timeout, debug=debug)
+    try:
+        info = client.connect()
+        return client, info
+    except CommandTimeoutError:
+        return None, {"kind": "timeout"}
+    except CommandResponseError as e:
+        return None, {"kind": "rejected", "code": e.return_code, "message": e.message}
+    except AssertionError as e:
+        return None, {"kind": "malformed", "message": str(e)}
 
 
-# ─── XCP probe operations ─────────────────────────────────────────────────────
-
-def probe_connect(panda: Panda, tx: int, rx: int, timeout: float = 0.3) -> bytes | None:
-    """Send CONNECT (mode=0); return response bytes or None."""
-    xcp_drain(panda)
-    xcp_send(panda, tx, bytes([XCP_PID_CONNECT, 0x00]))
-    return xcp_recv(panda, rx, timeout)
+def safe_disconnect(client: XcpClient) -> None:
+    try:
+        client.disconnect()
+    except Exception:
+        pass
 
 
-def try_short_upload(panda: Panda, tx: int, rx: int, addr: int, length: int) -> bytes | None:
-    """SHORT_UPLOAD without prior GET_SEED/UNLOCK — tests no-auth hypothesis.
+# ─── Reporting ────────────────────────────────────────────────────────────────
 
-    Frame: F4 LL 00 EE  AA AA AA AA   (LL=length, EE=addr-extension=0,
-                                       AA=address big-endian)
-    """
-    payload = struct.pack(">BBBB I", XCP_PID_SHORT_UPLOAD, length, 0x00, 0x00, addr)
-    xcp_drain(panda)
-    panda.can_send(tx, payload, EPS_BUS)
-    return xcp_recv(panda, rx, timeout=0.3)
+def fmt_connect_info(info: dict) -> list[str]:
+    resources = ", ".join(
+        name for name, on in [
+            ("CAL_PAG", info["cal_support"]),
+            ("DAQ", info["daq_support"]),
+            ("STIM", info["stim_support"]),
+            ("PGM", info["pgm_support"]),
+        ] if on
+    ) or "(none)"
+    byte_order = "MSB-first (BE)" if info["byte_order"] == ">" else "LSB-first (LE)"
+    return [
+        f"resources:           {resources}",
+        f"byte order:          {byte_order}",
+        f"address granularity: {info['address_granularity']} byte(s)",
+        f"slave block mode:    {info['slave_block_mode']}",
+        f"MAX_CTO / MAX_DTO:   {info['max_cto']} / {info['max_dto']} bytes",
+        f"protocol/transport:  v{info['protocol_version']} / v{info['transport_version']}",
+    ]
 
-
-def try_disconnect(panda: Panda, tx: int, rx: int) -> None:
-    xcp_send(panda, tx, bytes([XCP_PID_DISCONNECT]))
-    xcp_recv(panda, rx, timeout=0.2)  # ack but ignore
-
-
-# ─── Main flow ────────────────────────────────────────────────────────────────
 
 def build_candidate_list(args) -> list[tuple[int, int]]:
     if args.scan_range:
@@ -253,77 +225,107 @@ def build_candidate_list(args) -> list[tuple[int, int]]:
     return DEFAULT_CANDIDATES
 
 
-def run_probe(panda: Panda, candidates: list[tuple[int, int]]) -> list[dict]:
-    found = []
+def run_probe(panda: Panda, candidates: list[tuple[int, int]],
+              timeout: float, debug: bool) -> list[dict]:
+    """For each candidate pair: try CONNECT, record outcome, disconnect cleanly.
+
+    Returns a list of hit records — one per candidate, with the slave info
+    if CONNECT succeeded.
+    """
+    hits = []
     for tx, rx in candidates:
         print(f"  TX 0x{tx:03X} → RX 0x{rx:03X}: ", end="", flush=True)
-        resp = probe_connect(panda, tx, rx)
-        if resp is None:
-            print("no response")
+        client, result = try_connect(panda, tx, rx, timeout, debug)
+
+        if client is None:
+            kind = result["kind"]
+            if kind == "timeout":
+                print("no response")
+            elif kind == "rejected":
+                code = result["code"]
+                desc = ERROR_CODES.get(code, "unknown error")
+                print(f"slave rejected CONNECT — 0x{code:02X} {desc}")
+                hits.append({"tx": tx, "rx": rx, "rejected": result})
+            else:
+                print(f"malformed response: {result['message']}")
             continue
-        if resp[0] == XCP_RESP_OK:
-            decoded = decode_connect_response(resp)
-            print(f"POSITIVE  {resp.hex()}")
-            found.append({"tx": tx, "rx": rx, "connect_resp": decoded})
-        elif resp[0] == XCP_RESP_ERR:
-            print(f"ERROR     {resp.hex()}  (slave responded but rejected CONNECT)")
-            found.append({"tx": tx, "rx": rx, "error_resp": resp.hex()})
-        else:
-            print(f"unknown   {resp.hex()}")
-    return found
+
+        print("POSITIVE")
+        for line in fmt_connect_info(result):
+            print(f"    {line}")
+        hits.append({"tx": tx, "rx": rx, "info": result})
+        # Don't keep the connection open across candidates — a single CONNECT
+        # is enough to characterize the slave; we'll re-CONNECT per pair if a
+        # follow-up test is needed.
+        safe_disconnect(client)
+
+    return hits
 
 
-def report(found: list[dict]) -> None:
-    print("\n" + "=" * 70)
-    print(f"XCP probe summary: {len(found)} responsive pair(s)")
-    print("=" * 70)
-    for hit in found:
-        tx, rx = hit["tx"], hit["rx"]
-        print(f"\n  TX 0x{tx:03X} → RX 0x{rx:03X}")
-        if "connect_resp" in hit and hit["connect_resp"]["valid"]:
-            d = hit["connect_resp"]
-            res = ", ".join(k for k, v in d["resources"].items() if v) or "(none)"
-            print(f"    resources:           {res}")
-            print(f"    byte order:          {'MSB-first (BE)' if d['byte_order_msb_first'] else 'LSB-first (LE)'}")
-            print(f"    addr granularity:    {['BYTE','WORD','DWORD'][d['address_granularity']]}")
-            print(f"    MAX_CTO / MAX_DTO:   {d['max_cto']} / {d['max_dto']} bytes")
-            print(f"    protocol/transport:  v{d['protocol_layer_version']} / v{d['transport_layer_version']}")
-        elif "error_resp" in hit:
-            print(f"    error response:      {hit['error_resp']}")
+def test_noauth_upload(panda: Panda, tx: int, rx: int,
+                       timeout: float, debug: bool) -> None:
+    """Re-CONNECT on the chosen pair, then SHORT_UPLOAD without GET_SEED/UNLOCK.
 
-
-def test_noauth_upload(panda: Panda, tx: int, rx: int) -> None:
-    """Try SHORT_UPLOAD with no GET_SEED/UNLOCK first."""
+    Tests the "UDS gate is the only auth" hypothesis end-to-end.
+    """
     print(f"\n──── No-auth SHORT_UPLOAD test on TX 0x{tx:03X} → RX 0x{rx:03X} ────")
     print(f"  reading {NOAUTH_TEST_LEN} B at 0x{NOAUTH_TEST_ADDR:08X} (HCA_scaled_vest)")
-    resp = try_short_upload(panda, tx, rx, NOAUTH_TEST_ADDR, NOAUTH_TEST_LEN)
-    if resp is None:
-        print("  ✗ no response")
-    elif resp[0] == XCP_RESP_OK:
-        data = resp[1:1 + NOAUTH_TEST_LEN]
+
+    client, result = try_connect(panda, tx, rx, timeout, debug)
+    if client is None:
+        kind = result["kind"]
+        if kind == "rejected":
+            code = result["code"]
+            desc = ERROR_CODES.get(code, "unknown error")
+            print(f"  ✗ couldn't reconnect for upload test: 0x{code:02X} {desc}")
+        else:
+            print(f"  ✗ couldn't reconnect for upload test: {kind}")
+        return
+
+    try:
+        data = client.short_upload(NOAUTH_TEST_LEN, 0, NOAUTH_TEST_ADDR)
         as_int = struct.unpack(">h", data)[0] if NOAUTH_TEST_LEN == 2 else None
         print(f"  ✓ POSITIVE: data = {data.hex()}  (int16 BE = {as_int})")
         print("  ✦ HYPOTHESIS CONFIRMED: XCP requires NO seed/key after UDS-gate enable")
-        print("    ↳ next: write vw_mqb_xcp_validate.py to read all known addrs")
-    elif resp[0] == XCP_RESP_ERR:
-        err_code = resp[1] if len(resp) > 1 else None
-        # Per ASAM XCP §1.1.4 ERR_ codes; 0x21 = ERR_ACCESS_LOCKED
-        err_name = {
-            0x10: "ERR_CMD_BUSY",
-            0x11: "ERR_DAQ_ACTIVE",
-            0x12: "ERR_PGM_ACTIVE",
-            0x20: "ERR_CMD_SYNCH",
-            0x21: "ERR_ACCESS_LOCKED",
-            0x22: "ERR_ACCESS_DENIED",
-            0x23: "ERR_OUT_OF_RANGE",
-            0x24: "ERR_WRITE_PROTECTED",
-            0x30: "ERR_RESOURCE_TEMPORARY_NOT_ACCESSIBLE",
-        }.get(err_code, f"0x{err_code:02X}")
-        print(f"  ✗ NEGATIVE: {err_name}  (raw {resp.hex()})")
-        if err_code == 0x21:
-            print("    ↳ resource is locked — GET_SEED/UNLOCK required")
-            print("    ↳ next step: vw_mqb_xcp_validate.py with seed/key (try seed+28183 first)")
+        print("    ↳ next: write vw_mqb_xcp_dump.py to bulk-read SRAM regions")
+    except CommandResponseError as e:
+        code = e.return_code
+        desc = ERROR_CODES.get(code, "unknown error")
+        print(f"  ✗ NEGATIVE: 0x{code:02X} {desc}")
+        if code == 0x25:  # Access denied, Seed & Key required
+            print("    ↳ resource requires GET_SEED/UNLOCK")
+            print("    ↳ next step: find XCP seed/key algorithm via firmware static RE")
+            print("    ↳ try seed+28183 first (UDS L2 algorithm) — sometimes shared")
+        elif code == 0x24:  # Memory location not accessible
+            print(f"    ↳ address {NOAUTH_TEST_ADDR:#x} not reachable in current state")
+            print("    ↳ try a different address before concluding access is locked")
+        elif code == 0x23:  # Memory location write protected (irrelevant for UPLOAD, but log)
+            print("    ↳ unexpected — 0x23 is for writes; protocol misuse on slave side?")
+    except CommandTimeoutError:
+        print("  ✗ no response to SHORT_UPLOAD (slave hung after CONNECT?)")
+    finally:
+        safe_disconnect(client)
 
+
+def report(hits: list[dict]) -> None:
+    print("\n" + "=" * 70)
+    positive = [h for h in hits if "info" in h]
+    print(f"XCP probe summary: {len(positive)} positive responder(s) / "
+          f"{len(hits)} that talked at all")
+    print("=" * 70)
+    for hit in hits:
+        tx, rx = hit["tx"], hit["rx"]
+        if "info" in hit:
+            print(f"\n  TX 0x{tx:03X} → RX 0x{rx:03X}  POSITIVE")
+            for line in fmt_connect_info(hit["info"]):
+                print(f"    {line}")
+        elif "rejected" in hit:
+            r = hit["rejected"]
+            desc = ERROR_CODES.get(r["code"], "unknown")
+            print(f"\n  TX 0x{tx:03X} → RX 0x{rx:03X}  rejected — 0x{r['code']:02X} {desc}")
+
+
+# ─── Main flow ────────────────────────────────────────────────────────────────
 
 def main():
     p = argparse.ArgumentParser(
@@ -331,7 +333,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="See module docstring for full vehicle/safety requirements.",
     )
-    p.add_argument("--debug", action="store_true", help="enable ISO-TP/UDS debug output")
+    p.add_argument("--debug", action="store_true", help="enable ISO-TP/UDS/XCP debug output")
     p.add_argument("--scan-range", nargs=2, type=lambda s: int(s, 0),
                    metavar=("LO", "HI"),
                    help="brute scan TX in [LO, HI] step 0x10, RX = TX+8 "
@@ -339,18 +341,20 @@ def main():
     p.add_argument("--tx-rx", nargs=2, type=lambda s: int(s, 0),
                    metavar=("TX", "RX"),
                    help="probe just one pair, e.g. --tx-rx 0x780 0x788")
+    p.add_argument("--timeout", type=float, default=0.3,
+                   help="per-candidate XCP CONNECT timeout in seconds (default 0.3)")
     p.add_argument("--skip-enable", action="store_true",
                    help="skip the UDS enable step (assume DID 0x0501 already 1)")
     p.add_argument("--skip-disable", action="store_true",
                    help="don't write DID 0x0501 = 0 on exit "
-                        "(useful for chaining into validate script)")
+                        "(useful for chaining into validate/dump script)")
     args = p.parse_args()
     if args.debug:
         carlog.setLevel("DEBUG")
 
     panda = Panda()
     panda.set_safety_mode(CarParams.SafetyModel.elm327)
-    uds = UdsClient(panda, MQB_EPS_TX, MQB_EPS_RX, 1, timeout=0.2)
+    uds = UdsClient(panda, MQB_EPS_TX, MQB_EPS_RX, EPS_BUS, timeout=0.2)
 
     print("Started:", time.strftime("%Y-%m-%dT%H:%M:%S"))
     print(f"INFO: connecting to panda {panda.get_serial()}")
@@ -376,20 +380,15 @@ def main():
 
         candidates = build_candidate_list(args)
         print(f"\n──── Probing {len(candidates)} candidate XCP CAN ID pair(s) ────")
-        found = run_probe(panda, candidates)
+        hits = run_probe(panda, candidates, timeout=args.timeout, debug=args.debug)
 
-        report(found)
+        report(hits)
 
-        # If exactly one positive responder, follow up with no-auth SHORT_UPLOAD test.
-        positive = [h for h in found if "connect_resp" in h and h["connect_resp"]["valid"]]
+        # If exactly one positive, follow up with a no-auth SHORT_UPLOAD test.
+        positive = [h for h in hits if "info" in h]
         if positive:
-            hit = positive[0]
-            try_disconnect(panda, hit["tx"], hit["rx"])  # clean state before re-CONNECT
-            time.sleep(0.1)
-            # Re-CONNECT before the upload (DISCONNECT closed the session)
-            probe_connect(panda, hit["tx"], hit["rx"])
-            test_noauth_upload(panda, hit["tx"], hit["rx"])
-            try_disconnect(panda, hit["tx"], hit["rx"])
+            test_noauth_upload(panda, positive[0]["tx"], positive[0]["rx"],
+                               timeout=args.timeout, debug=args.debug)
 
     finally:
         if enabled and not args.skip_disable:
