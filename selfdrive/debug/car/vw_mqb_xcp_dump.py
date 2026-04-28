@@ -79,10 +79,12 @@ XCP_RX = 0x6B8
 # Empirically: 0.3s misses it, 2.0s catches it. Use 1.5s for safety.
 XCP_WARMUP_SECONDS = 1.5
 
-# UPLOAD `size` parameter is a single byte (max 255). Keep it under that, and
-# leave a little headroom. With slave_block_mode=True the slave will spread
-# this across multiple CTOs; we still wait for them all in upload().
-UPLOAD_CHUNK_BYTES = 250
+# SHORT_UPLOAD reads max 6 data bytes per call (single-CAN-frame response).
+# Slower than block-mode UPLOAD but empirically validated on this slave —
+# UPLOAD(N) timed out on the first car run despite the slave advertising
+# slave_block_mode=True and MAX_DTO=30738. SHORT_UPLOAD always works because
+# it returns in a single CTO.
+SHORT_UPLOAD_CHUNK_BYTES = 6
 
 
 # ─── Targets ──────────────────────────────────────────────────────────────────
@@ -153,10 +155,11 @@ def dump_region(client: XcpClient, addr: int, size: int, out_path: Path,
                 progress_every: int = 4096) -> None:
     """SET_MTA(addr) + repeated UPLOAD(chunk) → out_path.
 
-    XCP UPLOAD auto-advances MTA, so a single SET_MTA per region is enough.
+    Uses SHORT_UPLOAD (6 bytes per call) — the path validated empirically on
+    this slave. UPLOAD with MTA was tried first but timed out (slave advertises
+    MAX_DTO=30738 but doesn't actually deliver multi-frame UPLOAD responses).
     """
     print(f"  → dumping {size} B from 0x{addr:08X} to {out_path}")
-    client.set_mta(addr)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     bytes_done = 0
@@ -164,11 +167,11 @@ def dump_region(client: XcpClient, addr: int, size: int, out_path: Path,
     started = time.monotonic()
     with out_path.open("wb") as f:
         while bytes_done < size:
-            chunk = min(UPLOAD_CHUNK_BYTES, size - bytes_done)
-            data = client.upload(chunk)
+            chunk = min(SHORT_UPLOAD_CHUNK_BYTES, size - bytes_done)
+            data = client.short_upload(chunk, 0, addr + bytes_done)
             if len(data) != chunk:
                 raise RuntimeError(
-                    f"short UPLOAD at offset 0x{bytes_done:X}: asked {chunk} got {len(data)}"
+                    f"short_upload at offset 0x{bytes_done:X}: asked {chunk} got {len(data)}"
                 )
             f.write(data)
             bytes_done += chunk
