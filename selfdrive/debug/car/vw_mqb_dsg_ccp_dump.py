@@ -108,6 +108,7 @@ from opendbc.car.ccp import (
     CommandResponseError,
     CommandTimeoutError,
 )
+from opendbc.car.structs import CarParams
 
 log = logging.getLogger(__name__)
 
@@ -254,7 +255,7 @@ def main(argv=None):
     )
 
     panda = Panda()
-    panda.set_safety_mode(Panda.SAFETY_ALLOUTPUT)
+    panda.set_safety_mode(CarParams.SafetyModel.elm327)
     panda.can_clear(0xFFFF)
 
     pre_probe_frames = None
