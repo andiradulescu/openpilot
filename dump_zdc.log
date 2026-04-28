@@ -1,0 +1,33 @@
+INFO: connecting to panda 18000d000651333334373931
+
+EPS identification
+  HW part:  5Q0909143E
+  SW part:  5Q0909143P
+  SW ver:   2051
+  ODX file: EV_SteerAssisVWBSMQBA
+
+
+=== Dumping EEPROM block 0x70 (scalar config)  (selector/addr=0x70, expected 1226 bytes) ===
+  [1/3] $22 0070 (ReadDataByIdentifier) ... NRC: READ_DATA_BY_IDENTIFIER - request out of range
+  [2/3] $23 (ReadMemoryByAddress, addr_bytes=1, size_bytes=2) ... NRC: READ_MEMORY_BY_ADDRESS - service not supported
+  attempting SecurityAccess L2 for upload path ...
+  [3/3] $35 RequestUpload (addr_bytes=1, size_bytes=2) ... NRC: REQUEST_UPLOAD - service not supported
+  ✗ all methods failed for EEPROM block 0x70 (scalar config)
+
+=== Dumping EEPROM block 0x71 (2D-LUT shadow)  (selector/addr=0x71, expected 1950 bytes) ===
+  [1/3] $22 0071 (ReadDataByIdentifier) ... NRC: READ_DATA_BY_IDENTIFIER - request out of range
+  [2/3] $23 (ReadMemoryByAddress, addr_bytes=1, size_bytes=2) ... NRC: READ_MEMORY_BY_ADDRESS - service not supported
+  attempting SecurityAccess L2 for upload path ...
+  [3/3] $35 RequestUpload (addr_bytes=1, size_bytes=2) ... NRC: REQUEST_UPLOAD - service not supported
+  ✗ all methods failed for EEPROM block 0x71 (2D-LUT shadow)
+
+=== Dumping Flash-region 8 KB master parametrization  (selector/addr=0x5E000, expected 8192 bytes) ===
+  [2/3] $23 (ReadMemoryByAddress, addr_bytes=4, size_bytes=2) ... NRC: READ_MEMORY_BY_ADDRESS - service not supported
+  attempting SecurityAccess L2 for upload path ...
+  [3/3] $35 RequestUpload (addr_bytes=4, size_bytes=2) ... NRC: REQUEST_UPLOAD - service not supported
+  ✗ all methods failed for Flash-region 8 KB master parametrization
+
+=== Summary ===
+  70: FAILED
+  71: FAILED
+  5e000: FAILED

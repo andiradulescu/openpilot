@@ -1,0 +1,79 @@
+Output directory: /data/openpilot/eps_memdump_20260427_135305
+Started: 2026-04-27T13:53:05.125717
+
+STRICTLY READ-ONLY: this script issues only $10 03, $22, $23, $3E.
+                    NO SecurityAccess, NO writes, NO routines.
+
+Opened extended diagnostic session ($10 03)
+
+── 0x4000DC00 +2916B [RAM_cal_shadow] ──
+   live cal RAM-shadow region (0x4000DC00..0x4000E764, 2916 B)
+      NRC at 0x4000DC00 +128B: READ_MEMORY_BY_ADDRESS - service not supported
+   ✗ region NOT readable (likely securityAccessDenied or requestOutOfRange)
+
+── 0x4000E890 +256B [motor_cmd_struct] ──
+   motor command struct populated by fcn.0004f824
+      NRC at 0x4000E890 +128B: READ_MEMORY_BY_ADDRESS - service not supported
+   ✗ region NOT readable (likely securityAccessDenied or requestOutOfRange)
+
+── 0x40001C90 +2B [HCA_input] ──
+   HCA_01 LM_Offset input (signed int16)
+      NRC at 0x40001C90 +2B: READ_MEMORY_BY_ADDRESS - service not supported
+   ✗ region NOT readable (likely securityAccessDenied or requestOutOfRange)
+
+── 0x4000DC30 +2B [HCA_scaled_vest] ──
+   scaled HCA torque, vestigial path
+      NRC at 0x4000DC30 +2B: READ_MEMORY_BY_ADDRESS - service not supported
+   ✗ region NOT readable (likely securityAccessDenied or requestOutOfRange)
+
+── 0x4000EA30 +2B [HCA_scaled_live] ──
+   scaled HCA torque, live path
+      NRC at 0x4000EA30 +2B: READ_MEMORY_BY_ADDRESS - service not supported
+   ✗ region NOT readable (likely securityAccessDenied or requestOutOfRange)
+
+── 0x4000EA82 +2B [motor_cmd_halfword] ──
+   final motor command halfword
+      NRC at 0x4000EA82 +2B: READ_MEMORY_BY_ADDRESS - service not supported
+   ✗ region NOT readable (likely securityAccessDenied or requestOutOfRange)
+
+── 0x4000EAB1 +1B [motor_cmd_byte] ──
+   diagnostic byte downsample
+      NRC at 0x4000EAB1 +1B: READ_MEMORY_BY_ADDRESS - service not supported
+   ✗ region NOT readable (likely securityAccessDenied or requestOutOfRange)
+
+── 0x40003700 +768B [EEPROM_shadow] ──
+   EEPROM-shadow at 0x4000_37A8 (coding storage, ECC-inverted)
+      NRC at 0x40003700 +128B: READ_MEMORY_BY_ADDRESS - service not supported
+   ✗ region NOT readable (likely securityAccessDenied or requestOutOfRange)
+
+── 0x00000000 +256B [Flash_cal_head] ──
+   flash 0x00000000 — cal block start (FD_0DATA[0x0])
+      NRC at 0x00000000 +128B: READ_MEMORY_BY_ADDRESS - service not supported
+   ✗ region NOT readable (likely securityAccessDenied or requestOutOfRange)
+
+── 0x000020E8 +256B [Flash_LUT_S65] ──
+   flash 0x20E8 — candidate LUT (101 entries, table 0x65)
+      NRC at 0x000020E8 +128B: READ_MEMORY_BY_ADDRESS - service not supported
+   ✗ region NOT readable (likely securityAccessDenied or requestOutOfRange)
+
+── 0x00002418 +256B [Flash_LUT_S54] ──
+   flash 0x2418 — candidate LUT (~84 entries, table 0x54)
+      NRC at 0x00002418 +128B: READ_MEMORY_BY_ADDRESS - service not supported
+   ✗ region NOT readable (likely securityAccessDenied or requestOutOfRange)
+
+── 0x00076C20 +512B [Flash_cal_init] ──
+   flash 0x76C20 — cal-init descriptor table (NOT in our FRF)
+      NRC at 0x00076C20 +128B: READ_MEMORY_BY_ADDRESS - service not supported
+   ✗ region NOT readable (likely securityAccessDenied or requestOutOfRange)
+
+══════════════════════════════════════════════════════
+Regions read OK: 0
+Regions denied:  12
+══════════════════════════════════════════════════════
+
+$23 ReadMemoryByAddress is locked in extended session on this rack.
+Next options:
+  1. Enable XCP via DID 0x0501 (requires SecurityAccess) and use
+     XCP UPLOAD to read the same addresses — proven cal-tool path.
+  2. Acquire the V03935255DC parameter file from one of the
+     sources in LEADS.md (~$6 USD).
