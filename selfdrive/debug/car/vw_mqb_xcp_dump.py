@@ -257,8 +257,7 @@ def main() -> int:
     panda.set_safety_mode(CarParams.SafetyModel.elm327)
     panda.can_clear(0xFFFF)
 
-    uds = UdsClient(panda, MQB_EPS_TX, MQB_EPS_RX, args.uds_bus, timeout=0.2,
-                    debug=args.debug)
+    uds = UdsClient(panda, MQB_EPS_TX, MQB_EPS_RX, args.uds_bus, timeout=0.2)
     open_extended_session(uds)
     print("Opened extended diagnostic session ($10 03)")
 
