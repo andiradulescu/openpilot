@@ -84,11 +84,24 @@ class ACCESS_TYPE_LEVEL_2(IntEnum):
 MQB_EPS_TX = 0x712
 MQB_EPS_RX = 0x77C
 SECURITY_ACCESS_CONSTANT = 28183
-DEFAULT_EPS_BUS = 1  # comma3 enumeration of the F-CAN segment behind J533;
-                     # validated empirically via LKU_Derating + dump_zdc.
-                     # On a standalone OBD-II panda the same physical segment
-                     # is bus 0 (per icanhack's pqflasher).
-EPS_BUS = DEFAULT_EPS_BUS  # overridden by --bus in main()
+# Two distinct buses, two distinct routing paths on the comma.ai J533 harness:
+#
+#   UDS_BUS = 1  → CAN_CONVENIENCE passive tap. The gateway routes diagnostic
+#                  IDs (0x712/0x77C) here regardless of where the EPS lives.
+#                  Validated empirically via LKU_Derating + dump_zdc.
+#
+#   XCP_BUS = 0  → CAN_EXTENDED vehicle/from-car side of the MITM break. The
+#                  EPS physically sits on the extended segment (where HCA_01
+#                  0x126 is sent/received), so XCP frames sent here reach
+#                  the EPS *directly*, with no gateway in path. The gateway
+#                  blocks XCP CAN IDs (icanhack's "gateway blocks CCP" finding),
+#                  so the same XCP frames sent on bus 1 wouldn't reach the EPS.
+#
+# Bus 2 = CAN_EXTENDED gateway side of the MITM — isolated from the EPS.
+# Use --xcp-bus to override if XCP doesn't respond on bus 0.
+UDS_BUS = 1
+DEFAULT_XCP_BUS = 0
+XCP_BUS = DEFAULT_XCP_BUS  # overridden by --xcp-bus in main()
 
 
 # ─── XCP-side candidate list ──────────────────────────────────────────────────
@@ -178,7 +191,7 @@ def try_connect(panda: Panda, tx: int, rx: int, timeout: float, debug: bool):
     On success, the slave is in the connected state — caller MUST disconnect()
     or keep using the client.
     """
-    client = XcpClient(panda, tx, rx, bus=EPS_BUS, timeout=timeout, debug=debug)
+    client = XcpClient(panda, tx, rx, bus=XCP_BUS, timeout=timeout, debug=debug)
     try:
         info = client.connect()
         return client, info
@@ -352,20 +365,24 @@ def main():
     p.add_argument("--skip-disable", action="store_true",
                    help="don't write DID 0x0501 = 0 on exit "
                         "(useful for chaining into validate/dump script)")
-    p.add_argument("--bus", type=int, default=DEFAULT_EPS_BUS, choices=(0, 1, 2),
-                   help=f"CAN bus the EPS is on (default {DEFAULT_EPS_BUS} — "
-                        "comma3 + J533 harness on MQB; try 0 or 2 if no XCP reply)")
+    p.add_argument("--xcp-bus", type=int, default=DEFAULT_XCP_BUS, choices=(0, 1, 2),
+                   help=f"CAN bus to scan for XCP CONNECT responders "
+                        f"(default {DEFAULT_XCP_BUS} = CAN_EXTENDED MITM A, "
+                        "where the EPS physically lives; try 2 for the other "
+                        "MITM half, 1 as a long shot)")
     args = p.parse_args()
     if args.debug:
         carlog.setLevel("DEBUG")
 
-    global EPS_BUS
-    EPS_BUS = args.bus
+    global XCP_BUS
+    XCP_BUS = args.xcp_bus
 
     panda = Panda()
     panda.set_safety_mode(CarParams.SafetyModel.elm327)
-    uds = UdsClient(panda, MQB_EPS_TX, MQB_EPS_RX, EPS_BUS, timeout=0.2)
-    print(f"Using EPS bus {EPS_BUS}")
+    # UDS preamble (enable XCP slave) goes via the gateway-routed bus.
+    uds = UdsClient(panda, MQB_EPS_TX, MQB_EPS_RX, UDS_BUS, timeout=0.2)
+    print(f"UDS preamble on bus {UDS_BUS} (gateway-routed)")
+    print(f"XCP scan on bus {XCP_BUS} ({'CAN_EXTENDED MITM A' if XCP_BUS == 0 else 'CAN_CONVENIENCE' if XCP_BUS == 1 else 'CAN_EXTENDED MITM B'})")
 
     print("Started:", time.strftime("%Y-%m-%dT%H:%M:%S"))
     print(f"INFO: connecting to panda {panda.get_serial()}")
