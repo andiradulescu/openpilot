@@ -107,7 +107,9 @@ def raw_uds_request(panda: Panda, payload: bytes, timeout: float = 0.3) -> bytes
     panda.can_send(MQB_EPS_TX, frame, EPS_BUS)
     deadline = time.time() + timeout
     while time.time() < deadline:
-        for addr, _ts, data, src in panda.can_recv():
+        # panda.can_recv() returns 3-tuples (addr, data, bus) on current AGNOS;
+        # older builds returned 4-tuples with a timestamp.
+        for addr, data, src in panda.can_recv():
             if addr == MQB_EPS_RX and src == EPS_BUS and len(data) >= 1:
                 pci = data[0] >> 4
                 if pci == 0x0:  # single frame
@@ -387,6 +389,7 @@ def main():
 
     panda = Panda()
     panda.set_safety_mode(CarParams.SafetyModel.elm327)
+    panda.can_clear(0xFFFF)  # flush any stale RX from a prior partial run
     uds = UdsClient(panda, MQB_EPS_TX, MQB_EPS_RX, EPS_BUS, timeout=0.2)
     print(f"Using EPS bus {EPS_BUS}")
 

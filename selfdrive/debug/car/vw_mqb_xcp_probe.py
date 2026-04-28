@@ -379,6 +379,7 @@ def main():
 
     panda = Panda()
     panda.set_safety_mode(CarParams.SafetyModel.elm327)
+    panda.can_clear(0xFFFF)  # flush any stale RX from a prior partial run
     # UDS preamble (enable XCP slave) goes via the gateway-routed bus.
     uds = UdsClient(panda, MQB_EPS_TX, MQB_EPS_RX, UDS_BUS, timeout=0.2)
     print(f"UDS preamble on bus {UDS_BUS} (gateway-routed)")
