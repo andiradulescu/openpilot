@@ -303,18 +303,14 @@ def write_prerequisites(uds: UdsClient, log) -> bool:
 def read_did_71(uds: UdsClient, log) -> bytes | None:
     log(f"\n── $22 00 71 ReadDataByIdentifier ──")
     try:
-        # Bump request_timeout for the multi-frame ISO-TP read of ~1950 bytes.
-        old_to = uds._client.config.get("request_timeout", 1.0)
-        uds._client.config["request_timeout"] = 5.0
-        try:
-            data = uds.read_data_by_identifier(DID_BLOCK_71)
-        finally:
-            uds._client.config["request_timeout"] = old_to
+        data = uds.read_data_by_identifier(DID_BLOCK_71)
     except NegativeResponseError as e:
         log(f"  ✗ NRC: {e}")
         return None
     except MessageTimeoutError:
-        log(f"  ✗ timeout — partition read did not complete within 5 s")
+        log(f"  ✗ timeout — partition read did not complete in time")
+        log(f"     If transfer is in progress, increase the UdsClient `timeout=`")
+        log(f"     constructor arg (currently 5.0 s).")
         return None
     log(f"  ✓ received {len(data)} bytes")
     return data
@@ -323,12 +319,7 @@ def read_did_71(uds: UdsClient, log) -> bytes | None:
 def write_did_71(uds: UdsClient, blob: bytes, log) -> bool:
     log(f"\n── $2E 00 71 WriteDataByIdentifier ({len(blob)} bytes) ──")
     try:
-        old_to = uds._client.config.get("request_timeout", 1.0)
-        uds._client.config["request_timeout"] = 10.0
-        try:
-            uds.write_data_by_identifier(DID_BLOCK_71, blob)
-        finally:
-            uds._client.config["request_timeout"] = old_to
+        uds.write_data_by_identifier(DID_BLOCK_71, blob)
     except NegativeResponseError as e:
         log(f"  ✗ NRC: {e}")
         log(f"     NRC $72 = generalProgrammingFailure (likely CRC trailer mismatch)")
@@ -339,7 +330,7 @@ def write_did_71(uds: UdsClient, blob: bytes, log) -> bool:
         log(f"  Rack should be UNCHANGED — $2E is atomic, no partial state.")
         return False
     except MessageTimeoutError:
-        log(f"  ✗ timeout — write did not get a response within 10 s")
+        log(f"  ✗ timeout — write did not get a response in time")
         log(f"  Rack state UNCERTAIN. Re-run `read` to check.")
         return False
     log(f"  ✓ write accepted (positive response)")
@@ -367,7 +358,9 @@ def setup_uds(login: int, log) -> UdsClient | None:
     except Exception as e:
         log(f"FATAL: panda setup failed: {type(e).__name__}: {e}")
         return None
-    uds = UdsClient(panda, MQB_EPS_TX, MQB_EPS_RX, 1, timeout=2.0)
+    # timeout=5.0 to leave headroom for multi-frame ISO-TP transfer of the
+    # ~1950-byte block_0x71 payload during $22 read and $2E write.
+    uds = UdsClient(panda, MQB_EPS_TX, MQB_EPS_RX, 1, timeout=5.0)
     if not open_extended(uds, log):
         return None
     identify(uds, log)
