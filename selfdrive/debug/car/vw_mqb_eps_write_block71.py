@@ -385,25 +385,43 @@ def cmd_read(args) -> int:
         log_file.close()
         return 1
 
-    blob = read_did_71(uds, log)
-    if blob is None:
-        log("\nRead failed — see NRC above.")
-        log("If NRC $33: SA didn't grant access to this DID. Try a different login.")
-        log("If NRC $31: DID 0x0071 isn't readable on this EV. Check ECU identification.")
+    did = args.did
+    log(f"\n── $22 {did >> 8:02X} {did & 0xFF:02X} ReadDataByIdentifier ──")
+    try:
+        blob = uds.read_data_by_identifier(did)
+        log(f"  ✓ received {len(blob)} bytes")
+    except NegativeResponseError as e:
+        nrc = _nrc_byte(e)
+        log(f"  ✗ NRC 0x{nrc:02X}" if nrc is not None else f"  ✗ {e}")
+        if nrc == 0x31:
+            log(f"     requestOutOfRange — this DID isn't in the $22 dispatch.")
+            log(f"     For 0x0070 / 0x0071 (parametrize-tier), this is expected:")
+            log(f"     they live in the write-only table at FD_0DATA[0x68106].")
+        elif nrc == 0x33:
+            log(f"     securityAccessDenied — SA didn't grant access. Try a different login.")
+        elif nrc == 0x11:
+            log(f"     serviceNotSupported — $22 not allowed in this session.")
+        log_file.close()
+        return 1
+    except MessageTimeoutError:
+        log(f"  ✗ timeout")
         log_file.close()
         return 1
 
     log("\n── Block contents ──")
     report_block(blob, log)
 
-    out_file = args.output or (out_dir / "block_0x71.bin")
+    out_file = args.output or (out_dir / f"block_did_0x{did:04X}.bin")
     Path(out_file).write_bytes(blob)
     log(f"\n  saved {len(blob)} bytes → {out_file}")
 
-    ok, msg = validate_block(blob)
-    log(f"\n  validation: {'PASS' if ok else 'FAIL'} — {msg}")
+    if did == DID_BLOCK_71:
+        ok, msg = validate_block(blob)
+        log(f"\n  validation: {'PASS' if ok else 'FAIL'} — {msg}")
+        log_file.close()
+        return 0 if ok else 1
     log_file.close()
-    return 0 if ok else 1
+    return 0
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -436,50 +454,94 @@ def cmd_write(args) -> int:
         log_file.close()
         return 1
 
-    # Mandatory backup
-    log("\n── Mandatory pre-write backup ──")
-    current = read_did_71(uds, log)
-    if current is None:
-        log("\n  ✗ backup read failed — REFUSING TO PROCEED.")
-        log("  We will not write a 'patched' block without first having a")
-        log("  known-good restore copy of the original.")
+    # Pre-write backup attempt. DID 0x0071 is empirically write-only
+    # (NRC $31 on $22 — confirmed against live rack 2026-05-02). The
+    # ECU's main $22/$2E DID dispatch table at FD_0DATA[0x6A36C] does
+    # not contain 0x0071; it lives in the parametrize-tier table at
+    # FD_0DATA[0x68106] which is $2E-only. So $22 will return $31 here.
+    # On $31, fall back to the bundled `_orig.bin` as the recovery
+    # reference (the dealer-corpus dataset for the deployed ZDC). The
+    # script REFUSES to proceed past this without --no-backup-readback.
+    log("\n── Pre-write backup attempt ──")
+    backup_file: Path | None = None
+    current: bytes | None = None
+    backup_skipped = False
+    try:
+        current = uds.read_data_by_identifier(DID_BLOCK_71)
+        log(f"  ✓ live readback returned {len(current)} bytes")
+        backup_file = out_dir / "block_0x71_original.bin"
+        backup_file.write_bytes(current)
+        log(f"  ✓ saved → {backup_file.name}")
+        bok, bmsg = validate_block(current)
+        if not bok:
+            log(f"\n  ✗ live block 0x71 has unexpected shape: {bmsg}")
+            log(f"  Refusing to write a 'patched' version on top — investigate first.")
+            log_file.close()
+            return 1
+        log(f"  validation: {bmsg}")
+    except NegativeResponseError as e:
+        nrc = _nrc_byte(e)
+        if nrc == 0x31:
+            log(f"  ⚠ NRC $31 (requestOutOfRange) on $22 00 71 — DID is write-only.")
+            log(f"     This is expected on this ECU: parametrize-tier DIDs (table at")
+            log(f"     FD_0DATA[0x68106]) accept $2E writes but no $22 readback.")
+            sidecar_orig = args.input.parent / "block71_v03935255dc_orig.bin"
+            if sidecar_orig.exists():
+                log(f"     Bundled recovery reference: {sidecar_orig}")
+                log(f"     If anything goes sideways post-write, restore by running:")
+                log(f"       python3 vw_mqb_eps_write_block71.py write \\")
+                log(f"           --input {sidecar_orig} --commit --no-backup-readback")
+            if not args.no_backup_readback:
+                log(f"\n  ✗ refusing to proceed without live backup.")
+                log(f"     Add --no-backup-readback to acknowledge the bundled file")
+                log(f"     above is the recovery reference and proceed anyway.")
+                log_file.close()
+                return 1
+            backup_skipped = True
+            log(f"  --no-backup-readback set, proceeding without live backup.")
+        else:
+            log(f"  ✗ unexpected NRC 0x{nrc:02X} on $22 00 71: {e}")
+            log_file.close()
+            return 1
+    except MessageTimeoutError as e:
+        log(f"  ✗ timeout on $22 00 71: {e}")
         log_file.close()
         return 1
-    backup_file = out_dir / "block_0x71_original.bin"
-    backup_file.write_bytes(current)
-    log(f"  ✓ saved {len(current)} bytes → {backup_file.name}")
-    bok, bmsg = validate_block(current)
-    if not bok:
-        log(f"\n  ✗ live block 0x71 has unexpected shape: {bmsg}")
-        log(f"  Refusing to write a 'patched' version on top — investigate first.")
-        log_file.close()
-        return 1
-    log(f"  validation: {bmsg}")
 
-    # Diff
-    log("\n── Diff (original → new) ──")
-    diff = [(i, a, b) for i, (a, b) in enumerate(zip(current, new_block)) if a != b]
-    if not diff:
-        log("  no differences — input already matches what's on the rack.")
-        log("  Nothing to do.")
-        log_file.close()
-        return 0
-    log(f"  {len(diff)} bytes differ")
-    for i, a, b in diff[:32]:
-        log(f"    +0x{i:04X}: 0x{a:02X} → 0x{b:02X}")
-    if len(diff) > 32:
-        log(f"    ... and {len(diff) - 32} more differing bytes")
-    cap_old = struct.unpack(">H", current[CAP_OFFSET:CAP_OFFSET+2])[0]
-    cap_new = struct.unpack(">H", new_block[CAP_OFFSET:CAP_OFFSET+2])[0]
-    log(f"\n  cap @ 0x{CAP_OFFSET:04X}: {cap_old} cNm ({cap_old/100:.2f} Nm) "
-        f"→ {cap_new} cNm ({cap_new/100:.2f} Nm)")
+    # Diff (only possible if we got the live block)
+    log("\n── Diff ──")
+    if current is not None:
+        diff = [(i, a, b) for i, (a, b) in enumerate(zip(current, new_block)) if a != b]
+        if not diff:
+            log("  no differences — input already matches what's on the rack.")
+            log("  Nothing to do.")
+            log_file.close()
+            return 0
+        log(f"  {len(diff)} bytes differ from live")
+        for i, a, b in diff[:32]:
+            log(f"    +0x{i:04X}: 0x{a:02X} → 0x{b:02X}")
+        if len(diff) > 32:
+            log(f"    ... and {len(diff) - 32} more differing bytes")
+        cap_old = struct.unpack(">H", current[CAP_OFFSET:CAP_OFFSET+2])[0]
+        cap_new = struct.unpack(">H", new_block[CAP_OFFSET:CAP_OFFSET+2])[0]
+        log(f"\n  cap @ 0x{CAP_OFFSET:04X}: {cap_old} cNm ({cap_old/100:.2f} Nm) "
+            f"→ {cap_new} cNm ({cap_new/100:.2f} Nm)")
+    else:
+        log("  (live diff unavailable — DID is write-only)")
+        log("  Reporting only what we'll write:")
+        cap_new = struct.unpack(">H", new_block[CAP_OFFSET:CAP_OFFSET+2])[0]
+        log(f"    {len(new_block)} bytes total")
+        log(f"    cap @ 0x{CAP_OFFSET:04X}: {cap_new} cNm ({cap_new/100:.2f} Nm)")
+        crc_stored = struct.unpack(">H", new_block[-2:])[0]
+        log(f"    CRC-16/ARC trailer: 0x{crc_stored:04X}")
 
     if not args.commit:
         log("\n── DRY-RUN — no writes performed. ──")
-        log(f"Backup is at: {backup_file}")
+        if backup_file is not None:
+            log(f"Backup is at: {backup_file}")
         log("To actually write, re-run with --commit.")
-        log("If a commit fails partway, restore by re-running with --input")
-        log(f"pointed at {backup_file}.")
+        if backup_skipped:
+            log("(--no-backup-readback was set; live backup not available)")
         log_file.close()
         return 0
 
@@ -547,9 +609,14 @@ def main() -> int:
 
     sub = p.add_subparsers(dest="action", required=True)
 
-    sp_read = sub.add_parser("read", help="dump current block 0x71 to a file (no writes)")
+    sp_read = sub.add_parser("read", help="probe a DID with $22 (default 0x0071 — block_0x71)")
     sp_read.add_argument("--output", type=Path, default=None,
-                         help="output .bin path (default: <output-dir>/block_0x71.bin)")
+                         help="output .bin path (default: <output-dir>/block_0x<did>.bin)")
+    sp_read.add_argument("--did", type=lambda s: int(s, 0), default=DID_BLOCK_71,
+                         help=f"DID to read (default 0x{DID_BLOCK_71:04X}). Try 0x0070 to "
+                              f"probe the sibling parametrize-tier DID, or 0x040F / 0x0600 "
+                              f"to probe known main-table readable DIDs (sanity-checks "
+                              f"that the SA grant is actually unlocking $22 reads).")
 
     sp_write = sub.add_parser("write", help="diff + optionally apply a patched block 0x71")
     sp_write.add_argument("--input", type=Path, required=True,
@@ -558,6 +625,12 @@ def main() -> int:
     sp_write.add_argument("--commit", action="store_true",
                           help="actually write. Default is dry-run (full handshake "
                                "+ backup + diff, no $2E goes out).")
+    sp_write.add_argument("--no-backup-readback", action="store_true",
+                          help="proceed even when $22 00 71 returns NRC $31 "
+                               "(write-only DID). Required for any write on this rack "
+                               "since the DID is empirically write-only. The bundled "
+                               "block71_v03935255dc_orig.bin next to this script is the "
+                               "recovery reference if anything goes wrong post-write.")
 
     args = p.parse_args()
     if args.debug:
