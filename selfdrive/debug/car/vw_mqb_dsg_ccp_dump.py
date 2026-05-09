@@ -14,8 +14,9 @@ branch with no gate. Candidates on DQ500 0DL ASW (0x8003a886, 0x800f2cda)
 are not yet xref-confirmed — first real-hardware run resolves it empirically.
 
 Hardware required:
-  * comma panda over USB (any colour). Tested topology: panda CAN0 wired
-    directly to TCU CAN-H / CAN-L (bench harness or in-car powertrain tap).
+  * comma panda over USB (any colour). Default topology: VW J533 gateway
+    harness, which puts Powertrain CAN on panda bus 1 (--bus 1, the
+    default). For a bench rig wired straight to the TCU, pass --bus 0.
   * The OBD-II gateway only routes 0x7E1/0x7E9 to the TCU, so probing the
     other candidate ID pairs requires a tap past the gateway.
 
@@ -105,6 +106,7 @@ from panda import Panda
 from opendbc.car.ccp import (
     BYTE_ORDER,
     CcpClient,
+    CommandCounterError,
     CommandResponseError,
     CommandTimeoutError,
 )
@@ -126,6 +128,23 @@ DEFAULT_STATION_CANDIDATES: tuple[int, ...] = (0x39, 0x01, 0x00, 0xF1)
 
 # Renesas SH72549 is big-endian. Don't change unless retargeting to an LE MCU.
 TCU_BYTE_ORDER = BYTE_ORDER.BIG_ENDIAN
+
+# Known SBOOT magics by TCU family. First 8 bytes at the SBOOT load VA on a
+# good dump should equal one of these. Match → CCP UPLOAD is definitely
+# returning real flash. Mismatch → check wiring / IDs before trusting larger
+# dumps. Ref: VW_Flash/docs/dq500_bosch_read.md (DQ500 0DL = bhlr0201,
+# AL551 = bhid0301).
+SBOOT_MAGICS: tuple[bytes, ...] = (b"bhlr0201", b"bhid0301")
+
+# First 16 bytes of CBOOT and ASW load regions on a clean DQ500 0DL.
+# Identical across FRF SW versions 2110 and 2620 (verified by diffing the
+# decrypted plaintext blocks under
+# VW_Flash/research/dq500_0dl_frf_extracted/). These bytes are SH-2A boot
+# vectors / segment headers baked by the bootloader, not changed by SW
+# revisions, so they should also match 0DL300013L without re-extraction.
+# CAL is intentionally not verified: it diverges due to live adaptation.
+CBOOT_PREFIX_DQ500_0DL: bytes = bytes.fromhex("876543b1000000b4000102000002fffc")
+ASW_PREFIX_DQ500_0DL: bytes = bytes.fromhex("876543c100000000001402000013fdfc")
 
 # DQ500 0DL flash regions, keyed by name. Sizes from the FRF block table;
 # SBOOT size assumed from the CBOOT load VA (0x10000 below it). Used by
@@ -152,7 +171,7 @@ def probe_connect(panda, bus, id_candidates=DEFAULT_ID_CANDIDATES,
                 log.info("CCP CONNECT ok: CRO=0x%03x DTO=0x%03x station=0x%04x",
                          cro, dto, station)
                 return client, station
-            except (CommandTimeoutError, CommandResponseError) as exc:
+            except (CommandTimeoutError, CommandResponseError, CommandCounterError) as exc:
                 log.debug("probe CRO=0x%03x DTO=0x%03x station=0x%04x: %s",
                           cro, dto, station, exc)
     return None, None
@@ -184,7 +203,7 @@ def smoke_read_regions(client, regions=("sboot", "cboot", "asw", "cal"),
                 want = min(5, n_bytes - len(data))
                 data += client.upload(want)
             out[name] = ("ok", start, data)
-        except (CommandResponseError, CommandTimeoutError) as exc:
+        except (CommandResponseError, CommandTimeoutError, CommandCounterError) as exc:
             out[name] = ("err", start, str(exc))
     return out
 
@@ -202,7 +221,7 @@ def dump(client, start, length, out_path, chunk=5, progress_every=4096):
             want = min(chunk, length - read)
             try:
                 buf = client.upload(want)
-            except CommandResponseError as exc:
+            except (CommandResponseError, CommandTimeoutError, CommandCounterError) as exc:
                 log.warning("UPLOAD failed at 0x%08x (%s), resyncing MTA",
                             start + read, exc)
                 client.set_memory_transfer_address(0, 0, start + read)
@@ -219,8 +238,8 @@ def dump(client, start, length, out_path, chunk=5, progress_every=4096):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--bus", type=int, default=0,
-                    help="panda CAN bus number (default 0)")
+    ap.add_argument("--bus", type=int, default=1,
+                    help="panda CAN bus number (default 1 = Powertrain CAN on the J533 harness; use 0 for a bench tap wired straight to TCU CAN)")
     ap.add_argument("--cro", type=lambda x: int(x, 0), default=None,
                     help="override CRO CAN ID (default: probe candidate list)")
     ap.add_argument("--dto", type=lambda x: int(x, 0), default=None,
@@ -311,9 +330,34 @@ def main(argv=None):
             for name, (status, addr, payload) in smoke.items():
                 if status == "ok":
                     hex_str = " ".join(f"{b:02x}" for b in payload)
-                    print(f"  {name:5s} @ 0x{addr:08x}  ok    {hex_str}")
+                    tag = "ok"
+                    if name == "sboot":
+                        if any(payload.startswith(m) for m in SBOOT_MAGICS):
+                            tag = "ok+verified"
+                    elif name == "cboot":
+                        if payload[:16] == CBOOT_PREFIX_DQ500_0DL:
+                            tag = "ok+verified"
+                    elif name == "asw":
+                        if payload[:16] == ASW_PREFIX_DQ500_0DL:
+                            tag = "ok+verified"
+                    print(f"  {name:5s} @ 0x{addr:08x}  {tag:12s} {hex_str}")
                 else:
-                    print(f"  {name:5s} @ 0x{addr:08x}  err   {payload}")
+                    print(f"  {name:5s} @ 0x{addr:08x}  err          {payload}")
+            sboot_status, _, sboot_payload = smoke.get("sboot", ("err", None, None))
+            if sboot_status == "ok":
+                magic = next((m for m in SBOOT_MAGICS if sboot_payload.startswith(m)), None)
+                if magic is not None:
+                    print(f"  sboot magic: {magic.decode()} — CCP UPLOAD is returning real flash")
+                else:
+                    print(f"  sboot magic: NONE matched {[m.decode() for m in SBOOT_MAGICS]} — suspect, double-check IDs/wiring")
+            cboot_status, _, cboot_payload = smoke.get("cboot", ("err", None, None))
+            if cboot_status == "ok" and cboot_payload[:16] != CBOOT_PREFIX_DQ500_0DL:
+                expected = CBOOT_PREFIX_DQ500_0DL.hex(" ")
+                print(f"  cboot prefix mismatch (expected {expected}) — load VA likely wrong or different TCU family")
+            asw_status, _, asw_payload = smoke.get("asw", ("err", None, None))
+            if asw_status == "ok" and asw_payload[:16] != ASW_PREFIX_DQ500_0DL:
+                expected = ASW_PREFIX_DQ500_0DL.hex(" ")
+                print(f"  asw prefix mismatch (expected {expected}) — load VA likely wrong or different TCU family")
 
             ok_regions = [n for n, (s, _, _) in smoke.items() if s == "ok"]
             print()
