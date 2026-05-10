@@ -43,8 +43,7 @@ Memory map (DQ500 0DL on Renesas SH72549, 3.75 MB program flash @ 0x80000000):
   typical SH-2A on-chip data-flash mirror is 0xF8000000 — try that base
   via CCP MTA once code-flash dumps work. Not part of the 3.75 MB above.
 
-Usage (run from ~/Projects/openpilot with PYTHONPATH=opendbc_repo:panda):
-
+Usage:
   # 0. In-car go/no-go — no args. Sniffs CAN traffic, probes ID/station
   #    matrix, calls GET_VERSION + EXCHANGE_ID, then reads 16 bytes from
   #    each known region (sboot/cboot/asw/cal). Prints a full report plus
@@ -72,9 +71,8 @@ Usage (run from ~/Projects/openpilot with PYTHONPATH=opendbc_repo:panda):
   # 5. Sweep the unknown region in 64 KB chunks so a region-whitelist NRC
   #    on one chunk doesn't kill the rest of the sweep.
   for off in $(seq 0x180000 0x10000 0x3B0000); do
-      python3 selfdrive/debug/car/vw_mqb_dsg_ccp_dump.py \
-              --start $((0x80000000 + off)) --length 0x10000 \
-              --out unknown_$(printf '%06x' $off).bin || true
+      python3 selfdrive/debug/car/vw_mqb_dsg_ccp_dump.py --start $((0x80000000 + off)) --length 0x10000 \
+                               --out unknown_$(printf '%06x' $off).bin || true
   done
 
   # 6. One-shot full flash (3.75 MB, ~1-3 hours depending on bus health).
@@ -88,9 +86,15 @@ and --out together. Passing only some of them is an error.
 Operational caveats:
   * Bench is much better than in-car for any multi-MB dump. KL15 drops after
     ~30 min idle on most VAG cars and that will kill the session mid-dump.
-  * If the probe lands on 0x7E1/0x7E9, the dump can run via OBD. If it only
-    answers on 0x6A1/0x6A9 or 0x6C0/0x6C2, you must tap powertrain CAN past
-    the gateway (TCU connector or under-dash).
+  * KL15 must be ON before probing. With KL15 off the powertrain bus is
+    silent and the TCU's UDS-only handler stays alive on Term 30 — that
+    produces the false-positive CONNECT pattern (UDS NRC 7F XX YY AA AA AA AA
+    masquerading as CCP success). The probe-validation step rejects it now,
+    but you'll still see "no probe matched" until KL15 wakes the bus.
+  * 0x7E1/0x7E9 is a UDS-only pair on this TCU regardless of route — it
+    won't dump via OBD or via direct powertrain tap, the TCU's UDS handler
+    answers first. Real CCP lives on 0x6C0/0x6C2 (most likely per the AL551
+    static analysis), 0x6A1/0x6A9, or 0x700/0x703.
   * Engine off, vehicle in P, KL15 on — clutches are open and the gearbox
     isn't actuating, so a misbehaving CCP frame is at most a DTC.
   * Don't try to dump RAM or peripherals (0xFFFF????) — likely refused, and
@@ -115,13 +119,16 @@ from opendbc.car.structs import CarParams
 log = logging.getLogger(__name__)
 
 # Candidate (CRO, DTO) pairs from static analysis of the AL551 ASW CAN-ID
-# table at 0x800446cc. Order matters: 0x7E1/0x7E9 first because it's the
-# only pair the OBD gateway forwards to the TCU.
+# table at 0x800446cc. Order matters: real-CCP-only IDs first; the UDS pair
+# 0x7E1/0x7E9 last because the TCU's UDS handler answers any CRO sent there
+# (interpreting the CCP command byte as ISO-TP PCI) and that produces a
+# false-positive CCP CONNECT — the probe validation step catches it but
+# trying real CCP IDs first saves a round-trip.
 DEFAULT_ID_CANDIDATES: tuple[tuple[int, int], ...] = (
-    (0x7E1, 0x7E9),
-    (0x6C0, 0x6C2),
+    (0x6C0, 0x6C2),  # most likely CCP pair per AL551 ID-table clustering
     (0x6A1, 0x6A9),  # ASAM CCP defaults
     (0x700, 0x703),
+    (0x7E1, 0x7E9),  # UDS pair — false-positives on UDS-only TCUs, kept for completeness
 )
 
 DEFAULT_STATION_CANDIDATES: tuple[int, ...] = (0x39, 0x01, 0x00, 0xF1)
@@ -161,19 +168,51 @@ REGIONS: dict[str, tuple[int, int]] = {
 
 def probe_connect(panda, bus, id_candidates=DEFAULT_ID_CANDIDATES,
                   station_candidates=DEFAULT_STATION_CANDIDATES, debug=False):
-    """Walk (CRO, DTO, station) until CCP CONNECT succeeds. Returns (client, station)."""
+    """Walk (CRO, DTO, station) until CCP CONNECT succeeds AND validates as real CCP.
+
+    A bare CONNECT can false-positive on UDS-only IDs: the TCU's UDS handler
+    parses the CCP command byte as ISO-TP PCI and replies with a UDS NRC
+    (`03 7F sid nrc AA AA AA AA`). opendbc's `CcpClient._recv_dto` doesn't
+    require PID=0xFF for command-return frames, so it returns the NRC bytes
+    as if they were CCP data and CONNECT silently "succeeds". We catch this
+    by reading 8 bytes from SBOOT (0x80000000) immediately after CONNECT and
+    requiring a known SBOOT magic — UDS NRCs always start with PCI then 7F
+    so they can't match.
+    """
     for cro, dto in id_candidates:
         for station in station_candidates:
             client = CcpClient(panda, cro, dto, bus=bus,
                                byte_order=TCU_BYTE_ORDER, debug=debug)
             try:
                 client.connect(station)
-                log.info("CCP CONNECT ok: CRO=0x%03x DTO=0x%03x station=0x%04x",
-                         cro, dto, station)
-                return client, station
             except (CommandTimeoutError, CommandResponseError, CommandCounterError) as exc:
-                log.debug("probe CRO=0x%03x DTO=0x%03x station=0x%04x: %s",
+                log.debug("connect CRO=0x%03x DTO=0x%03x station=0x%04x: %s",
                           cro, dto, station, exc)
+                continue
+            try:
+                client.set_memory_transfer_address(0, 0, 0x80000000)
+                probe = b""
+                while len(probe) < 8:
+                    probe += client.upload(min(5, 8 - len(probe)))
+            except (CommandTimeoutError, CommandResponseError, CommandCounterError) as exc:
+                log.debug("validate CRO=0x%03x DTO=0x%03x station=0x%04x: %s",
+                          cro, dto, station, exc)
+                try:
+                    client.disconnect(station, temporary=False)
+                except Exception:
+                    pass
+                continue
+            if any(probe.startswith(m) for m in SBOOT_MAGICS):
+                log.info("CCP CONNECT validated: CRO=0x%03x DTO=0x%03x station=0x%04x "
+                         "(SBOOT prefix=%s)", cro, dto, station, probe.hex())
+                return client, station
+            log.debug("connect CRO=0x%03x DTO=0x%03x station=0x%04x: CONNECT ok but SBOOT "
+                      "prefix %s — likely UDS-NRC false positive, skipping",
+                      cro, dto, station, probe.hex())
+            try:
+                client.disconnect(station, temporary=False)
+            except Exception:
+                pass
     return None, None
 
 
