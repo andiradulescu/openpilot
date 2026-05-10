@@ -136,12 +136,16 @@ DEFAULT_STATION_CANDIDATES: tuple[int, ...] = (0x39, 0x01, 0x00, 0xF1)
 # Renesas SH72549 is big-endian. Don't change unless retargeting to an LE MCU.
 TCU_BYTE_ORDER = BYTE_ORDER.BIG_ENDIAN
 
-# Known SBOOT magics by TCU family. First 8 bytes at the SBOOT load VA on a
-# good dump should equal one of these. Match → CCP UPLOAD is definitely
-# returning real flash. Mismatch → check wiring / IDs before trusting larger
-# dumps. Ref: VW_Flash/docs/dq500_bosch_read.md (DQ500 0DL = bhlr0201,
-# AL551 = bhid0301).
+# SBOOT magic strings (TYPTEILENR-suffixed). They live at file offset 0xA4
+# inside SBOOT (after the SH-2A reset/exception vector table at 0x00-0x7F
+# and the SBOOT header at 0x80-0x99 followed by the ASCII tag "TYPTEILENR"
+# at 0x9A). NOT at offset 0 — bytes 0..7 of SBOOT are the reset vector
+# pattern (c3 05 c3 05 ... on AL551). Confirmed against
+# VW_Flash/research/sh72519_al551_dump/. We don't currently use these for
+# probe validation (CBOOT_PREFIX is more reliable) but they're handy for
+# manual sboot.bin inspection: `xxd -s 0xa4 -l 8 sboot.bin`.
 SBOOT_MAGICS: tuple[bytes, ...] = (b"bhlr0201", b"bhid0301")
+SBOOT_MAGIC_OFFSET: int = 0xA4
 
 # First 16 bytes of CBOOT and ASW load regions on a clean DQ500 0DL.
 # Identical across FRF SW versions 2110 and 2620 (verified by diffing the
@@ -150,7 +154,11 @@ SBOOT_MAGICS: tuple[bytes, ...] = (b"bhlr0201", b"bhid0301")
 # vectors / segment headers baked by the bootloader, not changed by SW
 # revisions, so they should also match 0DL300013L without re-extraction.
 # CAL is intentionally not verified: it diverges due to live adaptation.
+# CBOOT_PREFIX is the probe-validation primitive: when CCP UPLOAD returns
+# these exact 16 bytes from 0x80010000, we know we're talking real CCP and
+# not a UDS-NRC false positive (NRC bytes always start with PCI then 7F).
 CBOOT_PREFIX_DQ500_0DL: bytes = bytes.fromhex("876543b1000000b4000102000002fffc")
+CBOOT_LOAD_VA: int = 0x80010000
 ASW_PREFIX_DQ500_0DL: bytes = bytes.fromhex("876543c100000000001402000013fdfc")
 
 # DQ500 0DL flash regions, keyed by name. Sizes from the FRF block table;
@@ -175,9 +183,12 @@ def probe_connect(panda, bus, id_candidates=DEFAULT_ID_CANDIDATES,
     (`03 7F sid nrc AA AA AA AA`). opendbc's `CcpClient._recv_dto` doesn't
     require PID=0xFF for command-return frames, so it returns the NRC bytes
     as if they were CCP data and CONNECT silently "succeeds". We catch this
-    by reading 8 bytes from SBOOT (0x80000000) immediately after CONNECT and
-    requiring a known SBOOT magic — UDS NRCs always start with PCI then 7F
-    so they can't match.
+    by reading 16 bytes from CBOOT (0x80010000) immediately after CONNECT
+    and requiring an exact match against the known CBOOT prefix from the
+    FRF plaintext. UDS NRCs always start with PCI then 7F so they can't
+    match `87 65 43 b1 ...`. Using CBOOT (not SBOOT) because SBOOT's first
+    bytes are the SH-2A reset vector table and we don't have a confirmed
+    DQ500 0DL SBOOT plaintext to compare against.
     """
     for cro, dto in id_candidates:
         for station in station_candidates:
@@ -190,10 +201,10 @@ def probe_connect(panda, bus, id_candidates=DEFAULT_ID_CANDIDATES,
                           cro, dto, station, exc)
                 continue
             try:
-                client.set_memory_transfer_address(0, 0, 0x80000000)
+                client.set_memory_transfer_address(0, 0, CBOOT_LOAD_VA)
                 probe = b""
-                while len(probe) < 8:
-                    probe += client.upload(min(5, 8 - len(probe)))
+                while len(probe) < len(CBOOT_PREFIX_DQ500_0DL):
+                    probe += client.upload(min(5, len(CBOOT_PREFIX_DQ500_0DL) - len(probe)))
             except (CommandTimeoutError, CommandResponseError, CommandCounterError) as exc:
                 log.debug("validate CRO=0x%03x DTO=0x%03x station=0x%04x: %s",
                           cro, dto, station, exc)
@@ -202,13 +213,13 @@ def probe_connect(panda, bus, id_candidates=DEFAULT_ID_CANDIDATES,
                 except Exception:
                     pass
                 continue
-            if any(probe.startswith(m) for m in SBOOT_MAGICS):
+            if probe == CBOOT_PREFIX_DQ500_0DL:
                 log.info("CCP CONNECT validated: CRO=0x%03x DTO=0x%03x station=0x%04x "
-                         "(SBOOT prefix=%s)", cro, dto, station, probe.hex())
+                         "(CBOOT prefix matches FRF plaintext)", cro, dto, station)
                 return client, station
-            log.debug("connect CRO=0x%03x DTO=0x%03x station=0x%04x: CONNECT ok but SBOOT "
-                      "prefix %s — likely UDS-NRC false positive, skipping",
-                      cro, dto, station, probe.hex())
+            log.debug("connect CRO=0x%03x DTO=0x%03x station=0x%04x: CONNECT ok but CBOOT "
+                      "prefix %s != expected %s — likely UDS-NRC false positive, skipping",
+                      cro, dto, station, probe.hex(), CBOOT_PREFIX_DQ500_0DL.hex())
             try:
                 client.disconnect(station, temporary=False)
             except Exception:
@@ -370,25 +381,15 @@ def main(argv=None):
                 if status == "ok":
                     hex_str = " ".join(f"{b:02x}" for b in payload)
                     tag = "ok"
-                    if name == "sboot":
-                        if any(payload.startswith(m) for m in SBOOT_MAGICS):
-                            tag = "ok+verified"
-                    elif name == "cboot":
-                        if payload[:16] == CBOOT_PREFIX_DQ500_0DL:
-                            tag = "ok+verified"
-                    elif name == "asw":
-                        if payload[:16] == ASW_PREFIX_DQ500_0DL:
-                            tag = "ok+verified"
+                    if name == "cboot" and payload[:16] == CBOOT_PREFIX_DQ500_0DL:
+                        tag = "ok+verified"
+                    elif name == "asw" and payload[:16] == ASW_PREFIX_DQ500_0DL:
+                        tag = "ok+verified"
+                    # sboot has no offset-0 magic to check (bytes 0..7 are
+                    # SH-2A reset vectors); the magic lives at offset 0xA4.
                     print(f"  {name:5s} @ 0x{addr:08x}  {tag:12s} {hex_str}")
                 else:
                     print(f"  {name:5s} @ 0x{addr:08x}  err          {payload}")
-            sboot_status, _, sboot_payload = smoke.get("sboot", ("err", None, None))
-            if sboot_status == "ok":
-                magic = next((m for m in SBOOT_MAGICS if sboot_payload.startswith(m)), None)
-                if magic is not None:
-                    print(f"  sboot magic: {magic.decode()} — CCP UPLOAD is returning real flash")
-                else:
-                    print(f"  sboot magic: NONE matched {[m.decode() for m in SBOOT_MAGICS]} — suspect, double-check IDs/wiring")
             cboot_status, _, cboot_payload = smoke.get("cboot", ("err", None, None))
             if cboot_status == "ok" and cboot_payload[:16] != CBOOT_PREFIX_DQ500_0DL:
                 expected = CBOOT_PREFIX_DQ500_0DL.hex(" ")
