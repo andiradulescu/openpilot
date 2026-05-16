@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Migrate netplan-emitted NM keyfiles from /run into /data/etc so they survive
 netplan and NetworkManager removal in a future AGNOS release.
 
@@ -87,3 +88,10 @@ def persist_connections(run_dir: str = RUN_DIR, dest_dir: str = DEST_DIR, netpla
           _sudo_rm(os.path.join(netplan_dir, yaml))
     except Exception:
       cloudlog.exception("nm_persist: failed for %s", fname)
+
+
+if __name__ == "__main__":
+  try:
+    persist_connections()
+  except Exception:
+    cloudlog.exception("nm_persist top-level failure")
