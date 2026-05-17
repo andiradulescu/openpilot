@@ -1,26 +1,45 @@
 #!/usr/bin/env python3
 """
 UDS recon + read of the VW MQB DSG TCU (DQ500 0DL, Bosch on Renesas SH-2A
-R5F72549R). Tester 0x7E1, responder 0x7E9, via OBD-II tunnel on panda
-bus 1. Mirrors the YOYO Diagnostic tool's read flow as closely as
-possible (see DQ500_0DL_MEMORY_MAP.md).
+R5F72549R). Tester 0x7E1, responder 0x7E9, panda bus 1. Bus 1 mux is
+selectable: --obd-tunnel (default; via J533 gateway, what VW_Flash/ODIS
+use) or --pt-direct (raw PT-CAN, bench-tool equivalent). Either reaches
+the TCU's UDS handler — the difference matters only for which physical
+pair on the panda harness is in use. Mirrors VW_Flash's session-entry
+sequence ($10 03 → $22 F190 → $31 0x0203 → $3E → $10 02 → $27 L17).
 
 ═════════════════════════════════════════════════════════════════════
 GATED OPERATIONS (each independently selectable)
 ═════════════════════════════════════════════════════════════════════
 
-Default (no flags) = Phase A, strictly read-only recon:
+Default (no flags) = minimal proof-of-life:
   • $10 03 ExtendedDiagnostic
-  • $22 ReadDataByIdentifier (identity DIDs)
-  • $23 ReadMemoryByAddress 16-byte probe across documented regions
-  • $3E TesterPresent (keepalive)
-  No SecurityAccess, no key submission, no $35 transfer state.
+  • $22 F190 (VIN) — what VW_Flash reads first
+  • exit
+
+That's it. Just enough to confirm the TCU answers UDS and we have the
+right CAN routing. No identity sweep, no $23 probes, no $3E spam.
+
+  --recon
+        Extends the default with an identity-DID sweep and a $23 RMBA
+        probe across the documented regions. Useful for first-run
+        characterization; skip on repeat runs to avoid burning session
+        time and racking up NRCs that may sour ECU state.
+
+  --precondition-check
+        Issue $31 0x01 0x02 0x03 (StartRoutine 0x0203 = "Check Programming
+        Precondition") — the same routine VW_Flash invokes before $10 02.
+        Returns status bytes; does not modify the TCU. The routine ID is
+        hard-coded; --precondition-check accepts no argument and cannot
+        invoke any other $31 routine. Needed before $10 02 succeeds with
+        NRC 0x22 conditionsNotCorrect.
 
   --auth-dry-run
         Request seed via $27 0x11 (free — no penalty), derive key with
         the SA2 byte-code from dq500_0dl.py, print BOTH seed and key,
         then EXIT. Use this FIRST to verify the algorithm produces
         plausible bytes before risking the lockout counter.
+        Implies --precondition-check if SA $27 NRCs 0x7F in extended.
 
   --auth
         Same as --auth-dry-run + submit the key via $27 0x12.
@@ -49,23 +68,33 @@ HARD GUARANTEES (independent of flags)
 ═════════════════════════════════════════════════════════════════════
 Never issues these services, regardless of any flag combination:
   $2E WriteDataByIdentifier        $3D WriteMemoryByAddress
-  $31 RoutineControl               $34 RequestDownload
-  $14 ClearDiagnosticInformation   $11 ECUReset
-  $2F InputOutputControlByIdentifier $2C DynamicallyDefineDataIdentifier
-  $28 CommunicationControl         $85 ControlDTCSetting
-  $86 ResponseOnEvent              $83 AccessTimingParameter
-  $87 LinkControl
+  $34 RequestDownload              $14 ClearDiagnosticInformation
+  $11 ECUReset                     $2F InputOutputControlByIdentifier
+  $2C DynamicallyDefineDataIdentifier $28 CommunicationControl
+  $85 ControlDTCSetting            $86 ResponseOnEvent
+  $83 AccessTimingParameter        $87 LinkControl
 
-Only services that can fire (and even those only behind explicit gates):
-  Always:        $10 03, $22, $23, $3E
-  With --auth*:  $27 0x11 (request_seed)
-  With --auth:   $27 0x12 (send_key, ONE attempt)
-  With --read-*: $35, $36, $37 (read-side transfer; flash not modified)
+$31 RoutineControl is NEAR-banned. Behind --precondition-check the
+script may issue exactly ONE $31 message: StartRoutine routine 0x0203
+("Check Programming Precondition"). The routine ID is a hard-coded
+constant (PRECONDITION_CHECK_ROUTINE_ID); no CLI argument can change
+it; no other $31 routine ID is callable. Routine 0x0203 is a read-only
+status check; it does NOT modify flash, EEPROM, or DTC state.
+
+Only services that can fire (and only behind their explicit gates):
+  Always:                  $10 03, $22, $23, $3E
+  With --precondition-check: $31 0x01 0x02 0x03 (the one routine, locked)
+  With --auth*:            $27 0x11 (request_seed), and $10 02 if needed
+                           to make $27 reachable
+  With --auth:             $27 0x12 (send_key, ONE attempt)
+  With --read-*:           $35, $36, $37 (read-side transfer; flash NOT modified)
 
 Vehicle requirements:
   * Ignition ON, engine OFF, P + parking brake
   * `sudo systemctl stop comma` so the panda is free
-  * Panda plugged into OBD-II — script forces bus 1 + set_obd(True)
+  * Default: panda plugged into OBD-II — bus 1 → set_obd(True) → J533
+    tunnel → TCU. Same path VW_Flash/ODIS use. Pass --pt-direct only
+    if the harness is spliced onto a raw PT-CAN pair.
 """
 
 import argparse
@@ -83,6 +112,7 @@ from opendbc.car.uds import (
     NegativeResponseError,
     SESSION_TYPE,
     ACCESS_TYPE,
+    ROUTINE_CONTROL_TYPE,
 )
 from opendbc.car.structs import CarParams
 
@@ -95,6 +125,14 @@ TCU_RX = 0x7E9
 BUS_OBD = 1
 SA_LEVEL_DSG = 0x11   # SA17 — matches VW_Flash/lib/flash_uds.py:519
 SA2_SCRIPT_DQ500_0DL = bytes.fromhex("6806814A05876B5F7DD5494C")  # dq500_0dl.py:36
+
+# The ONLY $31 RoutineControl identifier this script is ever permitted to
+# invoke. VW_Flash calls this routine to clear the "conditionsNotCorrect"
+# gate before $10 02 ProgrammingSession. It is a read-only precondition
+# CHECK that returns status bytes; it does not modify the ECU.
+# Any code path that wants to call routine_control() must compare the
+# routine ID against this constant — never accept a CLI-provided value.
+PRECONDITION_CHECK_ROUTINE_ID = 0x0203
 
 # CAL partition 23-24 (per DQ500_0DL_MEMORY_MAP.md; YOYO confirmed)
 CAL_ADDR = 0x00140000
@@ -273,41 +311,51 @@ def _verify_against_frf(addr_offset: int, data: bytes, frf_path: Path, log) -> N
         log(f"                expected[:32]: {slice_[:32].hex(' ')}")
 
 
-def _phase_a_recon(uds: UdsClient, frf_dir: Path, log) -> None:
+def _read_did(uds: UdsClient, did: int, desc: str, log) -> bytes | None:
+    try:
+        payload = uds.read_data_by_identifier(did)
+    except NegativeResponseError as e:
+        log(f"   0x{did:04X} {desc:35s} : NRC ({e})")
+        return None
+    except Exception as e:  # noqa: BLE001
+        log(f"   0x{did:04X} {desc:35s} : {type(e).__name__}: {e}")
+        return None
+    try:
+        text = payload.decode("ascii").rstrip("\x00 ")
+        text_ok = all(0x20 <= b < 0x7F or b == 0 for b in payload)
+    except Exception:
+        text = ""
+        text_ok = False
+    display = text if text_ok and text else payload.hex(" ")
+    log(f"   0x{did:04X} {desc:35s} : {display}")
+    return payload
+
+
+def _open_extended(uds: UdsClient, log) -> bool:
     log("── $10 03 ExtendedDiagnostic ──")
     try:
         uds.diagnostic_session_control(SESSION_TYPE.EXTENDED_DIAGNOSTIC)
         log("   ok")
+        return True
     except NegativeResponseError as e:
         log(f"   NRC: {_nrc_str(e)}")
+        return False
     except Exception as e:  # noqa: BLE001
         log(f"   {type(e).__name__}: {e}")
-        raise
+        return False
 
+
+def _recon_extra(uds: UdsClient, frf_dir: Path, log) -> None:
+    """Extra recon: full identity DID sweep + $23 probe. Opt-in via --recon."""
     log("")
-    log("── $22 ReadDataByIdentifier (identity) ──")
+    log("── $22 ReadDataByIdentifier (identity sweep) ──")
     for did, desc in IDENTITY_DIDS:
-        try:
-            payload = uds.read_data_by_identifier(did)
-        except NegativeResponseError as e:
-            log(f"   0x{did:04X} {desc:35s} : NRC ({e})")
-            continue
-        except Exception as e:  # noqa: BLE001
-            log(f"   0x{did:04X} {desc:35s} : {type(e).__name__}: {e}")
-            continue
-        try:
-            text = payload.decode("ascii").rstrip("\x00 ")
-            text_ok = all(0x20 <= b < 0x7F or b == 0 for b in payload)
-        except Exception:
-            text = ""
-            text_ok = False
-        display = text if text_ok and text else payload.hex(" ")
-        log(f"   0x{did:04X} {desc:35s} : {display}")
+        _read_did(uds, did, desc, log)
 
     log("")
     log("── $23 ReadMemoryByAddress probe (16 B per region) ──")
     for r in REGIONS:
-        log(f"   [{r.label}] phys=0x{r.addr_phys:08X}", )
+        log(f"   [{r.label}] phys=0x{r.addr_phys:08X}")
         st, val = _try_rmba(uds, r.addr_phys, r.size)
         log(f"     phys-form: {st.upper()} {val.hex(' ') if isinstance(val, bytes) else val}")
         if r.addr_va is not None and r.addr_va != r.addr_phys:
@@ -315,10 +363,66 @@ def _phase_a_recon(uds: UdsClient, frf_dir: Path, log) -> None:
             log(f"     va-form  : {st.upper()} {val.hex(' ') if isinstance(val, bytes) else val}")
 
 
-def _do_auth(uds: UdsClient, log, submit_key: bool) -> tuple[bool, bytes | None, bytes | None]:
-    """Returns (authenticated, seed, key_bytes). If submit_key=False, never sends key."""
+def _do_precondition_check(uds: UdsClient, log) -> bool:
+    """Issue $31 0x01 0x02 0x03 — the ONE permitted RoutineControl call.
+    Hard-coded routine ID = PRECONDITION_CHECK_ROUTINE_ID. No other ID is reachable."""
+    assert PRECONDITION_CHECK_ROUTINE_ID == 0x0203, \
+        "PRECONDITION_CHECK_ROUTINE_ID was changed — refusing to issue $31"
     log("")
-    log("── $27 SecurityAccess L17 ──")
+    log("── $31 0x01 StartRoutine 0x0203 (Check Programming Precondition) ──")
+    log("   read-only status check; does not modify TCU state")
+    try:
+        result = uds.routine_control(
+            ROUTINE_CONTROL_TYPE.START,
+            PRECONDITION_CHECK_ROUTINE_ID,
+        )
+    except NegativeResponseError as e:
+        log(f"   NRC: {_nrc_str(e)}")
+        return False
+    except Exception as e:  # noqa: BLE001
+        log(f"   {type(e).__name__}: {e}")
+        return False
+    log(f"   ok — result bytes: {result.hex(' ') if result else '(empty)'}")
+    return True
+
+
+def _do_auth(uds: UdsClient, log, submit_key: bool,
+             precondition_ok: bool) -> tuple[bool, bytes | None, bytes | None]:
+    """Returns (authenticated, seed, key_bytes). If submit_key=False, never sends key.
+
+    Mirrors VW_Flash/lib/flash_uds.py:472-519 exactly:
+        $31 0x0203 (already done if precondition_ok)
+        $3E TesterPresent
+        $10 02 ProgrammingSession
+        $27 0x11 request_seed
+        $27 0x12 send_key
+    """
+    log("")
+    log("── $3E TesterPresent + $10 02 ProgrammingSession (VW_Flash sequence) ──")
+    try:
+        uds.tester_present()
+        log("   $3E ok")
+    except Exception as e:  # noqa: BLE001
+        log(f"   $3E warn: {type(e).__name__}: {e}")
+    try:
+        uds.diagnostic_session_control(SESSION_TYPE.PROGRAMMING)
+        log("   $10 02 ok — in programming session")
+    except NegativeResponseError as e:
+        log(f"   $10 02 NRC: {_nrc_str(e)} — cannot reach SA. Aborting.")
+        if e.error_code == 0x22 and not precondition_ok:
+            log("   Hint: re-run with --precondition-check to fire $31 routine 0x0203 first.")
+        elif e.error_code == 0x22 and precondition_ok:
+            log("   Hint: even after precondition check, $10 02 refused. Likely a")
+            log("   vehicle-state condition (DTC on a bus peer, gateway PIN, etc.)")
+            log("   or stock firmware that genuinely refuses $10 02 from OBD-II.")
+            log("   VW_Flash itself has a Switchpatch-ASW-only fallback for this.")
+        return (False, None, None)
+    except Exception as e:  # noqa: BLE001
+        log(f"   $10 02 failed: {type(e).__name__}: {e}")
+        return (False, None, None)
+
+    log("")
+    log("── $27 SecurityAccess L17 (in programming session) ──")
     log(f"   SA2 byte-code (dq500_0dl.py): {SA2_SCRIPT_DQ500_0DL.hex()}")
     log(f"   request_seed sub-function: 0x{SA_LEVEL_DSG:02X}")
     log(f"   send_key sub-function    : 0x{SA_LEVEL_DSG + 1:02X}")
@@ -439,6 +543,17 @@ def main() -> int:
     ap.add_argument("--frf-dir", type=Path,
                     default=Path("/data/VW_Flash/extracted_FL_0DL300012N_2110"))
     ap.add_argument("--bus", type=int, default=BUS_OBD)
+    ap.add_argument("--pt-direct", action="store_true",
+                    help="route bus 1 to raw PT-CAN instead of the OBD-II "
+                         "tunnel. Only needed if the gateway specifically "
+                         "blocks something — VW_Flash/ODIS go via gateway "
+                         "and work fine.")
+    ap.add_argument("--recon", action="store_true",
+                    help="extra: identity DID sweep + $23 RMBA probe. Useful "
+                         "for first-run characterization, but slow and noisy")
+    ap.add_argument("--precondition-check", action="store_true",
+                    help="fire $31 0x01 0x02 0x03 (the only $31 routine this script can issue); "
+                         "needed before $10 02 if F1A2 preconditions aren't met")
     ap.add_argument("--auth-dry-run", action="store_true",
                     help="request seed + derive key + print, NO submit")
     ap.add_argument("--auth", action="store_true",
@@ -480,7 +595,9 @@ def main() -> int:
     log(f"DSG UDS recon — {datetime.now().isoformat()}")
     log(f"Output: {out_dir.resolve()}")
     log(f"FRF:    {args.frf_dir} ({'present' if args.frf_dir.exists() else 'NOT FOUND'})")
-    log(f"Gates:  auth_dry_run={args.auth_dry_run}  auth={args.auth}  "
+    log(f"Bus:    pt_direct={args.pt_direct} ({'PT-CAN' if args.pt_direct else 'OBD-II tunnel'})")
+    log(f"Gates:  recon={args.recon}  precondition_check={args.precondition_check}  "
+        f"auth_dry_run={args.auth_dry_run}  auth={args.auth}  "
         f"read_cal_prefix={args.read_cal_prefix}  read_phys={args.read_phys}  "
         f"upload_bytes_cap={args.upload_bytes_cap}")
     log("")
@@ -488,7 +605,11 @@ def main() -> int:
     try:
         panda = Panda()
         panda.set_safety_mode(CarParams.SafetyModel.elm327)
-        panda.set_obd(True)
+        # Default: bus 1 = OBD-II tunnel (set_obd(True)) — same path
+        # VW_Flash/ODIS use. The J533 gateway does NOT block $10 02 in
+        # principle; it tunnels diag requests transparently. Use
+        # --pt-direct only if a specific service is gateway-blocked.
+        panda.set_obd(not args.pt_direct)
         panda.can_clear(0xFFFF)
     except Exception as e:  # noqa: BLE001
         log(f"Panda setup failed: {type(e).__name__}: {e}")
@@ -497,19 +618,31 @@ def main() -> int:
 
     uds = UdsClient(panda, TCU_TX, TCU_RX, args.bus, timeout=2.0)
 
-    # Phase A always runs (cheap, useful baseline)
-    try:
-        _phase_a_recon(uds, args.frf_dir, log)
-    except Exception:
+    # Always: open extended session + read VIN (minimal proof-of-life,
+    # matches VW_Flash's first two wire messages).
+    if not _open_extended(uds, log):
         log_file.close()
         return 2
+    log("")
+    log("── $22 0xF190 (VIN) ──")
+    _read_did(uds, 0xF190, "VIN", log)
+
+    # Opt-in: full identity + $23 probe
+    if args.recon:
+        _recon_extra(uds, args.frf_dir, log)
+
+    # Precondition gate (read-only status check; clears $10 02 NRC 0x22)
+    precondition_ok = False
+    if args.precondition_check:
+        precondition_ok = _do_precondition_check(uds, log)
 
     # SA gates
     submit = args.auth
     do_sa = args.auth_dry_run or args.auth
     authed = False
     if do_sa:
-        authed, _, _ = _do_auth(uds, log, submit_key=submit)
+        authed, _, _ = _do_auth(uds, log, submit_key=submit,
+                                precondition_ok=precondition_ok)
         if args.auth_dry_run and not args.auth:
             log("")
             log("── auth-dry-run complete; no key submitted. Exiting. ──")
