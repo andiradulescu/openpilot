@@ -1,109 +1,96 @@
 #!/usr/bin/env python3
 """
-UDS recon + read of the VW MQB DSG TCU (DQ500 0DL, Bosch on Renesas SH-2A
-R5F72549R). Tester 0x7E1, responder 0x7E9, panda bus 1. Bus 1 mux is
-selectable: --obd-tunnel (default; via J533 gateway, what VW_Flash/ODIS
-use) or --pt-direct (raw PT-CAN, bench-tool equivalent). Either reaches
-the TCU's UDS handler — the difference matters only for which physical
-pair on the panda harness is in use. Mirrors VW_Flash's session-entry
-sequence ($10 03 → $22 F190 → $31 0x0203 → $3E → $10 02 → $27 L17).
+ODIS-mirror UDS read of the VW MQB DSG TCU (DQ500 0DL, Bosch on Renesas
+SH-2A R5F72549R). Reproduces the exact session-entry sequence captured
+in a real ODIS flash trace (VIN TMBLJ9NS3J8068062, EPS module 0x712),
+then substitutes $35 RequestUpload for ODIS's $34 RequestDownload so we
+READ instead of write.
 
 ═════════════════════════════════════════════════════════════════════
-GATED OPERATIONS (each independently selectable)
+SEQUENCE (matches ODIS trace lines 23-152, retargeted to TCU 0x7E1)
 ═════════════════════════════════════════════════════════════════════
-
-Default (no flags) = minimal proof-of-life:
-  • $10 03 ExtendedDiagnostic
-  • $22 F190 (VIN) — what VW_Flash reads first
-  • exit
-
-That's it. Just enough to confirm the TCU answers UDS and we have the
-right CAN routing. No identity sweep, no $23 probes, no $3E spam.
-
-  --recon
-        Extends the default with an identity-DID sweep and a $23 RMBA
-        probe across the documented regions. Useful for first-run
-        characterization; skip on repeat runs to avoid burning session
-        time and racking up NRCs that may sour ECU state.
-
-  --precondition-check
-        Issue $31 0x01 0x02 0x03 (StartRoutine 0x0203 = "Check Programming
-        Precondition") — the same routine VW_Flash invokes before $10 02.
-        Returns status bytes; does not modify the TCU. The routine ID is
-        hard-coded; --precondition-check accepts no argument and cannot
-        invoke any other $31 routine. Needed before $10 02 succeeds with
-        NRC 0x22 conditionsNotCorrect.
-
-  --auth-dry-run
-        Request seed via $27 0x11 (free — no penalty), derive key with
-        the SA2 byte-code from dq500_0dl.py, print BOTH seed and key,
-        then EXIT. Use this FIRST to verify the algorithm produces
-        plausible bytes before risking the lockout counter.
-        Implies --precondition-check if SA $27 NRCs 0x7F in extended.
-
-  --auth
-        Same as --auth-dry-run + submit the key via $27 0x12.
-        ⚠ A wrong key bumps the ECU's lockout counter (after N strikes
-        SA is time-locked). Gated behind --i-understand-lockout-risk
-        so it can't run by accident. Aborts immediately on first NRC —
-        no retries.
-
-  --i-understand-lockout-risk
-        Required companion to --auth.
-
-  --read-cal-prefix [N]
-        Recommended minimal first read after --auth. Issues ONE
-        $35 RequestUpload at phys 0x00140000 (CAL partition 23 start)
-        for N bytes (default 256, max 65536), $36 loop until done,
-        $37 RequestTransferExit. Compares against extracted FRF CAL
-        for byte-for-byte verification. This is the smallest possible
-        test that proves auth + read protocol work end-to-end.
-
-  --read-phys ADDR LEN
-        Generic version of --read-cal-prefix: $35 at 4-byte phys
-        address ADDR, length LEN (capped by --upload-bytes-cap).
+  1.  $3E 80          functional broadcast (0x700)   — wake bus
+  2.  $10 03          → TCU 0x7E1                    — extended session
+  3.  $22 F190        → TCU                          — read VIN
+  4.  $31 01 02 03    → TCU                          — precondition check
+  5.  $10 83          functional broadcast (0x700)   — extended bus-wide
+  6.  $10 03          → TCU                          — extended again
+  7.  $31 01 02 03    → TCU                          — precondition again
+  8.  $85 82 FF FF FF functional broadcast (0x700)   — disable DTC monitoring
+  9.  $28 81 01       functional broadcast (0x700)   — silence normal Tx
+  10. $10 02          → TCU                          — PROGRAMMING SESSION
+  11. $27 0x11        → TCU                          — request seed
+  12. SA2 VM locally  (no wire traffic)              — derive key
+  -- safety wall: with --dry-run (default) we STOP HERE --
+  13. $27 0x12 key    → TCU                          — send key (SA17 unlock)
+  14. $35 phys/len    → TCU                          — RequestUpload (CAL)
+  15. $36 loop        → TCU                          — TransferData (read)
+  16. $37             → TCU                          — RequestTransferExit
+  -- finally (always, even on exception): --
+  17. $28 00 01       functional broadcast           — re-enable normal Tx
+  18. $85 01 FF FF FF functional broadcast           — re-enable DTC
+  19. $10 01          → TCU                          — back to default session
+                                                       (TCU returns to ASW on
+                                                        next S3 timeout anyway)
 
 ═════════════════════════════════════════════════════════════════════
-HARD GUARANTEES (independent of flags)
+SAFETY MODEL
 ═════════════════════════════════════════════════════════════════════
-Never issues these services, regardless of any flag combination:
-  $2E WriteDataByIdentifier        $3D WriteMemoryByAddress
-  $34 RequestDownload              $14 ClearDiagnosticInformation
-  $11 ECUReset                     $2F InputOutputControlByIdentifier
-  $2C DynamicallyDefineDataIdentifier $28 CommunicationControl
-  $85 ControlDTCSetting            $86 ResponseOnEvent
-  $83 AccessTimingParameter        $87 LinkControl
+NEVER (could brick the module — flash corruption / comms loss):
+  $34 RequestDownload          — gateway to flash write
+  $3D WriteMemoryByAddress     — direct memory write
+  $2E WriteDataByIdentifier    — DID write (can clobber critical DIDs)
+  $87 LinkControl              — changes CAN baud rate, brick if wrong
+  $31 RoutineControl ANY ID    — except 0x0203 (precondition check); the
+                                  rest include EraseMemory (0xFF00) and
+                                  ChecksumBlock (0x0202), both brickable
 
-$31 RoutineControl is NEAR-banned. Behind --precondition-check the
-script may issue exactly ONE $31 message: StartRoutine routine 0x0203
-("Check Programming Precondition"). The routine ID is a hard-coded
-constant (PRECONDITION_CHECK_ROUTINE_ID); no CLI argument can change
-it; no other $31 routine ID is callable. Routine 0x0203 is a read-only
-status check; it does NOT modify flash, EEPROM, or DTC state.
+Allowed-but-state-changing (transient; auto-revert on S3 timeout):
+  $10 (any session)            — session change
+  $27 SecurityAccess           — gated on --read; wrong key bumps counter
+  $28 CommunicationControl     — silences normal Tx (visual cluster glitch)
+  $85 ControlDTCSetting        — disables DTC capture
+  $11 ECUReset                 — clean reboot (not used here, but safe)
+  $14 ClearDiagnosticInfo      — clears DTCs (not used here)
 
-Only services that can fire (and only behind their explicit gates):
-  Always:                  $10 03, $22, $23, $3E
-  With --precondition-check: $31 0x01 0x02 0x03 (the one routine, locked)
-  With --auth*:            $27 0x11 (request_seed), and $10 02 if needed
-                           to make $27 reachable
-  With --auth:             $27 0x12 (send_key, ONE attempt)
-  With --read-*:           $35, $36, $37 (read-side transfer; flash NOT modified)
+Read-only:
+  $22 / $23 / $19 / $3E         — DID/memory/DTC reads, keepalive
+  $35 / $36 (request-only) / $37 — read-side upload (we never call $34
+                                   so $36 stays read-mode)
 
-Vehicle requirements:
-  * Ignition ON, engine OFF, P + parking brake
-  * `sudo systemctl stop comma` so the panda is free
-  * Default: panda plugged into OBD-II — bus 1 → set_obd(True) → J533
-    tunnel → TCU. Same path VW_Flash/ODIS use. Pass --pt-direct only
-    if the harness is spliced onto a raw PT-CAN pair.
+═════════════════════════════════════════════════════════════════════
+GATES (minimal)
+═════════════════════════════════════════════════════════════════════
+Default (no flags):
+  Runs steps 1-12 only. Computes the SA2 key from the live seed but
+  does NOT submit it. Cleanup (17-19) runs. No flash touched.
+
+  --read [N]
+        Run the full sequence (steps 1-19), submit the key, read N
+        bytes from CAL phys 0x00140000 (default 256, max 65536).
+        Wrong key bumps the lockout counter — single attempt, then
+        aborts cleanly into cleanup.
+
+  --pt-direct
+        Route bus 1 to raw PT-CAN instead of OBD-II tunnel. Default
+        is OBD-II (matches ODIS).
+
+═════════════════════════════════════════════════════════════════════
+Vehicle requirements
+═════════════════════════════════════════════════════════════════════
+  * Selector P, parking brake, KL15 ON, engine OFF, 12V maintainer
+    if available (matches DQ500 documented programming preconditions)
+  * `sudo systemctl stop comma`
 """
 
 import argparse
 import hashlib
+import struct
 import sys
+import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import NamedTuple
 
 from panda import Panda
 from opendbc.car.uds import (
@@ -111,77 +98,35 @@ from opendbc.car.uds import (
     MessageTimeoutError,
     NegativeResponseError,
     SESSION_TYPE,
-    ACCESS_TYPE,
     ROUTINE_CONTROL_TYPE,
 )
 from opendbc.car.structs import CarParams
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Topology + DSG constants
+# Constants
 # ──────────────────────────────────────────────────────────────────────
 TCU_TX = 0x7E1
 TCU_RX = 0x7E9
-BUS_OBD = 1
-SA_LEVEL_DSG = 0x11   # SA17 — matches VW_Flash/lib/flash_uds.py:519
-SA2_SCRIPT_DQ500_0DL = bytes.fromhex("6806814A05876B5F7DD5494C")  # dq500_0dl.py:36
+BUS = 1
+FUNCTIONAL_TX = 0x700              # VW tester functional broadcast ID
+SA_LEVEL_DSG = 0x11                # SA17, per VW_Flash/lib/flash_uds.py:519
+SA2_SCRIPT_DQ500_0DL = bytes.fromhex("6806814A05876B5F7DD5494C")
 
-# The ONLY $31 RoutineControl identifier this script is ever permitted to
-# invoke. VW_Flash calls this routine to clear the "conditionsNotCorrect"
-# gate before $10 02 ProgrammingSession. It is a read-only precondition
-# CHECK that returns status bytes; it does not modify the ECU.
-# Any code path that wants to call routine_control() must compare the
-# routine ID against this constant — never accept a CLI-provided value.
-PRECONDITION_CHECK_ROUTINE_ID = 0x0203
+# Hard-locked: the ONLY $31 routine ID this script may invoke.
+# Routine 0x0203 = "Check Programming Precondition" — read-only status.
+PRECONDITION_ROUTINE_ID = 0x0203
 
-# CAL partition 23-24 (per DQ500_0DL_MEMORY_MAP.md; YOYO confirmed)
-CAL_ADDR = 0x00140000
-CAL_SIZE = 0x40000  # 2 × 128 KB
+# CAL partition 23 start (per DQ500_0DL_MEMORY_MAP.md, confirmed by YOYO).
+CAL_PHYS_ADDR = 0x00140000
 
-# EEPROM (per DQ500_0DL_MEMORY_MAP.md; YOYO confirmed)
-EEPROM_ADDR = 0x80100000
-EEPROM_SIZE = 0x20000  # 16 × 8 KB
-
-# Default cap on $36 payload bytes per single --read-phys invocation
-UPLOAD_BYTES_CAP_DEFAULT = 65536
-UPLOAD_BYTES_CAP_MAX = 524288
-
-IDENTITY_DIDS = [
-    (0xF187, "VW spare part number"),
-    (0xF189, "VW application SW version"),
-    (0xF18C, "ECU serial number"),
-    (0xF191, "VW ECU HW number"),
-    (0xF197, "VW system name / DSG model"),
-    (0xF19E, "ASAM/ODX file identifier"),
-    (0xF1A2, "VW programming preconditions"),
-]
-
-
-class Region(NamedTuple):
-    label: str
-    addr_phys: int
-    addr_va: int | None
-    size: int
-    note: str
-
-
-REGIONS: list[Region] = [
-    Region("cal",          0x00140000, 0x80140000, 16,
-           "CAL — readable per YOYO; expected $23 NRC pre-SA"),
-    Region("sboot",        0x00000000, 0x80000000, 16, "SBOOT — protected"),
-    Region("cboot",        0x00010000, 0x80010000, 16, "CBOOT — protected"),
-    Region("asw",          0x00030000, 0x80030000, 16, "ASW — protected"),
-    Region("upper_factory", 0x00180000, 0x80180000, 16,
-           "upper 0x180000-0x27FFFF — protected"),
-    Region("dflash",       0x80100000, None, 16,
-           "EEPROM at VA 0x80100000 — readable per YOYO"),
-]
+# Read-byte cap (--read N).
+READ_BYTES_DEFAULT = 256
+READ_BYTES_MAX = 65536
 
 
 # ──────────────────────────────────────────────────────────────────────
-# SA2 byte-code VM (inlined from re-vw/sa2_seed_key; same algorithm
-# VW_Flash uses on DSG — public, deterministic seed→key map). Proven
-# correct against EPS in vw_mqb_sa17_probe.py on this codebase.
+# SA2 byte-code VM (inlined; same algorithm VW_Flash uses on DSG)
 # ──────────────────────────────────────────────────────────────────────
 class Sa2SeedKey:
     def __init__(self, instruction_tape: bytes, seed: int):
@@ -207,24 +152,24 @@ class Sa2SeedKey:
         self.ip += 1
 
     def _add(self):
-        operands = self.tape[self.ip + 1:self.ip + 5]
-        v = (operands[0] << 24) | (operands[1] << 16) | (operands[2] << 8) | operands[3]
+        ops = self.tape[self.ip + 1:self.ip + 5]
+        v = (ops[0] << 24) | (ops[1] << 16) | (ops[2] << 8) | ops[3]
         out = self.register + v
         self.carry_flag = 1 if out > 0xFFFFFFFF else 0
         self.register = out & 0xFFFFFFFF
         self.ip += 5
 
     def _sub(self):
-        operands = self.tape[self.ip + 1:self.ip + 5]
-        v = (operands[0] << 24) | (operands[1] << 16) | (operands[2] << 8) | operands[3]
+        ops = self.tape[self.ip + 1:self.ip + 5]
+        v = (ops[0] << 24) | (ops[1] << 16) | (ops[2] << 8) | ops[3]
         out = self.register - v
         self.carry_flag = 1 if out < 0 else 0
         self.register = out & 0xFFFFFFFF
         self.ip += 5
 
     def _eor(self):
-        operands = self.tape[self.ip + 1:self.ip + 5]
-        v = (operands[0] << 24) | (operands[1] << 16) | (operands[2] << 8) | operands[3]
+        ops = self.tape[self.ip + 1:self.ip + 5]
+        v = (ops[0] << 24) | (ops[1] << 16) | (ops[2] << 8) | ops[3]
         self.register ^= v
         self.ip += 5
 
@@ -266,218 +211,63 @@ class Sa2SeedKey:
 # ──────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────
-def _nrc_str(e: NegativeResponseError) -> str:
+def _nrc(e: NegativeResponseError) -> str:
     return f"0x{e.error_code:02X} ({e.message})"
 
 
-def _try_rmba(uds: UdsClient, addr: int, size: int,
-              addr_bytes: int = 4) -> tuple[str, bytes | str]:
-    try:
-        data = uds.read_memory_by_address(
-            memory_address=addr, memory_size=size,
-            memory_address_bytes=addr_bytes, memory_size_bytes=1,
-        )
-    except NegativeResponseError as e:
-        return ("nrc", _nrc_str(e))
-    except MessageTimeoutError:
-        return ("err", "timeout")
-    except Exception as e:  # noqa: BLE001
-        return ("err", f"{type(e).__name__}: {e}")
-    if not data:
-        return ("err", "empty response")
-    return ("ok", data)
+def _broadcast(panda: Panda, payload: bytes, log, label: str) -> None:
+    """Send a single-frame ISO-TP request to functional ID 0x700.
+    Suppress-positive-response bit is expected on the sub-function byte.
+    No reply is awaited — the broadcast is fire-and-forget.
+    """
+    assert len(payload) <= 7, f"functional broadcast must fit one frame: {payload.hex()}"
+    frame = bytes([len(payload)]) + payload + b"\x55" * (7 - len(payload))
+    panda.can_send(FUNCTIONAL_TX, frame, BUS)
+    log(f"     0x{FUNCTIONAL_TX:03X}: {frame.hex(' ')}   ← {label}")
 
 
-def _verify_against_frf(addr_offset: int, data: bytes, frf_path: Path, log) -> None:
-    if not frf_path.exists():
-        log(f"       [verify] {frf_path.name} not found — skipping comparison")
-        return
-    expected = frf_path.read_bytes()
-    if addr_offset + len(data) > len(expected):
-        log(f"       [verify] offset 0x{addr_offset:X}+{len(data)}B beyond FRF block 0x{len(expected):X}")
-        return
-    slice_ = expected[addr_offset:addr_offset + len(data)]
-    if slice_ == data:
-        log(f"       [verify] MATCH against {frf_path.name} "
-            f"(sha256(read)={hashlib.sha256(data).hexdigest()[:16]}…)")
-    else:
-        # Count matching bytes for partial-match metric (CAL diverges due
-        # to adaptation, so a partial match is also informative)
-        match_n = sum(1 for a, b in zip(data, slice_) if a == b)
-        log(f"       [verify] PARTIAL match against {frf_path.name}: "
-            f"{match_n}/{len(data)} bytes equal "
-            f"({100 * match_n / len(data):.1f}%)")
-        log(f"                read[:32]:     {data[:32].hex(' ')}")
-        log(f"                expected[:32]: {slice_[:32].hex(' ')}")
-
-
-def _read_did(uds: UdsClient, did: int, desc: str, log) -> bytes | None:
+def _read_did(uds: UdsClient, did: int, label: str, log) -> bytes | None:
     try:
         payload = uds.read_data_by_identifier(did)
     except NegativeResponseError as e:
-        log(f"   0x{did:04X} {desc:35s} : NRC ({e})")
+        log(f"   $22 0x{did:04X} ({label}) NRC: {_nrc(e)}")
         return None
     except Exception as e:  # noqa: BLE001
-        log(f"   0x{did:04X} {desc:35s} : {type(e).__name__}: {e}")
+        log(f"   $22 0x{did:04X} ({label}) {type(e).__name__}: {e}")
         return None
     try:
         text = payload.decode("ascii").rstrip("\x00 ")
-        text_ok = all(0x20 <= b < 0x7F or b == 0 for b in payload)
+        if all(0x20 <= b < 0x7F or b == 0 for b in payload):
+            disp = text
+        else:
+            disp = payload.hex(" ")
     except Exception:
-        text = ""
-        text_ok = False
-    display = text if text_ok and text else payload.hex(" ")
-    log(f"   0x{did:04X} {desc:35s} : {display}")
+        disp = payload.hex(" ")
+    log(f"   $22 0x{did:04X} ({label}): {disp}")
     return payload
 
 
-def _open_extended(uds: UdsClient, log) -> bool:
-    log("── $10 03 ExtendedDiagnostic ──")
-    try:
-        uds.diagnostic_session_control(SESSION_TYPE.EXTENDED_DIAGNOSTIC)
-        log("   ok")
-        return True
-    except NegativeResponseError as e:
-        log(f"   NRC: {_nrc_str(e)}")
-        return False
-    except Exception as e:  # noqa: BLE001
-        log(f"   {type(e).__name__}: {e}")
-        return False
-
-
-def _recon_extra(uds: UdsClient, frf_dir: Path, log) -> None:
-    """Extra recon: full identity DID sweep + $23 probe. Opt-in via --recon."""
-    log("")
-    log("── $22 ReadDataByIdentifier (identity sweep) ──")
-    for did, desc in IDENTITY_DIDS:
-        _read_did(uds, did, desc, log)
-
-    log("")
-    log("── $23 ReadMemoryByAddress probe (16 B per region) ──")
-    for r in REGIONS:
-        log(f"   [{r.label}] phys=0x{r.addr_phys:08X}")
-        st, val = _try_rmba(uds, r.addr_phys, r.size)
-        log(f"     phys-form: {st.upper()} {val.hex(' ') if isinstance(val, bytes) else val}")
-        if r.addr_va is not None and r.addr_va != r.addr_phys:
-            st, val = _try_rmba(uds, r.addr_va, r.size)
-            log(f"     va-form  : {st.upper()} {val.hex(' ') if isinstance(val, bytes) else val}")
-
-
-def _do_precondition_check(uds: UdsClient, log) -> bool:
-    """Issue $31 0x01 0x02 0x03 — the ONE permitted RoutineControl call.
-    Hard-coded routine ID = PRECONDITION_CHECK_ROUTINE_ID. No other ID is reachable."""
-    assert PRECONDITION_CHECK_ROUTINE_ID == 0x0203, \
-        "PRECONDITION_CHECK_ROUTINE_ID was changed — refusing to issue $31"
-    log("")
-    log("── $31 0x01 StartRoutine 0x0203 (Check Programming Precondition) ──")
-    log("   read-only status check; does not modify TCU state")
+def _start_routine_precondition(uds: UdsClient, log) -> bool:
+    """The ONLY $31 routine permitted by this script. Routine ID is
+    hard-coded; no CLI argument can change it."""
+    assert PRECONDITION_ROUTINE_ID == 0x0203, "routine ID changed — abort"
     try:
         result = uds.routine_control(
-            ROUTINE_CONTROL_TYPE.START,
-            PRECONDITION_CHECK_ROUTINE_ID,
+            ROUTINE_CONTROL_TYPE.START, PRECONDITION_ROUTINE_ID,
         )
     except NegativeResponseError as e:
-        log(f"   NRC: {_nrc_str(e)}")
+        log(f"   $31 01 02 03 NRC: {_nrc(e)}")
         return False
     except Exception as e:  # noqa: BLE001
-        log(f"   {type(e).__name__}: {e}")
+        log(f"   $31 01 02 03 {type(e).__name__}: {e}")
         return False
-    log(f"   ok — result bytes: {result.hex(' ') if result else '(empty)'}")
+    log(f"   $31 01 02 03 ok  result={result.hex(' ') if result else '(empty)'}")
     return True
 
 
-def _do_auth(uds: UdsClient, log, submit_key: bool,
-             precondition_ok: bool) -> tuple[bool, bytes | None, bytes | None]:
-    """Returns (authenticated, seed, key_bytes). If submit_key=False, never sends key.
-
-    Mirrors VW_Flash/lib/flash_uds.py:472-519 exactly:
-        $31 0x0203 (already done if precondition_ok)
-        $3E TesterPresent
-        $10 02 ProgrammingSession
-        $27 0x11 request_seed
-        $27 0x12 send_key
-    """
-    log("")
-    log("── $3E TesterPresent + $10 02 ProgrammingSession (VW_Flash sequence) ──")
-    try:
-        uds.tester_present()
-        log("   $3E ok")
-    except Exception as e:  # noqa: BLE001
-        log(f"   $3E warn: {type(e).__name__}: {e}")
-    try:
-        uds.diagnostic_session_control(SESSION_TYPE.PROGRAMMING)
-        log("   $10 02 ok — in programming session")
-    except NegativeResponseError as e:
-        log(f"   $10 02 NRC: {_nrc_str(e)} — cannot reach SA. Aborting.")
-        if e.error_code == 0x22 and not precondition_ok:
-            log("   Hint: re-run with --precondition-check to fire $31 routine 0x0203 first.")
-        elif e.error_code == 0x22 and precondition_ok:
-            log("   Hint: even after precondition check, $10 02 refused. Likely a")
-            log("   vehicle-state condition (DTC on a bus peer, gateway PIN, etc.)")
-            log("   or stock firmware that genuinely refuses $10 02 from OBD-II.")
-            log("   VW_Flash itself has a Switchpatch-ASW-only fallback for this.")
-        return (False, None, None)
-    except Exception as e:  # noqa: BLE001
-        log(f"   $10 02 failed: {type(e).__name__}: {e}")
-        return (False, None, None)
-
-    log("")
-    log("── $27 SecurityAccess L17 (in programming session) ──")
-    log(f"   SA2 byte-code (dq500_0dl.py): {SA2_SCRIPT_DQ500_0DL.hex()}")
-    log(f"   request_seed sub-function: 0x{SA_LEVEL_DSG:02X}")
-    log(f"   send_key sub-function    : 0x{SA_LEVEL_DSG + 1:02X}")
-    try:
-        seed = uds.security_access(SA_LEVEL_DSG)
-    except NegativeResponseError as e:
-        log(f"   request_seed NRC: {_nrc_str(e)}")
-        return (False, None, None)
-    except Exception as e:  # noqa: BLE001
-        log(f"   request_seed failed: {type(e).__name__}: {e}")
-        return (False, None, None)
-    log(f"   seed = {seed.hex()}  ({len(seed)} bytes)")
-    if all(b == 0 for b in seed):
-        log("   seed is all-zero → already authenticated at L17 (no key needed)")
-        return (True, seed, None)
-
-    seed_int = int.from_bytes(seed, "big")
-    try:
-        key_int = Sa2SeedKey(SA2_SCRIPT_DQ500_0DL, seed_int).execute()
-    except Exception as e:  # noqa: BLE001
-        log(f"   SA2 VM failed: {type(e).__name__}: {e}")
-        return (False, seed, None)
-    key = key_int.to_bytes(len(seed), "big")
-    log(f"   computed key = {key.hex()}  ({len(key)} bytes)")
-
-    if not submit_key:
-        log("   --auth-dry-run: NOT submitting key. Lockout counter NOT advanced.")
-        log("   Verify the key bytes look plausible (random-looking, same length as")
-        log("   seed) before re-running with --auth --i-understand-lockout-risk.")
-        return (False, seed, key)
-
-    log("   submitting key (single attempt — aborts on NRC)")
-    try:
-        uds.security_access(SA_LEVEL_DSG + 1, key)
-    except NegativeResponseError as e:
-        log(f"   send_key NRC: {_nrc_str(e)}")
-        log("   → algorithm/key mismatch. DO NOT RETRY blindly. Counter has advanced.")
-        return (False, seed, key)
-    except Exception as e:  # noqa: BLE001
-        log(f"   send_key failed: {type(e).__name__}: {e}")
-        return (False, seed, key)
-    log("   ✓ authenticated at L17")
-    return (True, seed, key)
-
-
-def _do_upload(uds: UdsClient, addr: int, length: int, label: str,
-               out_dir: Path, log, frf_dir: Path,
-               frf_block: str | None = None,
-               frf_offset: int = 0) -> bytes | None:
-    """YOYO-mirror $35/$36/$37 read of LENGTH bytes at 4-byte phys ADDR."""
-    log("")
-    log(f"── $35 RequestUpload + $36 TransferData + $37 Exit ({label}) ──")
-    log(f"   address (4-byte phys) = 0x{addr:08X}")
-    log(f"   length                = {length} (0x{length:X}) B")
-    log(f"   data_format           = 0x00 (no compression/encryption)")
+def _do_upload(uds: UdsClient, addr: int, length: int, out_dir: Path,
+               log, frf_dir: Path) -> bytes | None:
+    log(f"   $35 RequestUpload  addr=0x{addr:08X} len={length} (0x{length:X})")
     try:
         max_block = uds.request_upload(
             memory_address=addr,
@@ -487,100 +277,82 @@ def _do_upload(uds: UdsClient, addr: int, length: int, label: str,
             data_format=0x00,
         )
     except NegativeResponseError as e:
-        log(f"   $35 NRC: {_nrc_str(e)}")
+        log(f"   $35 NRC: {_nrc(e)}")
         return None
     except Exception as e:  # noqa: BLE001
-        log(f"   $35 failed: {type(e).__name__}: {e}")
+        log(f"   $35 {type(e).__name__}: {e}")
         return None
-    log(f"   $35 ok — maxNumberOfBlockLength = {max_block}")
-
+    log(f"   $35 ok  maxNumberOfBlockLength={max_block}")
     out = bytearray()
     counter = 1
     try:
         while len(out) < length:
             chunk = uds.transfer_data(counter)
             if not chunk:
-                log(f"   $36 empty at counter={counter}, len={len(out)} — stopping")
+                log(f"   $36 ctr={counter} empty — stopping at {len(out)} B")
                 break
             out.extend(chunk)
-            counter = ((counter) & 0xFF) + 1
-            if counter == 256:
-                counter = 0  # wrap to 0 per ISO 14229
-        log(f"   $36 done — got {len(out)} B")
+            counter = (counter + 1) & 0xFF
+        log(f"   $36 done — {len(out)} B")
     except NegativeResponseError as e:
-        log(f"   $36 NRC at counter={counter}, accumulated {len(out)} B: {_nrc_str(e)}")
+        log(f"   $36 ctr={counter} NRC: {_nrc(e)} (got {len(out)} B)")
     except Exception as e:  # noqa: BLE001
-        log(f"   $36 failed at counter={counter}, accumulated {len(out)} B: "
-            f"{type(e).__name__}: {e}")
+        log(f"   $36 ctr={counter} {type(e).__name__}: {e}")
     finally:
         try:
             uds.request_transfer_exit()
-            log("   $37 exit ok — transfer state cleared")
+            log("   $37 ok")
         except Exception as e:  # noqa: BLE001
-            log(f"   $37 exit warn: {type(e).__name__}: {e}")
+            log(f"   $37 warn: {type(e).__name__}: {e}")
 
     if not out:
         return None
-    out_path = out_dir / f"{label}_0x{addr:08X}_{len(out)}B.bin"
+    out_path = out_dir / f"cal_0x{addr:08X}_{len(out)}B.bin"
     out_path.write_bytes(bytes(out))
     log(f"   saved {len(out)} B → {out_path.name}")
     log(f"   first 32 B: {bytes(out[:32]).hex(' ')}")
-    if frf_block:
-        _verify_against_frf(frf_offset, bytes(out), frf_dir / frf_block, log)
+
+    cal_ref = frf_dir / "cal_80140000.bin"
+    if cal_ref.exists():
+        expected = cal_ref.read_bytes()
+        offset = addr - CAL_PHYS_ADDR
+        if 0 <= offset and offset + len(out) <= len(expected):
+            slice_ = expected[offset:offset + len(out)]
+            if slice_ == bytes(out):
+                log(f"   [verify] MATCH against {cal_ref.name} "
+                    f"(sha256={hashlib.sha256(bytes(out)).hexdigest()[:16]}…)")
+            else:
+                match_n = sum(1 for a, b in zip(out, slice_) if a == b)
+                log(f"   [verify] PARTIAL {match_n}/{len(out)} bytes match "
+                    f"({100*match_n/len(out):.1f}%) — adaptation deltas expected")
+        else:
+            log(f"   [verify] offset 0x{offset:X} outside FRF block")
     return bytes(out)
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Main
+# Main flow
 # ──────────────────────────────────────────────────────────────────────
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__.split("═")[0].strip(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="See module docstring for full gate definitions.",
     )
     ap.add_argument("--output-dir", type=Path, default=None)
     ap.add_argument("--frf-dir", type=Path,
                     default=Path("/data/VW_Flash/extracted_FL_0DL300012N_2110"))
-    ap.add_argument("--bus", type=int, default=BUS_OBD)
     ap.add_argument("--pt-direct", action="store_true",
-                    help="route bus 1 to raw PT-CAN instead of the OBD-II "
-                         "tunnel. Only needed if the gateway specifically "
-                         "blocks something — VW_Flash/ODIS go via gateway "
-                         "and work fine.")
-    ap.add_argument("--recon", action="store_true",
-                    help="extra: identity DID sweep + $23 RMBA probe. Useful "
-                         "for first-run characterization, but slow and noisy")
-    ap.add_argument("--precondition-check", action="store_true",
-                    help="fire $31 0x01 0x02 0x03 (the only $31 routine this script can issue); "
-                         "needed before $10 02 if F1A2 preconditions aren't met")
-    ap.add_argument("--auth-dry-run", action="store_true",
-                    help="request seed + derive key + print, NO submit")
-    ap.add_argument("--auth", action="store_true",
-                    help="request seed + derive key + submit (requires --i-understand-lockout-risk)")
-    ap.add_argument("--i-understand-lockout-risk", action="store_true",
-                    help="required companion to --auth")
-    ap.add_argument("--read-cal-prefix", nargs="?", type=int, const=256, default=None,
+                    help="bus 1 → raw PT-CAN (default: OBD-II tunnel, matches ODIS)")
+    ap.add_argument("--read", nargs="?", type=int, const=READ_BYTES_DEFAULT, default=None,
                     metavar="N",
-                    help="after --auth, read N bytes (default 256, max --upload-bytes-cap) "
-                         "from CAL phys 0x00140000")
-    ap.add_argument("--read-phys", nargs=2, type=lambda x: int(x, 0), default=None,
-                    metavar=("ADDR", "LEN"),
-                    help="after --auth, read LEN bytes at 4-byte phys ADDR")
-    ap.add_argument("--upload-bytes-cap", type=int, default=UPLOAD_BYTES_CAP_DEFAULT,
-                    help=f"global cap on $36 read per invocation "
-                         f"(default {UPLOAD_BYTES_CAP_DEFAULT}, max {UPLOAD_BYTES_CAP_MAX})")
+                    help=f"submit key + read N bytes from CAL (default "
+                         f"{READ_BYTES_DEFAULT}, max {READ_BYTES_MAX}). "
+                         f"Without this flag the script stops after computing "
+                         f"the key and never submits it.")
     args = ap.parse_args()
 
-    if args.auth and not args.i_understand_lockout_risk:
-        print("ERROR: --auth requires --i-understand-lockout-risk", file=sys.stderr)
-        return 64
-    if args.upload_bytes_cap > UPLOAD_BYTES_CAP_MAX:
-        print(f"ERROR: --upload-bytes-cap > {UPLOAD_BYTES_CAP_MAX}", file=sys.stderr)
-        return 64
-    if (args.read_cal_prefix is not None or args.read_phys is not None) and not args.auth:
-        print("ERROR: --read-* requires --auth (and --i-understand-lockout-risk)", file=sys.stderr)
-        return 64
+    if args.read is not None:
+        args.read = max(1, min(args.read, READ_BYTES_MAX))
 
     out_dir = args.output_dir or Path(f"dsg_uds_recon_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -592,23 +364,16 @@ def main() -> int:
         log_file.write(msg + "\n")
         log_file.flush()
 
-    log(f"DSG UDS recon — {datetime.now().isoformat()}")
+    log(f"DSG UDS ODIS-mirror — {datetime.now().isoformat()}")
     log(f"Output: {out_dir.resolve()}")
     log(f"FRF:    {args.frf_dir} ({'present' if args.frf_dir.exists() else 'NOT FOUND'})")
-    log(f"Bus:    pt_direct={args.pt_direct} ({'PT-CAN' if args.pt_direct else 'OBD-II tunnel'})")
-    log(f"Gates:  recon={args.recon}  precondition_check={args.precondition_check}  "
-        f"auth_dry_run={args.auth_dry_run}  auth={args.auth}  "
-        f"read_cal_prefix={args.read_cal_prefix}  read_phys={args.read_phys}  "
-        f"upload_bytes_cap={args.upload_bytes_cap}")
+    log(f"Mode:   {'READ ' + str(args.read) + ' B' if args.read else 'dry-run (no key submission)'}")
+    log(f"Bus:    {'PT-CAN direct' if args.pt_direct else 'OBD-II tunnel'}")
     log("")
 
     try:
         panda = Panda()
         panda.set_safety_mode(CarParams.SafetyModel.elm327)
-        # Default: bus 1 = OBD-II tunnel (set_obd(True)) — same path
-        # VW_Flash/ODIS use. The J533 gateway does NOT block $10 02 in
-        # principle; it tunnels diag requests transparently. Use
-        # --pt-direct only if a specific service is gateway-blocked.
         panda.set_obd(not args.pt_direct)
         panda.can_clear(0xFFFF)
     except Exception as e:  # noqa: BLE001
@@ -616,77 +381,214 @@ def main() -> int:
         log_file.close()
         return 1
 
-    uds = UdsClient(panda, TCU_TX, TCU_RX, args.bus, timeout=2.0)
+    uds = UdsClient(panda, TCU_TX, TCU_RX, BUS, timeout=2.0)
 
-    # Always: open extended session + read VIN (minimal proof-of-life,
-    # matches VW_Flash's first two wire messages).
-    if not _open_extended(uds, log):
-        log_file.close()
-        return 2
-    log("")
-    log("── $22 0xF190 (VIN) ──")
-    _read_did(uds, 0xF190, "VIN", log)
+    # Cleanup state: did we send $85/$28 yet? Used by the finally block to
+    # decide whether to send the re-enable counterparts.
+    quiesced = False
 
-    # Opt-in: full identity + $23 probe
-    if args.recon:
-        _recon_extra(uds, args.frf_dir, log)
+    try:
+        # ──────────────────────────────────────────────────────────────
+        # ODIS-mirror flow.
+        # Reference trace: TMBLJ9NS3J8068062_20260519T154011_CAN.vmt
+        # (real ODIS-E session that successfully flashed EPS 0x712).
+        # Each step below cites the trace line(s) so the wire pattern
+        # can be cross-checked against ODIS exactly.
+        # ──────────────────────────────────────────────────────────────
 
-    # Precondition gate (read-only status check; clears $10 02 NRC 0x22)
-    precondition_ok = False
-    if args.precondition_check:
-        precondition_ok = _do_precondition_check(uds, log)
+        # STEP 1 — Continuous functional TesterPresent broadcasts.
+        # ODIS sends `02 3E 80 ...` to 0x700 every ~500 ms throughout
+        # the entire flash session (trace lines 3, 8, 13, 18 ...).
+        # 0x3E with sub-function 0x80 = suppress-positive bit set, so
+        # no ECU replies; the bus stays alive without echo traffic.
+        # We send a small burst up-front; opendbc's UDS calls below are
+        # quick enough that S3 timeout (~5 s) won't trip mid-flow.
+        log("── STEP 1: wake broadcasts — $3E 80 to 0x700 (ODIS trace L3..) ──")
+        for _ in range(3):
+            _broadcast(panda, bytes([0x3E, 0x80]), log, "TesterPresent suppress-pos")
+            time.sleep(0.05)
 
-    # SA gates
-    submit = args.auth
-    do_sa = args.auth_dry_run or args.auth
-    authed = False
-    if do_sa:
-        authed, _, _ = _do_auth(uds, log, submit_key=submit,
-                                precondition_ok=precondition_ok)
-        if args.auth_dry_run and not args.auth:
-            log("")
-            log("── auth-dry-run complete; no key submitted. Exiting. ──")
-            log_file.close()
-            return 0
-        if args.auth and not authed:
-            log("")
-            log("── auth failed; not running read-* gates ──")
-            log_file.close()
+        # STEPS 2-4 — Per-TCU extended session + VIN + precondition.
+        # Trace L107 ($10 03), L109 ($31 01 02 03). On ODIS this was
+        # against EPS 0x712; for TCU we retarget to 0x7E1. The $22 F190
+        # VIN read isn't strictly part of the session entry, but ODIS
+        # always does it and it provides a side-benefit S3 reset.
+        log("")
+        log("── STEP 2-4: per-TCU $10 03 → $22 F190 → $31 0x0203 (trace L107-110) ──")
+        try:
+            uds.diagnostic_session_control(SESSION_TYPE.EXTENDED_DIAGNOSTIC)
+            log("   $10 03 ok")
+        except Exception as e:  # noqa: BLE001
+            log(f"   $10 03 {type(e).__name__}: {e} — abort")
+            return 2
+        _read_did(uds, 0xF190, "VIN", log)
+        _start_routine_precondition(uds, log)
+
+        # STEP 5 — Functional broadcast $10 83 to take entire bus into
+        # extended. Sub-function 0x83 = (0x80 suppress | 0x03 extended).
+        # Trace L125. Putting ALL ECUs into extended together is what
+        # the gateway-side gate requires before any single ECU will
+        # accept $10 02.
+        log("")
+        log("── STEP 5: functional broadcast $10 83 (bus-wide extended) — trace L125 ──")
+        _broadcast(panda, bytes([0x10, 0x83]), log, "$10 83 extended suppress-pos")
+        time.sleep(0.1)
+
+        # STEPS 6-7 — Per-TCU re-issue extended + precondition.
+        # Trace L126 ($10 03), L129 ($31 01 02 03). ODIS does this
+        # again post-broadcast — possibly because the functional
+        # extended is suppress-positive and ODIS wants explicit
+        # confirmation that the TCU is in extended.
+        log("")
+        log("── STEP 6-7: re-issue $10 03 + $31 0x0203 post-broadcast (trace L126-130) ──")
+        try:
+            uds.diagnostic_session_control(SESSION_TYPE.EXTENDED_DIAGNOSTIC)
+            log("   $10 03 ok")
+        except Exception as e:  # noqa: BLE001
+            log(f"   $10 03 {type(e).__name__}: {e}")
+        _start_routine_precondition(uds, log)
+
+        # STEP 8 — Functional broadcast $85 0x82 0xFFFFFF.
+        # Trace L131. ControlDTCSetting sub-function 0x82 = (0x80
+        # suppress | 0x02 OFF). Argument 0xFFFFFF = "all DTC groups."
+        # This stops every ECU from logging new DTCs during programming,
+        # so the TCU disappearing from PT-CAN (when we hit $10 02 below)
+        # doesn't fault out the engine ECU, cluster, gateway etc.
+        # Transient: reverts on S3 timeout, or explicitly via $85 81.
+        log("")
+        log("── STEP 8: functional broadcast $85 0x82 0xFFFFFF (DTC off) — trace L131 ──")
+        _broadcast(panda, bytes([0x85, 0x82, 0xFF, 0xFF, 0xFF]), log,
+                   "ControlDTCSetting off all DTCs")
+        time.sleep(0.05)
+
+        # STEP 9 — Functional broadcast $28 0x81 0x01.
+        # Trace L135. CommunicationControl sub-function 0x81 = (0x80
+        # suppress | 0x01 disableRxNormalCommunication). Argument 0x01
+        # = normalCommunication (vs networkManagement). All ECUs stop
+        # broadcasting normal-priority frames, freeing bus bandwidth
+        # for the upcoming flash transfer. Instrument cluster may
+        # briefly show warning lamps; reverts on $28 0x80 01 below
+        # or on session timeout.
+        log("")
+        log("── STEP 9: functional broadcast $28 0x81 0x01 (silence Tx) — trace L135 ──")
+        _broadcast(panda, bytes([0x28, 0x81, 0x01]), log,
+                   "CommunicationControl disable Tx normal")
+        quiesced = True
+        time.sleep(0.1)
+
+        # STEP 10 — Programming session.
+        # Trace L137 ($10 02 request), L138 (NRC 0x78 responsePending),
+        # L139 (positive response 06 50 02 00 0A 01 F4). Note the
+        # initial responsePending — the TCU may need a moment to
+        # finalize the bus-quiesced state before accepting; opendbc's
+        # response_pending_timeout (10s default) handles this.
+        log("")
+        log("── STEP 10: per-TCU $10 02 programmingSession — trace L137-139 ──")
+        try:
+            uds.diagnostic_session_control(SESSION_TYPE.PROGRAMMING)
+            log("   $10 02 ok — in programming session (TCU is now in CBOOT)")
+        except NegativeResponseError as e:
+            log(f"   $10 02 NRC: {_nrc(e)} — abort")
+            return 3
+        except Exception as e:  # noqa: BLE001
+            log(f"   $10 02 {type(e).__name__}: {e} — abort")
             return 3
 
-    # Read gates (only if authed)
-    if authed:
-        if args.read_cal_prefix is not None:
-            n = min(args.read_cal_prefix, args.upload_bytes_cap)
-            _do_upload(uds, addr=CAL_ADDR, length=n,
-                       label="cal_prefix",
-                       out_dir=out_dir, log=log, frf_dir=args.frf_dir,
-                       frf_block="cal_80140000.bin", frf_offset=0)
-        if args.read_phys is not None:
-            addr, length = args.read_phys
-            length = min(length, args.upload_bytes_cap)
-            # Pick the FRF block if the address falls in a known range
-            frf_block = None
-            frf_offset = 0
-            if 0x00140000 <= addr < 0x00180000:
-                frf_block = "cal_80140000.bin"
-                frf_offset = addr - 0x00140000
-            elif 0x00010000 <= addr < 0x00030000:
-                frf_block = "cboot_80010000.bin"
-                frf_offset = addr - 0x00010000
-            elif 0x00030000 <= addr < 0x00140000:
-                frf_block = "asw_80030000.bin"
-                frf_offset = addr - 0x00030000
-            _do_upload(uds, addr=addr, length=length,
-                       label=f"phys",
-                       out_dir=out_dir, log=log, frf_dir=args.frf_dir,
-                       frf_block=frf_block, frf_offset=frf_offset)
+        # STEP 11 — Request seed.
+        # Trace L140 (request), L141 (seed = D7 DD 14 E8 for the EPS
+        # run). For TCU the seed will be different each session
+        # because it's a fresh PRNG draw on the ECU.
+        log("")
+        log("── STEP 11: $27 0x11 requestSeed (SA L17) — trace L140-141 ──")
+        try:
+            seed = uds.security_access(SA_LEVEL_DSG)
+        except NegativeResponseError as e:
+            log(f"   request_seed NRC: {_nrc(e)} — abort")
+            return 4
+        log(f"   seed = {seed.hex()}")
+        if all(b == 0 for b in seed):
+            log("   seed is all-zero → already authenticated at L17")
+            authed = True
+            key = None
+        else:
+            seed_int = int.from_bytes(seed, "big")
+            key_int = Sa2SeedKey(SA2_SCRIPT_DQ500_0DL, seed_int).execute()
+            key = key_int.to_bytes(len(seed), "big")
+            log(f"   computed key = {key.hex()}")
+            authed = False
 
-    log("")
-    log("══════════════════════════════════════════════════════")
-    log("END — log.txt + saved .bin files in output dir.")
-    log_file.close()
-    return 0
+        # ── 12. Stop here in dry-run ─────────────────────────────────
+        if args.read is None:
+            log("")
+            log("── dry-run: NOT submitting key. Cleanup will re-enable bus. ──")
+            return 0
+
+        # STEP 13 — Send key. Trace L142 (request), L143 (NRC 0x78
+        # responsePending), L144 (positive 02 67 12). The TCU is now
+        # SA17-unlocked. Wrong key would NRC 0x35 invalidKey and bump
+        # the lockout counter; we make exactly one attempt then abort.
+        if not authed:
+            log("")
+            log("── STEP 13: $27 0x12 sendKey — trace L142-144 ──")
+            try:
+                uds.security_access(SA_LEVEL_DSG + 1, key)
+                log("   ✓ SA17 unlocked")
+                authed = True
+            except NegativeResponseError as e:
+                log(f"   sendKey NRC: {_nrc(e)} — abort, lockout counter advanced")
+                return 5
+
+        # STEPS 14-16 — Read CAL via $35 RequestUpload / $36 / $37.
+        # This is where we DIVERGE from ODIS. ODIS at this point does:
+        #   $2E F1 5A 26 05 19 11 11 11 11 11 11  (write workshop code, trace L145-148)
+        #   $34 00 41 30 00 00 0D 18              (RequestDownload, trace L149-152)
+        #   $36 <ctr> <payload>                   (TransferData write, trace L153+)
+        #   $37                                   (commit write)
+        # We do the inverse:
+        #   $35 00 44 <4-byte phys> <4-byte len>  (RequestUpload, no encryption)
+        #   $36 <ctr>                             (TransferData read)
+        #   $37                                   (end transfer; no commit needed)
+        # $34 is in our NEVER list; the script cannot send it. Without
+        # $34, $36 stays in read-mode (the upload state machine started
+        # by $35), so no flash is modified.
+        log("")
+        log("── STEPS 14-16: $35 / $36 / $37 read CAL (inverse of ODIS write path) ──")
+        _do_upload(uds, CAL_PHYS_ADDR, args.read, out_dir, log, args.frf_dir)
+
+        log("")
+        log("── ODIS-mirror flow complete ──")
+        return 0
+
+    finally:
+        # STEPS 17-19 — Cleanup. Mirrors ODIS exit (trace L75039-75044):
+        # ODIS sends $85 82 + $28 81 again (re-quiesce) then $28 80 01
+        # and $85 81 FF FF FF (re-enable). We just need to re-enable;
+        # the re-quiesce in ODIS is paranoid extra coverage for ECUs
+        # that may have come back online during the post-ECU-reset
+        # window. Then $10 01 default session on the TCU returns it
+        # to ASW immediately (vs waiting for S3 timeout).
+        log("")
+        log("── STEPS 17-19: cleanup (re-enable bus, default session) ──")
+        if quiesced:
+            try:
+                # Order mirrors ODIS exit sequence (trace lines 75042/75044):
+                # $28 80 01  = enable Rx+Tx normal,  suppress-positive
+                # $85 81 FF FF FF = ControlDTCSetting ON, suppress-positive
+                _broadcast(panda, bytes([0x28, 0x80, 0x01]), log,
+                           "CommunicationControl re-enable Tx (suppress-pos)")
+                time.sleep(0.05)
+                _broadcast(panda, bytes([0x85, 0x81, 0xFF, 0xFF, 0xFF]), log,
+                           "ControlDTCSetting re-enable (suppress-pos)")
+                time.sleep(0.05)
+            except Exception as e:  # noqa: BLE001
+                log(f"   cleanup warn: {type(e).__name__}: {e}")
+        # Drop TCU back to default session (S3 timeout would do this too)
+        try:
+            uds.diagnostic_session_control(SESSION_TYPE.DEFAULT)
+            log("   $10 01 (default) ok — TCU back to ASW")
+        except Exception:
+            pass
+        log_file.close()
 
 
 if __name__ == "__main__":
