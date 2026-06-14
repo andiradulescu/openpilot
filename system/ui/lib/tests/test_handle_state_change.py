@@ -320,15 +320,30 @@ class TestActivated:
     assert wm._wifi_state.status == ConnectStatus.CONNECTED
     assert wm._wifi_state.ssid == "MyNet"
 
-  def test_activated_side_effects(self, mocker):
-    """ACTIVATED persists the volatile connection to disk and updates active connection info."""
+  def _activated_with_unsaved(self, mocker, unsaved: bool):
     wm = _make_wm(mocker, connections={"Net": "/path/net"})
     wm._set_connecting("Net")
     wm._get_active_wifi_connection.return_value = ("/path/net", {})
-
+    reply = mocker.MagicMock()
+    reply.header.message_type = MessageType.method_return
+    reply.body = [('b', unsaved)]
+    wm._conn_monitor.send_and_get_reply.return_value = reply
     fire(wm, NMDeviceState.ACTIVATED)
+    return wm
 
-    wm._conn_monitor.send_and_get_reply.assert_called_once()
+  def test_activated_saves_unsaved_connection(self, mocker):
+    """ACTIVATED persists a still-volatile (unsaved) connection to disk."""
+    wm = self._activated_with_unsaved(mocker, unsaved=True)
+
+    assert wm._conn_monitor.send_and_get_reply.call_count == 2
+    wm._update_active_connection_info.assert_called_once()
+    wm._update_networks.assert_not_called()
+
+  def test_activated_skips_save_for_persisted_connection(self, mocker):
+    """ACTIVATED does not re-save an already-persisted connection."""
+    wm = self._activated_with_unsaved(mocker, unsaved=False)
+
+    assert wm._conn_monitor.send_and_get_reply.call_count == 1
     wm._update_active_connection_info.assert_called_once()
     wm._update_networks.assert_not_called()
 

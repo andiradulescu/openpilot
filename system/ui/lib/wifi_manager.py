@@ -481,9 +481,11 @@ class WifiManager:
       # Persist volatile connections (created by AddAndActivateConnection2) to disk
       if conn_path is not None:
         conn_addr = DBusAddress(conn_path, bus_name=NM, interface=NM_CONNECTION_IFACE)
-        save_reply = self._conn_monitor.send_and_get_reply(new_method_call(conn_addr, 'Save'))
-        if save_reply.header.message_type == MessageType.error:
-          cloudlog.warning(f"Failed to persist connection to disk: {save_reply}")
+        unsaved_reply = self._conn_monitor.send_and_get_reply(Properties(conn_addr).get('Unsaved'))
+        if unsaved_reply.header.message_type == MessageType.error or unsaved_reply.body[0][1]:
+          save_reply = self._conn_monitor.send_and_get_reply(new_method_call(conn_addr, 'Save'))
+          if save_reply.header.message_type == MessageType.error:
+            cloudlog.warning(f"Failed to persist connection to disk: {save_reply}")
 
     elif new_state == NMDeviceState.DEACTIVATING:
       # Must clear state when forgetting the currently connected network so the UI
