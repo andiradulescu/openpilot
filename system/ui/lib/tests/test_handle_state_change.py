@@ -4,7 +4,7 @@ Tests the state machine in isolation by constructing a WifiManager with mocked
 DBus, then calling _handle_state_change directly with NM state transitions.
 """
 import pytest
-from jeepney.low_level import MessageType
+from jeepney.low_level import HeaderFields, MessageType
 from pytest_mock import MockerFixture
 
 from openpilot.system.ui.lib.networkmanager import NMDeviceState, NMDeviceStateReason
@@ -44,6 +44,11 @@ def fire_wpa_connect(wm: WifiManager) -> None:
   fire(wm, NMDeviceState.IP_CHECK)
   fire(wm, NMDeviceState.SECONDARIES)
   fire(wm, NMDeviceState.ACTIVATED)
+
+
+def dbus_members(conn_monitor) -> list[str]:
+  """DBus method names sent through send_and_get_reply, in call order."""
+  return [c.args[0].header.fields.get(HeaderFields.member) for c in conn_monitor.send_and_get_reply.call_args_list]
 
 
 # ---------------------------------------------------------------------------
@@ -320,32 +325,39 @@ class TestActivated:
     assert wm._wifi_state.status == ConnectStatus.CONNECTED
     assert wm._wifi_state.ssid == "MyNet"
 
-  def _activated_with_unsaved(self, mocker, unsaved: bool):
+  def _fire_activated(self, mocker, unsaved: bool, read_error: bool = False):
+    """Drive ACTIVATED with a Settings.Connection.Unsaved reply (or a DBus error reply)."""
     wm = _make_wm(mocker, connections={"Net": "/path/net"})
     wm._set_connecting("Net")
     wm._get_active_wifi_connection.return_value = ("/path/net", {})
     reply = mocker.MagicMock()
-    reply.header.message_type = MessageType.method_return
+    reply.header.message_type = MessageType.error if read_error else MessageType.method_return
     reply.body = [('b', unsaved)]
     wm._conn_monitor.send_and_get_reply.return_value = reply
     fire(wm, NMDeviceState.ACTIVATED)
     return wm
 
   def test_activated_saves_unsaved_connection(self, mocker):
-    """ACTIVATED persists a still-volatile (unsaved) connection to disk."""
-    wm = self._activated_with_unsaved(mocker, unsaved=True)
+    """A still-volatile (Unsaved) connection is persisted to disk via Save()."""
+    wm = self._fire_activated(mocker, unsaved=True)
 
-    assert wm._conn_monitor.send_and_get_reply.call_count == 2
+    assert dbus_members(wm._conn_monitor) == ['Get', 'Save']
     wm._update_active_connection_info.assert_called_once()
     wm._update_networks.assert_not_called()
 
   def test_activated_skips_save_for_persisted_connection(self, mocker):
-    """ACTIVATED does not re-save an already-persisted connection."""
-    wm = self._activated_with_unsaved(mocker, unsaved=False)
+    """An already-persisted connection is not re-saved, avoiding netplan reverse-migration."""
+    wm = self._fire_activated(mocker, unsaved=False)
 
-    assert wm._conn_monitor.send_and_get_reply.call_count == 1
+    assert dbus_members(wm._conn_monitor) == ['Get']
     wm._update_active_connection_info.assert_called_once()
     wm._update_networks.assert_not_called()
+
+  def test_activated_saves_when_unsaved_read_fails(self, mocker):
+    """If reading Unsaved errors, fall back to Save() so a new connection is never lost."""
+    wm = self._fire_activated(mocker, unsaved=False, read_error=True)
+
+    assert dbus_members(wm._conn_monitor) == ['Get', 'Save']
 
 
 # ---------------------------------------------------------------------------
