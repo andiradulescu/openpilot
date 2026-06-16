@@ -65,7 +65,8 @@ class LongControl:
                                                        should_stop, CS.brakePressed,
                                                        CS.cruiseState.standstill)
     if self.long_control_state == LongCtrlState.off:
-      self.reset()
+      # keep the PID integral warm through a gas override so the resume isn't cold;
+      # a true disengage resets it in controlsd (not CC.enabled)
       output_accel = 0.
 
     elif self.long_control_state == LongCtrlState.stopping:
