@@ -4,7 +4,7 @@ Tests the state machine in isolation by constructing a WifiManager with mocked
 DBus, then calling _handle_state_change directly with NM state transitions.
 """
 import pytest
-from jeepney.low_level import MessageType
+from jeepney.low_level import HeaderFields, MessageType
 from pytest_mock import MockerFixture
 
 from openpilot.system.ui.lib.networkmanager import NMDeviceState, NMDeviceStateReason
@@ -320,15 +320,25 @@ class TestActivated:
     assert wm._wifi_state.status == ConnectStatus.CONNECTED
     assert wm._wifi_state.ssid == "MyNet"
 
-  def test_activated_side_effects(self, mocker):
-    """ACTIVATED persists the volatile connection to disk and updates active connection info."""
+  @pytest.mark.parametrize("message_type, unsaved, expected_members", [
+    (MessageType.method_return, True, ["Get", "Save"]),
+    (MessageType.method_return, False, ["Get"]),
+    (MessageType.error, False, ["Get", "Save"]),
+  ])
+  def test_activated_saves_only_when_needed(self, mocker, message_type, unsaved, expected_members):
+    """ACTIVATED skips Save for persisted connections and falls back on Unsaved errors."""
     wm = _make_wm(mocker, connections={"Net": "/path/net"})
     wm._set_connecting("Net")
     wm._get_active_wifi_connection.return_value = ("/path/net", {})
+    reply = mocker.MagicMock()
+    reply.header.message_type = message_type
+    reply.body = [('b', unsaved)]
+    wm._conn_monitor.send_and_get_reply.return_value = reply
 
     fire(wm, NMDeviceState.ACTIVATED)
 
-    wm._conn_monitor.send_and_get_reply.assert_called_once()
+    members = [c.args[0].header.fields.get(HeaderFields.member) for c in wm._conn_monitor.send_and_get_reply.call_args_list]
+    assert members == expected_members
     wm._update_active_connection_info.assert_called_once()
     wm._update_networks.assert_not_called()
 
