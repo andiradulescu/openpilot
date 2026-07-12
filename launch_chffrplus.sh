@@ -17,6 +17,9 @@ function agnos_init {
   sudo chgrp gpu /dev/adsprpc-smd /dev/ion /dev/kgsl-3d0
   sudo chmod 660 /dev/adsprpc-smd /dev/ion /dev/kgsl-3d0
 
+  # Run before AGNOS update so generated keyfiles are still available
+  $DIR/openpilot/common/hardware/tici/nm_persist.py
+
   # Check if AGNOS update is required
   if [ $(< /VERSION) != "$AGNOS_VERSION" ]; then
     AGNOS_PY="$DIR/openpilot/common/hardware/tici/agnos.py"
