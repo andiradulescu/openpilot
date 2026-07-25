@@ -37,6 +37,12 @@ mode={mode}
   return path
 
 
+def require_entry(store: NetworkStore, ssid: str) -> dict:
+  entry = store.get(ssid)
+  assert entry is not None
+  return entry
+
+
 class TestNetworkStore:
   def setup_method(self):
     self.root = tempfile.mkdtemp()
@@ -62,8 +68,8 @@ class TestNetworkStore:
 
     store = self.make_store()
 
-    assert store.get("Secure")["psk"] == "password123"
-    assert store.get("Open")["psk"] == ""
+    assert require_entry(store, "Secure")["psk"] == "password123"
+    assert require_entry(store, "Open")["psk"] == ""
 
   def test_skips_profiles_that_cannot_be_reproduced_safely(self, mocker):
     write_profile(self.persistent, "enterprise.nmconnection", "Enterprise", psk=None, key_mgmt="wpa-eap", extra_security="identity=user")
@@ -85,7 +91,7 @@ class TestNetworkStore:
 
     store = self.make_store()
 
-    assert store.get("Runtime")["psk"] == "password123"
+    assert require_entry(store, "Runtime")["psk"] == "password123"
     assert os.path.exists(runtime_path)
     assert os.listdir(self.persistent) == [".wpa_supplicant-import-complete"]
     run.assert_not_called()
@@ -97,7 +103,7 @@ class TestNetworkStore:
 
     store = self.make_store()
 
-    assert store.get("Duplicate")["psk"] == "persistent"
+    assert require_entry(store, "Duplicate")["psk"] == "persistent"
 
   def test_unsupported_persistent_profile_blocks_runtime_duplicate(self, mocker):
     write_profile(self.persistent, "persistent.nmconnection", "Enterprise", psk=None, key_mgmt="wpa-eap", extra_security="identity=user")
@@ -147,8 +153,8 @@ class TestNetworkStore:
     remove_index = next(i for i, command in enumerate(commands)
                         if command[:3] == ["sudo", "rm", "-f"] and command[-1] == str(netplan_path))
     assert install_index < remove_index
-    assert store.get("Runtime")["psk"] == "replacement"
-    assert store.get("Runtime")["_netplan_filename"] is None
+    assert require_entry(store, "Runtime")["psk"] == "replacement"
+    assert require_entry(store, "Runtime")["_netplan_filename"] is None
 
   def test_edit_runtime_profile_rolls_back_when_netplan_remove_fails(self, mocker):
     write_profile(self.runtime, "netplan.nmconnection", "Runtime", file_uuid="runtime-uuid")
@@ -171,8 +177,8 @@ class TestNetworkStore:
 
     commands = [item.args[0] for item in process.call_args_list]
     assert ["sudo", "rm", "-f", keyfile_path] in commands
-    assert store.get("Runtime")["psk"] == "password123"
-    assert store.get("Runtime")["_netplan_filename"] == "90-NM-runtime-uuid.yaml"
+    assert require_entry(store, "Runtime")["psk"] == "password123"
+    assert require_entry(store, "Runtime")["_netplan_filename"] == "90-NM-runtime-uuid.yaml"
 
   def test_saved_profile_uses_nm_keyfile_compatible_name_and_mode(self, mocker):
     run = mocker.patch.object(store_module.subprocess, "run", return_value=MagicMock(returncode=0))
@@ -200,7 +206,7 @@ class TestNetworkStore:
     store = self.make_store()
     store._networks["Test"] = {"psk": "password123"}
 
-    entry = store.get("Test")
+    entry = require_entry(store, "Test")
     entry["psk"] = "changed"
 
-    assert store.get("Test")["psk"] == "password123"
+    assert require_entry(store, "Test")["psk"] == "password123"

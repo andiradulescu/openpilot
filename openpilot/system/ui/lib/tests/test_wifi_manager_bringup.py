@@ -121,9 +121,9 @@ class TestTetheringFirewall:
   def test_stop_removes_nat_and_restores_station(self):
     manager = build_tethering_manager()
     manager._ctrl = MagicMock()
-    manager._ensure_wpa_supplicant = MagicMock()
 
     with (
+      patch.object(manager, "_ensure_wpa_supplicant") as ensure_wpa_supplicant,
       patch.object(wifi_manager_module.shutil, "which", return_value="/usr/sbin/iptables-legacy"),
       patch.object(wifi_manager_module, "stop_tethering_dnsmasq"),
       patch.object(wifi_manager_module, "_pkill_wpa_supplicant"),
@@ -137,6 +137,6 @@ class TestTetheringFirewall:
     assert ["sudo", "iptables-legacy", "-t", "nat", "-D", "POSTROUTING",
             "-s", TETHERING_SUBNET, "!", "-d", TETHERING_SUBNET,
             "-j", "MASQUERADE", "-m", "comment", "--comment", TETHERING_NAT_COMMENT] in commands
-    manager._ensure_wpa_supplicant.assert_called_once()
+    ensure_wpa_supplicant.assert_called_once()
     assert not manager._tethering_active
     assert manager._wifi_state == WifiState()

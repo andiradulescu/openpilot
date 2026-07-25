@@ -312,7 +312,7 @@ class WifiManager:
 
   def _persist_pending_connection(self, ssid: str | None):
     pending = self._pending_connection
-    if pending is None:
+    if pending is None or ssid is None:
       return
 
     if ssid != pending.ssid or pending.epoch != self._user_epoch:

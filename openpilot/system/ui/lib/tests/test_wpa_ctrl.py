@@ -1,6 +1,8 @@
 """Tests for wpa_ctrl parsing helpers and constants."""
+import socket
 import threading
 import time
+from typing import cast
 from unittest.mock import MagicMock
 
 from openpilot.system.ui.lib import wpa_ctrl as wpa_ctrl_module
@@ -320,7 +322,7 @@ class TestWpaCtrlRequestSerialization:
     """Regression: concurrent WpaCtrl.request callers must each observe
     the reply for their own command, not a peer's."""
     ctrl = WpaCtrl()
-    ctrl._sock = _RacySock()
+    ctrl._sock = cast(socket.socket, _RacySock())
 
     results: dict[str, str] = {}
     errors: list[BaseException] = []

@@ -108,15 +108,17 @@ class TestConnectionState:
     self.manager.add_callbacks(need_auth=need_auth)
     self.manager._set_connecting("TestNet")
     self.manager._set_pending_connection("TestNet", "wrongpass", False)
-    self.manager._remove_wpa_network = MagicMock()
 
-    with patch.object(wifi_manager_module.time, "monotonic", return_value=100):
+    with (
+      patch.object(self.manager, "_remove_wpa_network") as remove_wpa_network,
+      patch.object(wifi_manager_module.time, "monotonic", return_value=100),
+    ):
       self.manager._handle_event('CTRL-EVENT-SSID-TEMP-DISABLED id=0 ssid="TestNet" reason=WRONG_KEY')
 
     self.manager.process_callbacks()
     assert self.manager._pending_connection is None
     assert self.manager.wifi_state == WifiState()
-    self.manager._remove_wpa_network.assert_called_once_with("TestNet")
+    remove_wpa_network.assert_called_once_with("TestNet")
     self.manager._dhcp.stop.assert_called_once()
     need_auth.assert_called_once_with("TestNet")
 
@@ -193,14 +195,14 @@ class TestLifecycle:
     manager = build_wifi_manager()
     manager._exit = False
     manager._tethering_active = True
-    manager._stop_tethering = MagicMock()
 
-    manager.stop()
+    with patch.object(manager, "_stop_tethering") as stop_tethering:
+      manager.stop()
 
     assert manager._exit
     manager._ctrl.close.assert_called_once()
     manager._dhcp.stop.assert_not_called()
-    manager._stop_tethering.assert_not_called()
+    stop_tethering.assert_not_called()
 
   def test_callbacks_coalesce_network_updates(self):
     manager = build_wifi_manager()
