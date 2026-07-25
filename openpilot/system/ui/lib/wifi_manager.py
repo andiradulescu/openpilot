@@ -1,5 +1,6 @@
 import atexit
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -78,10 +79,15 @@ def _our_dnsmasq_running() -> bool:
   return tethering_dnsmasq_running()
 
 
+def _iptables_executable() -> str:
+  # AGNOS 18.7 exposes NAT through xtables while /usr/sbin/iptables selects the unsupported nft frontend.
+  return "iptables-legacy" if shutil.which("iptables-legacy") is not None else "iptables"
+
+
 def _tethering_nat_rule(op: str) -> list[str]:
   # Source-subnet MASQUERADE (no `-o <iface>`) so the session survives uplink changes.
   # Mirrors NM's nm-firewall-utils.c:_share_iptables_set_masquerade_sync.
-  return ["sudo", "iptables",
+  return ["sudo", _iptables_executable(),
           "-t", "nat",
           op, "POSTROUTING",
           "-s", TETHERING_SUBNET, "!", "-d", TETHERING_SUBNET,
@@ -223,21 +229,21 @@ class WifiManager:
         return
 
       if wpa_state == "COMPLETED":
-        new_status = ConnectStatus.CONNECTED
+        connection_status = ConnectStatus.CONNECTED
       elif wpa_state in ("SCANNING", "AUTHENTICATING", "ASSOCIATING", "ASSOCIATED", "4WAY_HANDSHAKE", "GROUP_HANDSHAKE"):
         # Adopt mid-connect state; otherwise a WRONG_KEY event would bypass its current_ssid check.
-        new_status = ConnectStatus.CONNECTING
+        connection_status = ConnectStatus.CONNECTING
       else:
-        new_status = ConnectStatus.DISCONNECTED
+        connection_status = ConnectStatus.DISCONNECTED
         ssid = None
 
       if self._user_epoch != epoch:
         return
 
-      if new_status == ConnectStatus.CONNECTED and ssid is not None:
+      if connection_status == ConnectStatus.CONNECTED and ssid is not None:
         self._handle_connected(ssid, adopt_dhcp=True)
       else:
-        self._wifi_state = WifiState(ssid=ssid, status=new_status)
+        self._wifi_state = WifiState(ssid=ssid, status=connection_status)
 
     if block:
       worker()
@@ -609,7 +615,7 @@ class WifiManager:
         status = parse_status(self._request("STATUS"))
       except Exception:
         return
-      # User started a new connect while we were blocked in STATUS; their fresh
+      # User started another connect while we were blocked in STATUS; their current
       # CONNECTING state must not be clobbered by stale STATUS results below.
       if self._user_epoch != epoch:
         return
@@ -618,7 +624,7 @@ class WifiManager:
       if wpa_state == "COMPLETED" and status_ssid == current_state.ssid:
         return
       if wpa_state == "COMPLETED" and status_ssid:
-        # Roamed while the monitor was down; adopt the new network instead of
+        # Roamed while the monitor was down; adopt the current network instead of
         # synthesizing a disconnect that would flush the live lease.
         self._handle_connected(status_ssid)
         return
@@ -877,7 +883,7 @@ class WifiManager:
       if self._ctrl is None:
         cloudlog.warning(f"No wpa_supplicant connection for activate {ssid}")
         # Skip the reset if a fresher attempt has already moved on, otherwise
-        # this stale worker would emit a false disconnect for the new attempt.
+        # this stale worker would emit a false disconnect for the current attempt.
         if self._user_epoch != epoch:
           return
         # _init_wifi_state is a no-op while _ctrl is None, so reset CONNECTING inline.
@@ -944,7 +950,7 @@ class WifiManager:
       raise
 
   def _wpa_set_network(self, net_id: str, key: str, value: str):
-    """SET_NETWORK wrapper that raises on wpa_supplicant FAIL responses."""
+    """Issue SET_NETWORK and raise on wpa_supplicant FAIL responses."""
     resp = self._request(f"SET_NETWORK {net_id} {key} {value}").strip()
     if not resp.startswith("OK"):
       raise RuntimeError(f"SET_NETWORK {net_id} {key} failed: {resp}")
@@ -1062,8 +1068,6 @@ class WifiManager:
     threading.Thread(target=worker, daemon=True).start()
 
   def _start_tethering(self):
-    # TODO: kill-and-respawn is incompatible with a system-managed wpa_supplicant.
-    # Switch to a single-daemon flip: ADD_NETWORK mode=2/freq=2437, DISABLE/ENABLE_NETWORK.
     self._set_connecting(self._tethering_ssid)
 
     psk = self._tethering_psk
@@ -1074,7 +1078,7 @@ class WifiManager:
       self._ctrl = None
 
     # Target only our configs — never touch a system-managed daemon. Kill any
-    # surviving AP daemon too so the new spawn isn't blocked by an orphan
+    # surviving AP daemon too so the requested spawn isn't blocked by an orphan
     # holding wlan0 with stale credentials.
     self._monitor_epoch += 1
     _pkill_wpa_supplicant(WPA_SUPPLICANT_CONF)
@@ -1122,14 +1126,15 @@ class WifiManager:
       self._dnsmasq_proc = None
       raise RuntimeError(f"dnsmasq exited during tethering bringup (rc={rc})")
 
-    # Flush stale copies (idempotent), plus legacy `-o <iface>` rules from older openpilot.
+    # Flush tagged copies (idempotent), plus untagged per-interface MASQUERADE rules.
     for _ in range(4):
       result = subprocess.run(_tethering_nat_rule("-D"), capture_output=True, check=False)
       if result.returncode != 0:
         break
     for iface in ("wwan0", "rmnet_data0", "eth0"):
       for _ in range(4):
-        result = subprocess.run(["sudo", "iptables", "-t", "nat", "-D", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"],
+        result = subprocess.run(["sudo", _iptables_executable(), "-t", "nat", "-D", "POSTROUTING",
+                                 "-o", iface, "-j", "MASQUERADE"],
                                 capture_output=True, check=False)
         if result.returncode != 0:
           break

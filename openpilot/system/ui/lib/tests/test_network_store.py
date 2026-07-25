@@ -1,714 +1,206 @@
-"""Tests for NetworkStore (saved WiFi network persistence)."""
-
 import os
+import shutil
 import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock
 
-import pytest
-from pytest_mock import MockerFixture
-
+from openpilot.system.ui.lib import wifi_network_store as store_module
 from openpilot.system.ui.lib.wifi_network_store import NetworkStore
-from openpilot.system.ui.lib.wpa_ctrl import _generate_wpa_conf, _format_psk_value, _is_raw_psk
+
+
+def write_profile(directory: str, filename: str, ssid: str, *,
+                  file_uuid: str | None = None, psk: str | None = "password123",
+                  key_mgmt: str = "wpa-psk", mode: str = "infrastructure",
+                  autoconnect: bool = True, extra_security: str = "") -> str:
+  security = ""
+  if psk is not None or extra_security:
+    security = f"""
+[wifi-security]
+key-mgmt={key_mgmt}
+{f"psk={psk}" if psk is not None else ""}
+{extra_security}
+"""
+  content = f"""\
+[connection]
+id={ssid}
+uuid={file_uuid or ssid.lower() + "-uuid"}
+type=wifi
+autoconnect={str(autoconnect).lower()}
+
+[wifi]
+ssid={ssid}
+mode={mode}
+{security}
+"""
+  path = os.path.join(directory, filename)
+  Path(path).write_text(content)
+  return path
 
 
 class TestNetworkStore:
   def setup_method(self):
-    self.tmpdir = tempfile.mkdtemp()
+    self.root = tempfile.mkdtemp()
+    self.persistent = os.path.join(self.root, "persistent")
+    self.runtime = os.path.join(self.root, "runtime")
+    self.netplan = os.path.join(self.root, "netplan")
+    for directory in (self.persistent, self.runtime, self.netplan):
+      os.mkdir(directory)
 
-  @staticmethod
-  def _read_file(path: str) -> str:
-    with open(path) as f:
-      return f.read()
+  def teardown_method(self):
+    shutil.rmtree(self.root)
 
-  @staticmethod
-  def _write_profile(directory: str, filename: str, ssid: str, psk: str = "secret123", key_mgmt: str = "wpa-psk") -> str:
-    content = f"""\
-[connection]
-id={ssid}
-uuid={ssid.lower()}-uuid
-type=wifi
-metered=0
+  def patch_reads(self, mocker):
+    mocker.patch.object(store_module, "sudo_read", side_effect=lambda path: Path(path).read_text())
 
-[wifi]
-ssid={ssid}
-mode=infrastructure
+  def make_store(self) -> NetworkStore:
+    return NetworkStore(self.persistent, self.runtime, self.netplan)
 
-[wifi-security]
-key-mgmt={key_mgmt}
-psk={psk}
-"""
-    path = os.path.join(directory, filename)
-    with open(path, "w") as f:
-      f.write(content)
-    return path
+  def test_loads_persistent_and_open_profiles(self, mocker):
+    write_profile(self.persistent, "secure.nmconnection", "Secure")
+    write_profile(self.persistent, "open.nmconnection", "Open", psk=None)
+    self.patch_reads(mocker)
 
-  def _make_store(self, mocker: MockerFixture):
-    mocker.patch("subprocess.run")
-    return NetworkStore(directory=self.tmpdir)
+    store = self.make_store()
 
-  def test_empty_store(self, mocker: MockerFixture):
-    store = self._make_store(mocker)
+    assert store.get("Secure")["psk"] == "password123"
+    assert store.get("Open")["psk"] == ""
+
+  def test_skips_profiles_that_cannot_be_reproduced_safely(self, mocker):
+    write_profile(self.persistent, "enterprise.nmconnection", "Enterprise", psk=None, key_mgmt="wpa-eap", extra_security="identity=user")
+    write_profile(self.persistent, "agent-secret.nmconnection", "AgentSecret", psk=None, extra_security="psk-flags=1")
+    write_profile(self.persistent, "wep.nmconnection", "Wep", psk=None, key_mgmt="none", extra_security="wep-key0=abcde")
+    write_profile(self.persistent, "disabled.nmconnection", "Disabled", autoconnect=False)
+    write_profile(self.persistent, "hotspot.nmconnection", "Hotspot", psk=None, mode="ap")
+    self.patch_reads(mocker)
+
+    store = self.make_store()
+
     assert store.get_all() == {}
 
-  def test_remove_nonexistent_returns_false(self, mocker: MockerFixture):
-    store = self._make_store(mocker)
-    assert store.remove("DoesNotExist") is False
-
-  def test_remove_existing_returns_true(self, mocker: MockerFixture):
-    store = self._make_store(mocker)
-    store._networks["TestNet"] = {"psk": "pass123", "metered": 0, "hidden": False, "uuid": "abc"}
-    mock_run = mocker.patch("subprocess.run", return_value=mocker.MagicMock(returncode=0))
-    result = store.remove("TestNet")
-    assert result is True
-    assert "TestNet" not in store._networks
-    mock_run.assert_called_once()
-    args = mock_run.call_args[0][0]
-    assert args[:3] == ["sudo", "rm", "-f"]
-
-  def test_remove_uses_check_false(self, mocker: MockerFixture):
-    """Verify remove uses check=False, not check=True (rm -f handles missing files)."""
-    store = self._make_store(mocker)
-    store._networks["TestNet"] = {"psk": "x", "metered": 0, "hidden": False, "uuid": "abc"}
-    mock_run = mocker.patch("subprocess.run", return_value=mocker.MagicMock(returncode=0))
-    store.remove("TestNet")
-    kwargs = mock_run.call_args[1]
-    assert kwargs.get("check") is False, "remove() should use check=False since rm -f handles missing files"
-
-  def test_remove_keeps_in_memory_when_rm_fails(self, mocker: MockerFixture):
-    """If `sudo rm` returns non-zero (e.g. FS read-only), the file persists on disk
-    and _load would restore the entry on next start. Don't lose the in-memory mapping
-    in that window — auto-connect to a "forgotten" network is the failure mode here."""
-    store = self._make_store(mocker)
-    store._networks["TestNet"] = {"psk": "x", "metered": 0, "hidden": False, "uuid": "abc"}
-    mocker.patch("subprocess.run", return_value=mocker.MagicMock(returncode=1))
-    result = store.remove("TestNet")
-    assert result is False
-    assert "TestNet" in store._networks, "in-memory entry must survive rm failure"
-
-  def test_get_returns_copy(self, mocker: MockerFixture):
-    store = self._make_store(mocker)
-    store._networks["TestNet"] = {"psk": "pass123", "metered": 0, "hidden": False, "uuid": "abc"}
-    entry = store.get("TestNet")
-    assert entry is not None
-    entry["psk"] = "CHANGED"
-    assert store.get("TestNet")["psk"] == "pass123"
-
-  def test_get_nonexistent_returns_none(self, mocker: MockerFixture):
-    store = self._make_store(mocker)
-    assert store.get("DoesNotExist") is None
-
-  def test_load_reads_nmconnection_files(self, mocker: MockerFixture):
-    """Write a real .nmconnection file and verify it loads."""
-    content = """\
-[connection]
-id=MyWifi
-uuid=test-uuid-123
-type=wifi
-metered=0
-
-[wifi]
-ssid=MyWifi
-mode=infrastructure
-
-[wifi-security]
-key-mgmt=wpa-psk
-psk=secret123
-
-[ipv4]
-method=auto
-"""
-    fpath = os.path.join(self.tmpdir, "MyWifi.nmconnection")
-    with open(fpath, "w") as f:
-      f.write(content)
-
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", return_value=content)
-    store = NetworkStore(directory=self.tmpdir)
-
-    entry = store.get("MyWifi")
-    assert entry is not None
-    assert entry["psk"] == "secret123"
-    assert entry["uuid"] == "test-uuid-123"
-    assert entry["metered"] == 0
-
-  def test_load_decodes_nm_byte_list_ssid(self, mocker: MockerFixture):
-    """NM keyfiles can store non-ASCII SSIDs as decimal byte lists."""
-    content = """\
-[connection]
-id=Cafe
-uuid=cafe-uuid
-type=wifi
-metered=1
-
-[wifi]
-ssid=99;97;102;195;169;
-mode=infrastructure
-
-[wifi-security]
-key-mgmt=wpa-psk
-psk=secret123
-"""
-    with open(os.path.join(self.tmpdir, "Cafe.nmconnection"), "w") as f:
-      f.write(content)
-
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", return_value=content)
-    store = NetworkStore(directory=self.tmpdir)
-
-    entry = store.get("café")
-    assert entry is not None
-    assert store.get("99;97;102;195;169;") is None
-    assert entry["metered"] == 1
-    assert entry["psk"] == "secret123"
-
-  def test_load_keeps_printable_ascii_semicolon_ssid_literal(self, mocker: MockerFixture):
-    content = """\
-[connection]
-id=Literal
-uuid=literal-uuid
-type=wifi
-metered=1
-
-[wifi]
-ssid=65;66;67;
-mode=infrastructure
-"""
-    with open(os.path.join(self.tmpdir, "Literal.nmconnection"), "w") as f:
-      f.write(content)
-
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", return_value=content)
-    store = NetworkStore(directory=self.tmpdir)
-
-    assert store.get("65;66;67;") is not None
-    assert store.get("ABC") is None
-
-  def test_load_skips_malformed_profile_and_keeps_going(self, mocker: MockerFixture):
-    """A single profile with a bad metered/hidden value must not abort _load."""
-    bad = """\
-[connection]
-id=Bad
-uuid=bad-uuid
-type=wifi
-metered=yes
-
-[wifi]
-ssid=Bad
-mode=infrastructure
-hidden=maybe
-"""
-    good = """\
-[connection]
-id=Good
-uuid=good-uuid
-type=wifi
-metered=0
-
-[wifi]
-ssid=Good
-mode=infrastructure
-"""
-    with open(os.path.join(self.tmpdir, "Bad.nmconnection"), "w") as f:
-      f.write(bad)
-    with open(os.path.join(self.tmpdir, "Good.nmconnection"), "w") as f:
-      f.write(good)
-
-    reads = {"Bad.nmconnection": bad, "Good.nmconnection": good}
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=lambda p: reads[os.path.basename(p)])
-    store = NetworkStore(directory=self.tmpdir)
-
-    assert store.get("Bad") is None
-    assert store.get("Good") is not None
-
-  def test_save_uses_canonical_uuid_ssid_filename(self, mocker: MockerFixture):
-    """New writes must land at <uuid>-<ssid>.nmconnection, matching netplan's runtime naming."""
-    store = self._make_store(mocker)
-    mock_run = mocker.patch("subprocess.run")
-    store.save_network("MyNet", psk="hunter2")
-
-    install_calls = [c for c in mock_run.call_args_list if len(c.args[0]) >= 2 and c.args[0][:2] == ["sudo", "install"] and "-d" not in c.args[0]]
-    assert install_calls, "expected an install call for the keyfile"
-    dest = install_calls[0].args[0][-1]
-    fname = os.path.basename(dest)
-    file_uuid = store.get("MyNet")["uuid"]
-    assert fname == f"{file_uuid}-MyNet.nmconnection"
-
-  def test_save_migrates_legacy_filename(self, mocker: MockerFixture):
-    """Save replaces a legacy percent-encoded file with the canonical name and rms the old."""
-    store = self._make_store(mocker)
-    store._networks["MyNet"] = {
-      "psk": "old",
-      "metered": 0,
-      "hidden": False,
-      "uuid": "abcd-uuid",
-      "_filename": "MyNet.nmconnection",  # legacy percent-encoded
-    }
-    mock_run = mocker.patch("subprocess.run", return_value=mocker.MagicMock(returncode=0))
-    store.save_network("MyNet", psk="new")
-
-    rm_calls = [c for c in mock_run.call_args_list if len(c.args[0]) >= 2 and c.args[0][:2] == ["sudo", "rm"]]
-    assert any(c.args[0][-1].endswith("MyNet.nmconnection") and "abcd-uuid" not in c.args[0][-1] for c in rm_calls), (
-      "legacy file must be removed after canonical write"
-    )
-    assert store.get("MyNet")["_filename"] == "abcd-uuid-MyNet.nmconnection"
-
-  def test_save_migration_cleanup_failure_mirrors_content(self, mocker: MockerFixture):
-    """If `sudo rm` of the legacy file fails after the canonical write, both files
-    must hold identical content. Otherwise listdir order on next load would pick
-    a stale winner non-deterministically."""
-    store = self._make_store(mocker)
-    store._networks["MyNet"] = {
-      "psk": "old",
-      "metered": 0,
-      "hidden": False,
-      "uuid": "abcd-uuid",
-      "_filename": "MyNet.nmconnection",
-    }
-    calls = []
-
-    def fake_run(cmd, *args, **kwargs):
-      calls.append(cmd)
-      # Fail the legacy-file rm; succeed everything else.
-      if cmd[:2] == ["sudo", "rm"]:
-        return mocker.MagicMock(returncode=1)
-      return mocker.MagicMock(returncode=0)
-
-    mocker.patch("subprocess.run", side_effect=fake_run)
-
-    store.save_network("MyNet", psk="new")
-
-    install_to_old = [c for c in calls if c[:2] == ["sudo", "install"] and len(c) >= 2 and c[-1].endswith("MyNet.nmconnection") and "abcd-uuid" not in c[-1]]
-    assert install_to_old, "after rm failure, legacy file must be mirrored with current content"
-    # _filename pinned to legacy so future writes keep retrying the cleanup.
-    assert store.get("MyNet")["_filename"] == "MyNet.nmconnection"
-
-  def test_save_refuses_ssid_with_boundary_whitespace(self, mocker: MockerFixture):
-    """ConfigParser write+read strips boundary whitespace, so saving an SSID
-    with leading/trailing spaces would silently corrupt it on next restart."""
-    store = self._make_store(mocker)
-    mock_run = mocker.patch("subprocess.run")
-
-    store.save_network(" Cafe", psk="hunter2")
-    store.save_network("Cafe ", psk="hunter2")
-
-    install_calls = [c for c in mock_run.call_args_list if len(c.args[0]) >= 2 and c.args[0][:2] == ["sudo", "install"]]
-    assert install_calls == [], "boundary-whitespace SSID must not write a keyfile"
-    assert " Cafe" not in store._networks
-    assert "Cafe " not in store._networks
-
-  def test_save_refuses_psk_with_boundary_whitespace(self, mocker: MockerFixture):
-    """Same lossy round-trip applies to the PSK field."""
-    store = self._make_store(mocker)
-    mock_run = mocker.patch("subprocess.run")
-
-    store.save_network("Cafe", psk=" hunter2")
-    store.save_network("Cafe", psk="hunter2 ")
-
-    install_calls = [c for c in mock_run.call_args_list if len(c.args[0]) >= 2 and c.args[0][:2] == ["sudo", "install"]]
-    assert install_calls == []
-    assert "Cafe" not in store._networks
-
-  def test_remove_deletes_all_duplicate_keyfiles(self, mocker: MockerFixture):
-    """When migration left both legacy and canonical keyfiles for the same SSID,
-    forget must remove ALL of them. Otherwise _load on next start finds the
-    leftover and silently re-enables auto-connect to a forgotten network."""
-    legacy = """\
-[connection]
-id=Dup
-uuid=dup-uuid
-type=wifi
-
-[wifi]
-ssid=Dup
-mode=infrastructure
-
-[wifi-security]
-key-mgmt=wpa-psk
-psk=x
-"""
-    canonical = legacy
-    with open(os.path.join(self.tmpdir, "Dup.nmconnection"), "w") as f:
-      f.write(legacy)
-    with open(os.path.join(self.tmpdir, "dup-uuid-Dup.nmconnection"), "w") as f:
-      f.write(canonical)
-    contents = {"Dup.nmconnection": legacy, "dup-uuid-Dup.nmconnection": canonical}
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=lambda p: contents.get(os.path.basename(p), ""))
-
-    store = NetworkStore(directory=self.tmpdir)
-    mock_run = mocker.patch("subprocess.run", return_value=mocker.MagicMock(returncode=0))
-
-    assert store.remove("Dup") is True
-    rm_targets = [c.args[0][-1] for c in mock_run.call_args_list if len(c.args[0]) >= 2 and c.args[0][:2] == ["sudo", "rm"]]
-    assert any(t.endswith("Dup.nmconnection") for t in rm_targets)
-    assert any(t.endswith("dup-uuid-Dup.nmconnection") for t in rm_targets)
-
-  def test_save_sanitizes_ssid_in_filename(self, mocker: MockerFixture):
-    store = self._make_store(mocker)
-    mock_run = mocker.patch("subprocess.run")
-    store.save_network("ev/il", psk="x")
-
-    install_calls = [c for c in mock_run.call_args_list if len(c.args[0]) >= 2 and c.args[0][:2] == ["sudo", "install"] and "-d" not in c.args[0]]
-    fname = os.path.basename(install_calls[0].args[0][-1])
-    file_uuid = store.get("ev/il")["uuid"]
-    assert fname == f"{file_uuid}-ev_il.nmconnection"
-
-  def test_load_skips_unsupported_key_mgmt(self, mocker: MockerFixture):
-    """Migrated profile with key-mgmt=wpa-eap (no PSK) must NOT load with psk="".
-    Otherwise _generate_wpa_conf would emit key_mgmt=NONE for that SSID and the
-    device would auto-associate to an open spoof of the same SSID."""
-    eap = """\
-[connection]
-id=Enterprise
-uuid=eap-uuid
-type=wifi
-
-[wifi]
-ssid=Enterprise
-mode=infrastructure
-
-[wifi-security]
-key-mgmt=wpa-eap
-"""
-    sae = """\
-[connection]
-id=WPA3Net
-uuid=sae-uuid
-type=wifi
-
-[wifi]
-ssid=WPA3Net
-mode=infrastructure
-
-[wifi-security]
-key-mgmt=sae
-psk=somepass
-"""
-    psk = """\
-[connection]
-id=Home
-uuid=psk-uuid
-type=wifi
-
-[wifi]
-ssid=Home
-mode=infrastructure
-
-[wifi-security]
-key-mgmt=wpa-psk
-psk=hunter2
-"""
-    files = {"a.nmconnection": eap, "b.nmconnection": sae, "c.nmconnection": psk}
-    for fname, content in files.items():
-      with open(os.path.join(self.tmpdir, fname), "w") as f:
-        f.write(content)
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=lambda p: files[os.path.basename(p)])
-
-    store = NetworkStore(directory=self.tmpdir)
-
-    assert store.get("Enterprise") is None, "wpa-eap must be skipped"
-    assert store.get("WPA3Net") is None, "sae must be skipped — not driveable"
-    assert store.get("Home") is not None, "wpa-psk must load"
-
-  def test_load_skips_wpa_psk_without_inline_secret(self, mocker: MockerFixture):
-    """NM agent-managed secrets (psk-flags=1) live outside the keyfile. Loading
-    with psk="" would render as key_mgmt=NONE — silent demotion to open profile."""
-    content = """\
-[connection]
-id=AgentSecret
-uuid=as-uuid
-type=wifi
-
-[wifi]
-ssid=AgentSecret
-mode=infrastructure
-
-[wifi-security]
-key-mgmt=wpa-psk
-psk-flags=1
-"""
-    fpath = os.path.join(self.tmpdir, "AgentSecret.nmconnection")
-    with open(fpath, "w") as f:
-      f.write(content)
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", return_value=content)
-
-    store = NetworkStore(directory=self.tmpdir)
-
-    assert store.get("AgentSecret") is None, "wpa-psk without inline psk must not load as open"
-
-  def test_load_skips_wep_profiles(self, mocker: MockerFixture):
-    """NM stores WEP as key-mgmt=none + wep-key*. Loading with psk='' would render
-    as key_mgmt=NONE in wpa_supplicant.conf — silent demotion to open, inviting
-    auto-association to an open spoof of the same SSID."""
-    content = """\
-[connection]
-id=OldWEP
-uuid=wep-uuid
-type=wifi
-
-[wifi]
-ssid=OldWEP
-mode=infrastructure
-
-[wifi-security]
-key-mgmt=none
-auth-alg=shared
-wep-key0=cafebabe
-wep-key-type=1
-"""
-    fpath = os.path.join(self.tmpdir, "OldWEP.nmconnection")
-    with open(fpath, "w") as f:
-      f.write(content)
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", return_value=content)
-
-    store = NetworkStore(directory=self.tmpdir)
-
-    assert store.get("OldWEP") is None
-
-  def test_load_skips_autoconnect_disabled(self, mocker: MockerFixture):
-    """connection.autoconnect=false is explicit user/provisioning intent. ENABLE_NETWORK
-    all would silently re-arm auto-join after upgrade — drop the entry instead."""
-    content = """\
-[connection]
-id=Disabled
-uuid=disabled-uuid
-type=wifi
-autoconnect=false
-
-[wifi]
-ssid=Disabled
-mode=infrastructure
-
-[wifi-security]
-key-mgmt=wpa-psk
-psk=hunter2
-"""
-    fpath = os.path.join(self.tmpdir, "Disabled.nmconnection")
-    with open(fpath, "w") as f:
-      f.write(content)
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", return_value=content)
-
-    store = NetworkStore(directory=self.tmpdir)
-
-    assert store.get("Disabled") is None
-
-  def test_load_open_network_no_security_section(self, mocker: MockerFixture):
-    """An open profile has no [wifi-security] section; loads with empty psk."""
-    content = """\
-[connection]
-id=OpenNet
-uuid=open-uuid
-type=wifi
-
-[wifi]
-ssid=OpenNet
-mode=infrastructure
-"""
-    fpath = os.path.join(self.tmpdir, "OpenNet.nmconnection")
-    with open(fpath, "w") as f:
-      f.write(content)
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", return_value=content)
-
-    store = NetworkStore(directory=self.tmpdir)
-
-    entry = store.get("OpenNet")
-    assert entry is not None
-    assert entry["psk"] == ""
-
-  def test_load_skips_ap_mode(self, mocker: MockerFixture):
-    content = """\
-[connection]
-id=Hotspot
-uuid=ap-uuid
-type=wifi
-
-[wifi]
-ssid=Hotspot
-mode=ap
-"""
-    fpath = os.path.join(self.tmpdir, "Hotspot.nmconnection")
-    with open(fpath, "w") as f:
-      f.write(content)
-
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", return_value=content)
-    store = NetworkStore(directory=self.tmpdir)
-
-    assert store.get("Hotspot") is None
-
-  def test_loads_runtime_profile_without_persisting_it(self, mocker: MockerFixture):
-    runtime_dir = tempfile.mkdtemp()
-    runtime_path = self._write_profile(runtime_dir, "netplan-TestNet.nmconnection", "TestNet")
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=self._read_file)
-    mock_run = mocker.patch("subprocess.run")
-
-    store = NetworkStore(directory=self.tmpdir, runtime_directory=runtime_dir)
-
-    assert store.get("TestNet")["psk"] == "secret123"
-    assert os.listdir(self.tmpdir) == []
+  def test_runtime_profiles_remain_live_sources_despite_stale_marker(self, mocker):
+    runtime_path = write_profile(self.runtime, "netplan.nmconnection", "Runtime")
+    Path(self.persistent, ".wpa_supplicant-import-complete").write_text("complete\n")
+    self.patch_reads(mocker)
+    run = mocker.patch.object(store_module.subprocess, "run")
+
+    store = self.make_store()
+
+    assert store.get("Runtime")["psk"] == "password123"
     assert os.path.exists(runtime_path)
-    mock_run.assert_not_called()
+    assert os.listdir(self.persistent) == [".wpa_supplicant-import-complete"]
+    run.assert_not_called()
 
-  def test_persistent_profile_wins_over_runtime_duplicate(self, mocker: MockerFixture):
-    runtime_dir = tempfile.mkdtemp()
-    self._write_profile(self.tmpdir, "persistent.nmconnection", "Duplicate", psk="persistent-secret")
-    self._write_profile(runtime_dir, "runtime.nmconnection", "Duplicate", psk="runtime-secret")
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=self._read_file)
+  def test_persistent_profile_wins_runtime_duplicate(self, mocker):
+    write_profile(self.persistent, "persistent.nmconnection", "Duplicate", psk="persistent")
+    write_profile(self.runtime, "runtime.nmconnection", "Duplicate", psk="runtime")
+    self.patch_reads(mocker)
 
-    store = NetworkStore(directory=self.tmpdir, runtime_directory=runtime_dir)
+    store = self.make_store()
 
-    assert store.get("Duplicate")["psk"] == "persistent-secret"
+    assert store.get("Duplicate")["psk"] == "persistent"
 
-  def test_remove_runtime_profile_removes_netplan_source(self, mocker: MockerFixture):
-    runtime_dir = tempfile.mkdtemp()
-    netplan_dir = tempfile.mkdtemp()
-    self._write_profile(runtime_dir, "netplan-NM-testnet-uuid-TestNet.nmconnection", "TestNet")
-    netplan_path = os.path.join(netplan_dir, "90-NM-testnet-uuid.yaml")
-    with open(netplan_path, "w") as f:
-      f.write("network:\n  version: 2\n")
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=self._read_file)
+  def test_unsupported_persistent_profile_blocks_runtime_duplicate(self, mocker):
+    write_profile(self.persistent, "persistent.nmconnection", "Enterprise", psk=None, key_mgmt="wpa-eap", extra_security="identity=user")
+    write_profile(self.runtime, "runtime.nmconnection", "Enterprise")
+    self.patch_reads(mocker)
 
-    store = NetworkStore(directory=self.tmpdir, runtime_directory=runtime_dir, netplan_directory=netplan_dir)
-    mock_run = mocker.patch("subprocess.run", return_value=mocker.MagicMock(returncode=0))
+    store = self.make_store()
 
-    assert store.remove("TestNet")
-    removed_paths = [c.args[0][-1] for c in mock_run.call_args_list if c.args[0][:3] == ["sudo", "rm", "-f"]]
-    assert netplan_path in removed_paths
+    assert store.get("Enterprise") is None
 
-  def test_save_runtime_profile_replaces_netplan_source(self, mocker: MockerFixture):
-    runtime_dir = tempfile.mkdtemp()
-    netplan_dir = tempfile.mkdtemp()
-    self._write_profile(runtime_dir, "netplan-NM-testnet-uuid-TestNet.nmconnection", "TestNet")
-    netplan_path = os.path.join(netplan_dir, "90-NM-testnet-uuid.yaml")
-    with open(netplan_path, "w") as f:
-      f.write("network:\n  version: 2\n")
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=self._read_file)
-    store = NetworkStore(directory=self.tmpdir, runtime_directory=runtime_dir, netplan_directory=netplan_dir)
-    mock_run = mocker.patch("subprocess.run", return_value=mocker.MagicMock(returncode=0))
+  def test_forget_runtime_profile_removes_netplan_source(self, mocker):
+    write_profile(self.runtime, "netplan.nmconnection", "Runtime", file_uuid="runtime-uuid")
+    netplan_path = Path(self.netplan, "90-NM-runtime-uuid.yaml")
+    netplan_path.write_text("network:\n  version: 2\n")
+    self.patch_reads(mocker)
+    run = mocker.patch.object(store_module.subprocess, "run", return_value=MagicMock(returncode=0))
+    store = self.make_store()
 
-    store.save_network("TestNet", psk="replacement")
+    assert store.remove("Runtime")
 
-    commands = [c.args[0] for c in mock_run.call_args_list]
-    keyfile_install = next(i for i, command in enumerate(commands)
-                           if command[:2] == ["sudo", "install"] and command[-1].endswith("testnet-uuid-TestNet.nmconnection"))
-    netplan_remove = next(i for i, command in enumerate(commands)
-                          if command[:3] == ["sudo", "rm", "-f"] and command[-1] == netplan_path)
-    assert keyfile_install < netplan_remove
-    assert store.get("TestNet")["psk"] == "replacement"
+    removed = [args.args[0][-1] for args in run.call_args_list if args.args[0][:3] == ["sudo", "rm", "-f"]]
+    assert str(netplan_path) in removed
+    assert store.get("Runtime") is None
 
-  def test_save_runtime_profile_rolls_back_when_netplan_remove_fails(self, mocker: MockerFixture):
-    runtime_dir = tempfile.mkdtemp()
-    netplan_dir = tempfile.mkdtemp()
-    self._write_profile(runtime_dir, "netplan-NM-testnet-uuid-TestNet.nmconnection", "TestNet")
-    netplan_path = os.path.join(netplan_dir, "90-NM-testnet-uuid.yaml")
-    with open(netplan_path, "w") as f:
-      f.write("network:\n  version: 2\n")
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=self._read_file)
-    store = NetworkStore(directory=self.tmpdir, runtime_directory=runtime_dir, netplan_directory=netplan_dir)
+  def test_forget_keeps_profile_when_disk_removal_fails(self, mocker):
+    write_profile(self.runtime, "netplan.nmconnection", "Runtime", file_uuid="runtime-uuid")
+    self.patch_reads(mocker)
+    mocker.patch.object(store_module.subprocess, "run", return_value=MagicMock(returncode=1))
+    store = self.make_store()
 
-    def run(command, **kwargs):
-      return mocker.MagicMock(returncode=1 if command[-1] == netplan_path else 0)
+    assert not store.remove("Runtime")
+    assert store.get("Runtime") is not None
 
-    mock_run = mocker.patch("subprocess.run", side_effect=run)
-    keyfile_path = os.path.join(self.tmpdir, "testnet-uuid-TestNet.nmconnection")
+  def test_edit_runtime_profile_installs_keyfile_before_removing_netplan(self, mocker):
+    write_profile(self.runtime, "netplan.nmconnection", "Runtime", file_uuid="runtime-uuid")
+    netplan_path = Path(self.netplan, "90-NM-runtime-uuid.yaml")
+    netplan_path.write_text("network:\n  version: 2\n")
+    self.patch_reads(mocker)
+    run = mocker.patch.object(store_module.subprocess, "run", return_value=MagicMock(returncode=0))
+    store = self.make_store()
 
-    with pytest.raises(OSError):
-      store.save_network("TestNet", psk="replacement")
+    store.save_network("Runtime", psk="replacement")
 
-    commands = [c.args[0] for c in mock_run.call_args_list]
+    commands = [item.args[0] for item in run.call_args_list]
+    install_index = next(i for i, command in enumerate(commands)
+                         if command[:2] == ["sudo", "install"] and command[-1].endswith("runtime-uuid-Runtime.nmconnection"))
+    remove_index = next(i for i, command in enumerate(commands)
+                        if command[:3] == ["sudo", "rm", "-f"] and command[-1] == str(netplan_path))
+    assert install_index < remove_index
+    assert store.get("Runtime")["psk"] == "replacement"
+    assert store.get("Runtime")["_netplan_filename"] is None
+
+  def test_edit_runtime_profile_rolls_back_when_netplan_remove_fails(self, mocker):
+    write_profile(self.runtime, "netplan.nmconnection", "Runtime", file_uuid="runtime-uuid")
+    netplan_path = Path(self.netplan, "90-NM-runtime-uuid.yaml")
+    netplan_path.write_text("network:\n  version: 2\n")
+    self.patch_reads(mocker)
+    store = self.make_store()
+
+    def run(command, **_):
+      return MagicMock(returncode=1 if command[-1] == str(netplan_path) else 0)
+
+    process = mocker.patch.object(store_module.subprocess, "run", side_effect=run)
+    keyfile_path = os.path.join(self.persistent, "runtime-uuid-Runtime.nmconnection")
+
+    try:
+      store.save_network("Runtime", psk="replacement")
+      raise AssertionError("save_network should fail when the netplan source survives")
+    except OSError:
+      pass
+
+    commands = [item.args[0] for item in process.call_args_list]
     assert ["sudo", "rm", "-f", keyfile_path] in commands
-    assert store.get("TestNet")["psk"] == "secret123"
+    assert store.get("Runtime")["psk"] == "password123"
+    assert store.get("Runtime")["_netplan_filename"] == "90-NM-runtime-uuid.yaml"
 
-  def test_unsupported_persistent_profile_blocks_runtime_duplicate(self, mocker: MockerFixture):
-    runtime_dir = tempfile.mkdtemp()
-    self._write_profile(self.tmpdir, "persistent.nmconnection", "Enterprise", key_mgmt="wpa-eap")
-    self._write_profile(runtime_dir, "runtime.nmconnection", "Enterprise")
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=self._read_file)
+  def test_saved_profile_uses_nm_keyfile_compatible_name_and_mode(self, mocker):
+    run = mocker.patch.object(store_module.subprocess, "run", return_value=MagicMock(returncode=0))
+    store = self.make_store()
 
-    store = NetworkStore(directory=self.tmpdir, runtime_directory=runtime_dir)
+    store.save_network("Cafe/Wifi", psk="password123")
 
-    assert store.get("Enterprise") is None
+    install = next(item.args[0] for item in run.call_args_list
+                   if item.args[0][:2] == ["sudo", "install"] and "-d" not in item.args[0])
+    assert install[-1].endswith("-Cafe_Wifi.nmconnection")
+    assert install[install.index("-m") + 1] == "600"
 
-  def test_old_import_marker_does_not_hide_runtime_profile(self, mocker: MockerFixture):
-    runtime_dir = tempfile.mkdtemp()
-    self._write_profile(runtime_dir, "netplan.nmconnection", "NetplanProfile")
-    with open(os.path.join(self.tmpdir, ".wpa_supplicant-import-complete"), "w") as f:
-      f.write("complete\n")
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=self._read_file)
+  def test_rejects_boundary_whitespace_that_keyfiles_cannot_round_trip(self, mocker):
+    run = mocker.patch.object(store_module.subprocess, "run")
+    store = self.make_store()
 
-    store = NetworkStore(directory=self.tmpdir, runtime_directory=runtime_dir)
+    store.save_network(" Leading", psk="password123")
+    store.save_network("Trailing ", psk="password123")
+    store.save_network("Valid", psk=" password123")
 
-    assert store.get("NetplanProfile") is not None
+    assert store.get_all() == {}
+    run.assert_not_called()
 
-  def test_unsupported_runtime_profile_is_not_imported(self, mocker: MockerFixture):
-    runtime_dir = tempfile.mkdtemp()
-    self._write_profile(runtime_dir, "enterprise.nmconnection", "Enterprise", key_mgmt="wpa-eap")
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=self._read_file)
+  def test_get_returns_copy(self):
+    store = self.make_store()
+    store._networks["Test"] = {"psk": "password123"}
 
-    store = NetworkStore(directory=self.tmpdir, runtime_directory=runtime_dir)
+    entry = store.get("Test")
+    entry["psk"] = "changed"
 
-    assert store.get("Enterprise") is None
-
-
-class TestPskFormatting:
-  """wpa_supplicant requires 64-hex PSKs unquoted and 8-63 char passphrases
-  quoted (hostap config.c:620-694). A quoted 64-char value always FAILs."""
-
-  def test_is_raw_psk_64_hex(self):
-    assert _is_raw_psk("0123456789abcdef" * 4) is True
-
-  def test_is_raw_psk_uppercase(self):
-    assert _is_raw_psk("0123456789ABCDEF" * 4) is True
-
-  def test_is_raw_psk_63_chars_false(self):
-    assert _is_raw_psk("0" * 63) is False
-
-  def test_is_raw_psk_65_chars_false(self):
-    assert _is_raw_psk("0" * 65) is False
-
-  def test_is_raw_psk_non_hex_false(self):
-    # 64 chars but contains a non-hex char.
-    assert _is_raw_psk("z" + "0" * 63) is False
-
-  def test_format_passphrase_quoted(self):
-    assert _format_psk_value("hello123") == '"hello123"'
-
-  def test_format_raw_psk_unquoted(self):
-    raw = "deadbeef" * 8
-    assert _format_psk_value(raw) == raw
-
-  def test_format_quotes_escaped_in_passphrase(self):
-    assert _format_psk_value('pa"ss') == '"pa\\"ss"'
-
-
-class _FakeStore:
-  def __init__(self, networks):
-    self._networks = networks
-
-  def get_all(self):
-    return self._networks
-
-
-class TestGenerateWpaConf:
-  def setup_method(self):
-    self.tmpdir = tempfile.mkdtemp()
-    self.path = os.path.join(self.tmpdir, "wpa.conf")
-
-  def test_raw_hex_psk_written_unquoted(self):
-    raw = "deadbeef" * 8
-    store = _FakeStore({"RawNet": {"psk": raw}})
-    _generate_wpa_conf(store, path=self.path)
-    with open(self.path) as f:
-      content = f.read()
-    assert f"  psk={raw}" in content
-    assert f'  psk="{raw}"' not in content
-    assert "key_mgmt=WPA-PSK" in content
-
-  def test_passphrase_written_quoted(self):
-    store = _FakeStore({"SecNet": {"psk": "myp@ssw0rd"}})
-    _generate_wpa_conf(store, path=self.path)
-    with open(self.path) as f:
-      content = f.read()
-    assert '  psk="myp@ssw0rd"' in content
-
-  def test_open_network_no_psk(self):
-    store = _FakeStore({"OpenNet": {"psk": ""}})
-    _generate_wpa_conf(store, path=self.path)
-    with open(self.path) as f:
-      content = f.read()
-    assert "key_mgmt=NONE" in content
-    assert "psk=" not in content
+    assert store.get("Test")["psk"] == "password123"

@@ -1,8 +1,7 @@
 """Tests for wpa_ctrl parsing helpers and constants."""
 import threading
 import time
-
-import pytest
+from unittest.mock import MagicMock
 
 from openpilot.system.ui.lib import wpa_ctrl as wpa_ctrl_module
 from openpilot.system.ui.lib.wpa_ctrl import (
@@ -10,6 +9,7 @@ from openpilot.system.ui.lib.wpa_ctrl import (
   SecurityType,
   WpaCtrl,
   decode_ssid,
+  parse_event_ssid,
   parse_scan_results,
   parse_status,
   flags_to_security_type,
@@ -53,25 +53,35 @@ class TestParseStatus:
     assert d["ssid"] == "A"
 
 
+class TestParseEventSsid:
+  def test_plain(self):
+    assert parse_event_ssid('id=0 ssid="MyNetwork" reason=WRONG_KEY') == "MyNetwork"
+
+  def test_missing(self):
+    assert parse_event_ssid("id=0 reason=WRONG_KEY") is None
+
+  def test_escaped_values(self):
+    assert parse_event_ssid(r'id=0 ssid="My \"Home\"" reason=WRONG_KEY') == 'My "Home"'
+    assert parse_event_ssid(r'id=0 ssid="caf\xc3\xa9" reason=WRONG_KEY') == "café"  # codespell:ignore caf
+
+
 class TestFlagsToSecurityType:
-  @pytest.mark.parametrize("flags,expected", [
-    ("[WPA2-PSK-CCMP][ESS]", SecurityType.WPA),
-    ("[RSN-PSK-CCMP]", SecurityType.WPA),
-    ("[WPA-PSK-TKIP]", SecurityType.WPA),
-    # WPA2/WPA3 transitional: PSK takes precedence so the network is connectable.
-    ("[WPA2-PSK-CCMP][SAE]", SecurityType.WPA),
-    ("[RSN-PSK-CCMP][SAE-CCMP]", SecurityType.WPA),
-    # WPA3-only (SAE) isn't connectable on the current kernel; surface as unsupported
-    # rather than prompting for a password that will fail the handshake.
-    ("[SAE]", SecurityType.UNSUPPORTED),
-    ("[SAE-CCMP]", SecurityType.UNSUPPORTED),
-    ("[ESS]", SecurityType.OPEN),
-    ("", SecurityType.OPEN),
-    ("[WPA2-EAP-CCMP]", SecurityType.UNSUPPORTED),
-    ("[802.1X]", SecurityType.UNSUPPORTED),
-  ])
-  def test_security_types(self, flags, expected):
-    assert flags_to_security_type(flags) == expected
+  def test_security_types(self):
+    cases = (
+      ("[WPA2-PSK-CCMP][ESS]", SecurityType.WPA),
+      ("[RSN-PSK-CCMP]", SecurityType.WPA),
+      ("[WPA-PSK-TKIP]", SecurityType.WPA),
+      ("[WPA2-PSK-CCMP][SAE]", SecurityType.WPA),
+      ("[RSN-PSK-CCMP][SAE-CCMP]", SecurityType.WPA),
+      ("[SAE]", SecurityType.UNSUPPORTED),
+      ("[SAE-CCMP]", SecurityType.UNSUPPORTED),
+      ("[ESS]", SecurityType.OPEN),
+      ("", SecurityType.OPEN),
+      ("[WPA2-EAP-CCMP]", SecurityType.UNSUPPORTED),
+      ("[802.1X]", SecurityType.UNSUPPORTED),
+    )
+    for flags, expected in cases:
+      assert flags_to_security_type(flags) == expected
 
 
 class TestDbmToPercent:
@@ -174,7 +184,7 @@ class TestParseScanResults:
     assert results[0].ssid == "Network_000_with_a_longer_name_padding"
     assert results[199].ssid == "Network_199_with_a_longer_name_padding"
 
-  def test_old_buffer_would_truncate(self):
+  def test_small_buffer_would_truncate(self):
     """Demonstrate that 4096 bytes is insufficient for dense scan results."""
     lines = ["header"]
     for i in range(200):
@@ -374,3 +384,91 @@ class TestTetheringDnsmasqOwnership:
       ["sudo", "pkill", "-f", wpa_ctrl_module.TETHERING_DNSMASQ_PATTERN],
       check=False,
     )
+
+
+class TestSupplicantBringup:
+  def test_attaches_existing_station_without_mutation(self, mocker):
+    ctrl = MagicMock()
+    mocker.patch.object(wpa_ctrl_module.os.path, "exists", return_value=True)
+    mocker.patch.object(
+      wpa_ctrl_module,
+      "_wpa_supplicant_running",
+      side_effect=lambda conf: conf == wpa_ctrl_module.WPA_SUPPLICANT_CONF,
+    )
+    mocker.patch.object(wpa_ctrl_module, "try_attach_ctrl", return_value=ctrl)
+    unmanage = mocker.patch.object(wpa_ctrl_module, "_unmanage_wlan0")
+    kill = mocker.patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant")
+    run = mocker.patch.object(wpa_ctrl_module.subprocess, "run")
+
+    result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False, "/tmp/connections")
+
+    assert result is ctrl
+    ctrl.request.assert_called_once_with("ENABLE_NETWORK all")
+    unmanage.assert_not_called()
+    kill.assert_not_called()
+    run.assert_not_called()
+
+  def test_attaches_existing_hotspot_before_station_cleanup(self, mocker):
+    ctrl = MagicMock()
+    mocker.patch.object(wpa_ctrl_module.os.path, "exists", return_value=True)
+    mocker.patch.object(
+      wpa_ctrl_module,
+      "_wpa_supplicant_running",
+      side_effect=lambda conf: conf == wpa_ctrl_module.WPA_AP_CONF,
+    )
+    mocker.patch.object(wpa_ctrl_module, "try_attach_ctrl", return_value=ctrl)
+    unmanage = mocker.patch.object(wpa_ctrl_module, "_unmanage_wlan0")
+    kill = mocker.patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant")
+
+    result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False, "/tmp/connections")
+
+    assert result is ctrl
+    unmanage.assert_not_called()
+    kill.assert_not_called()
+
+  def test_spawns_owned_station_daemon(self, mocker):
+    ctrl = MagicMock()
+    station_checks = 0
+
+    def running(conf):
+      nonlocal station_checks
+      if conf == wpa_ctrl_module.WPA_AP_CONF:
+        return False
+      station_checks += 1
+      return station_checks > 1
+
+    mocker.patch.object(
+      wpa_ctrl_module.os.path,
+      "exists",
+      side_effect=lambda path: path == "/sys/class/net/wlan0",
+    )
+    mocker.patch.object(wpa_ctrl_module, "_wpa_supplicant_running", side_effect=running)
+    mocker.patch.object(wpa_ctrl_module, "try_attach_ctrl", return_value=ctrl)
+    mocker.patch.object(wpa_ctrl_module, "_unmanage_wlan0", return_value=True)
+    kill = mocker.patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant")
+    mocker.patch.object(wpa_ctrl_module, "stop_tethering_dnsmasq")
+    mocker.patch.object(wpa_ctrl_module.glob, "glob", return_value=[])
+    mocker.patch.object(wpa_ctrl_module.time, "sleep")
+    run = mocker.patch.object(wpa_ctrl_module.subprocess, "run")
+
+    result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False, "/tmp/connections")
+
+    assert result is ctrl
+    kill.assert_called_once_with(wpa_ctrl_module.WPA_SUPPLICANT_CONF)
+    assert [
+      "sudo", "wpa_supplicant", "-B", "-i", "wlan0",
+      "-c", wpa_ctrl_module.WPA_SUPPLICANT_CONF, "-D", "nl80211",
+    ] in [item.args[0] for item in run.call_args_list]
+
+  def test_exit_before_interface_mutation(self, mocker):
+    mocker.patch.object(wpa_ctrl_module.os.path, "exists", return_value=True)
+    unmanage = mocker.patch.object(wpa_ctrl_module, "_unmanage_wlan0")
+    kill = mocker.patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant")
+    run = mocker.patch.object(wpa_ctrl_module.subprocess, "run")
+
+    result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: True, "/tmp/connections")
+
+    assert result is None
+    unmanage.assert_not_called()
+    kill.assert_not_called()
+    assert all(item.args[0][0] == "pgrep" for item in run.call_args_list)
