@@ -1,5 +1,4 @@
 """wpa_supplicant control socket wrapper and parsing helpers."""
-import glob
 import os
 import re
 import shutil
@@ -217,7 +216,7 @@ def decode_ssid(encoded: str) -> str:
       elif i < n and encoded[i] in _HEX:
         out.append(int(encoded[i], 16))
         i += 1
-      # else: malformed \x — drop the escape, continue parsing at i
+      # else: malformed \x, so drop the escape and continue parsing at i
     elif "0" <= nxt <= "7":
       val = ord(nxt) - ord("0")
       i += 1
@@ -228,7 +227,7 @@ def decode_ssid(encoded: str) -> str:
           val = val * 8 + (ord(encoded[i]) - ord("0"))
           i += 1
       out.append(val & 0xff)
-    # else: unknown escape — the backslash is consumed, the char falls
+    # else: unknown escape. The backslash is consumed and the char falls
     # through to the next iteration and is appended as a literal.
 
   if not out or all(b == 0 for b in out):
@@ -409,10 +408,10 @@ def try_attach_ctrl() -> WpaCtrl | None:
 
 
 def _unmanage_wlan0() -> bool:
-  """Tell NetworkManager to release wlan0 on legacy AGNOS.
+  """Tell NetworkManager to release wlan0 when it is present.
 
-  A future no-NetworkManager image intentionally has no nmcli; that is already
-  the desired state, so skip the compatibility handoff and continue bringup.
+  An image without NetworkManager has no nmcli and wlan0 is already available,
+  so skip the compatibility handoff and continue bringup.
   """
   # Lazy import: wpa_ctrl is imported by system.hardware.tici.hardware, which is
   # imported during cloudlog init. Top-level `import cloudlog` would deadlock.
@@ -426,7 +425,7 @@ def _unmanage_wlan0() -> bool:
   return result.returncode == 0
 
 
-def ensure_wpa_supplicant(should_exit: Callable[[], bool], nm_connections_dir: str) -> WpaCtrl | None:
+def ensure_wpa_supplicant(should_exit: Callable[[], bool]) -> WpaCtrl | None:
   """Attach to a wpa_supplicant we own, or spawn one. Never attach to NM's daemon.
   Returns the attached WpaCtrl, or None if exit was signaled or spawn timed out."""
   from openpilot.common.swaglog import cloudlog
@@ -438,7 +437,7 @@ def ensure_wpa_supplicant(should_exit: Callable[[], bool], nm_connections_dir: s
       return None
     time.sleep(0.5)
 
-  # AP adoption: hotspot from a prior UI run is still up; STA cleanup below would tear it down.
+  # AP adoption: a hotspot owned by another UI process is still up, and STA cleanup would tear it down.
   # Retry on transient ctrl unavailability (UI just restarted, AP socket briefly unbound)
   # rather than falling through to STA cleanup, which would kill dnsmasq and flush wlan0.
   if _wpa_supplicant_running(WPA_AP_CONF):
@@ -451,12 +450,12 @@ def ensure_wpa_supplicant(should_exit: Callable[[], bool], nm_connections_dir: s
       time.sleep(0.5)
     # AP process is alive but its ctrl socket is unreachable (deleted/wedged). The
     # hotspot is unmanageable from our side, so kill it and fall through to STA
-    # spawn — otherwise we'd loop forever returning None and the user can't recover
+    # spawn. Otherwise we'd loop forever returning None and the user cannot recover
     # via tethering toggle since `_start_tethering` only kills STA-config daemons.
     cloudlog.warning("AP daemon present but ctrl attach failed; killing it so STA spawn can recover")
     _pkill_wpa_supplicant(WPA_AP_CONF)
 
-  # Our own STA daemon is still alive — attach without disturbing NM.
+  # Our own STA daemon is still alive, so attach without disturbing NM.
   if _wpa_supplicant_running(WPA_SUPPLICANT_CONF):
     if should_exit():
       return None
@@ -491,12 +490,6 @@ def ensure_wpa_supplicant(should_exit: Callable[[], bool], nm_connections_dir: s
   stop_tethering_dnsmasq()
   subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
   time.sleep(0.5)
-
-  for f in glob.glob(os.path.join(nm_connections_dir, "*.nmmeta")):
-    try:
-      os.unlink(f)
-    except OSError:
-      subprocess.run(["sudo", "rm", "-f", f], check=False)
 
   subprocess.run(["sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", WPA_SUPPLICANT_CONF, "-D", "nl80211"], check=False)
 

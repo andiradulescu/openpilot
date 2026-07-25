@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.utils import atomic_write
 from openpilot.system.ui.lib.dhcp_client import DhcpClient
-from openpilot.system.ui.lib.wifi_network_store import MeteredType, NetworkStore, NM_CONNECTIONS_DIR
+from openpilot.system.ui.lib.wifi_network_store import MeteredType, NetworkStore
 from openpilot.system.ui.lib.wpa_ctrl import (WpaCtrl, WpaCtrlMonitor, SecurityType,
                                                WPA_SUPPLICANT_CONF, WPA_AP_CONF,
                                                _pkill_wpa_supplicant, _wpa_supplicant_running,
@@ -148,7 +148,7 @@ class WifiManager:
 
   def _initialize(self):
     # Load tethering password from file. WPA passphrases may legally include leading
-    # or trailing spaces, so only trim the file terminator — never .strip() arbitrary
+    # or trailing spaces, so only trim the file terminator. Never .strip() arbitrary
     # whitespace, or those passwords silently change on next restart.
     try:
       with open(TETHERING_PASSWORD_FILE) as f:
@@ -178,7 +178,7 @@ class WifiManager:
     threading.Thread(target=worker, daemon=True).start()
 
   def _ensure_wpa_supplicant(self):
-    ctrl = ensure_wpa_supplicant(lambda: self._exit, NM_CONNECTIONS_DIR)
+    ctrl = ensure_wpa_supplicant(lambda: self._exit)
     if ctrl is not None:
       self._ctrl = ctrl
 
@@ -221,7 +221,7 @@ class WifiManager:
           return
         if self._adopt_ap_state(ssid):
           return
-        # dnsmasq is gone — the surviving AP daemon is half-broken. Stay
+        # dnsmasq is gone, so the surviving AP daemon is half-broken. Stay
         # DISCONNECTED rather than letting the COMPLETED branch below treat this
         # as a station connect (which would start STA DHCP on wlan0 and clobber
         # the hotspot's address).
@@ -415,7 +415,7 @@ class WifiManager:
         time.sleep(2)
 
   def _adopt_ap_state(self, ssid: str | None) -> bool:
-    """Mark a live hotspot as active without touching dnsmasq/iptables — those daemons
+    """Mark a live hotspot as active without touching dnsmasq/iptables. Those daemons
     survive UI restart via start_new_session, so adoption only updates manager state.
     On refusal (dnsmasq dead) closes the AP ctrl handle and pkills the orphan AP
     daemon so the monitor's STA recovery picks up; otherwise station connect
@@ -597,7 +597,7 @@ class WifiManager:
       if status.get("mode") == "AP":
         if self._adopt_ap_state(status.get("ssid")):
           return
-        # dnsmasq missing — half-broken AP. Stay DISCONNECTED so the user can recover via tethering toggle.
+        # dnsmasq is missing, so the AP is incomplete. Stay DISCONNECTED so the user can recover via tethering toggle.
         return
       if status.get("wpa_state") == "COMPLETED" and status.get("ssid"):
         self._handle_connected(status["ssid"])
@@ -642,7 +642,7 @@ class WifiManager:
       self._enqueue_callbacks(self._disconnected)
       return
 
-    # Reconcile even if ssid is None — STATUS below tells us definitively.
+    # Reconcile even if ssid is None. STATUS below tells us definitively.
     if current_state.status != ConnectStatus.CONNECTING:
       return
     if time.monotonic() - self._last_connecting_at < CONNECTING_STALE_TIMEOUT_SECONDS:
@@ -784,16 +784,6 @@ class WifiManager:
     if self._tethering_active:
       cloudlog.warning(f"Ignoring connect to {ssid!r} while tethering is active")
       return
-    # NetworkStore.save_network refuses boundary-whitespace SSID/PSK because
-    # ConfigParser strips it on round-trip. wpa_supplicant would still accept
-    # the runtime SET_NETWORK and we'd connect for the session, but the persist
-    # would be a silent no-op and the credentials would be gone after reboot.
-    # Refuse here so the UI controls unstick instead of pretending to save.
-    if ssid != ssid.strip() or password != password.strip():
-      cloudlog.warning(f"Ignoring connect to {ssid!r}: SSID or password has boundary whitespace")
-      self._set_connecting(None)
-      self._enqueue_callbacks(self._disconnected)
-      return
     self._set_connecting(ssid)
     self._set_pending_connection(ssid, password, hidden)
     epoch = self._user_epoch
@@ -811,7 +801,7 @@ class WifiManager:
         self._enqueue_callbacks(self._disconnected)
         return
 
-      # Serialize against other workers and recheck epoch inside the lock — otherwise
+      # Serialize against other workers and recheck epoch inside the lock. Otherwise,
       # a stale worker that passed an early epoch check could remove the runtime
       # network a fresher worker just added (rapid same-SSID retries).
       with self._connect_lock:
@@ -840,7 +830,7 @@ class WifiManager:
       existed = self._store.contains(ssid)
       removed = self._store.remove(ssid)
       if existed and not removed:
-        # rm failed — the on-disk file survives and _load will restore the entry
+        # rm failed, so the on-disk file survives and _load will restore the entry
         # at next start. Don't tear down the runtime/regenerate config or fire
         # `forgotten`, or the UI will lie about state until the file gets restored.
         cloudlog.warning(f"forget_connection: failed to remove {ssid} from disk; leaving runtime intact")
@@ -907,7 +897,7 @@ class WifiManager:
           if ids:
             self._request(f"SELECT_NETWORK {ids[0]}")
           else:
-            # Network not in wpa_supplicant's runtime list — add from store
+            # Network not in wpa_supplicant's runtime list, so add it from the store.
             entry = self._store.get(ssid)
             if entry:
               self._add_and_select_network(ssid, entry.get("psk", ""), entry.get("hidden", False))
@@ -957,7 +947,7 @@ class WifiManager:
 
   def _list_network_ids(self, ssid: str) -> list[str]:
     """Return all wpa_supplicant network ids matching SSID. LIST_NETWORKS emits
-    printf_encode'd SSIDs — decode before comparing or non-ASCII SSIDs silently miss.
+    printf_encode'd SSIDs. Decode before comparing or non-ASCII SSIDs silently miss.
     Don't .strip() the whole reply: SSIDs may end with spaces, so a trailing-space
     SSID on the last line would be clipped and miss the match."""
     if self._ctrl is None:
@@ -1002,6 +992,7 @@ class WifiManager:
           f.write(password)
       except Exception:
         cloudlog.exception("Failed to persist tethering password; runtime state unchanged")
+        self._enqueue_callbacks(self._activated if self._tethering_active else self._disconnected)
         return
       self._tethering_psk = password
       if self._tethering_active:
@@ -1077,7 +1068,7 @@ class WifiManager:
       self._ctrl.close()
       self._ctrl = None
 
-    # Target only our configs — never touch a system-managed daemon. Kill any
+    # Target only our configs. Never touch a system-managed daemon. Kill any
     # surviving AP daemon too so the requested spawn isn't blocked by an orphan
     # holding wlan0 with stale credentials.
     self._monitor_epoch += 1
@@ -1101,7 +1092,7 @@ class WifiManager:
     time.sleep(1)
 
     # Configure AP interface. addr/link failures here mean wlan0 has no
-    # 192.168.43.1 — clients could associate and pull dnsmasq leases, but the AP
+    # 192.168.43.1. Clients could associate and pull dnsmasq leases, but the AP
     # has no gateway IP. Raise so the existing rollback path runs instead.
     subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
     subprocess.run(["sudo", "ip", "addr", "add", f"{TETHERING_IP_ADDRESS}/24", "dev", "wlan0"], check=True)
@@ -1139,7 +1130,7 @@ class WifiManager:
         if result.returncode != 0:
           break
     # Without MASQUERADE or ip_forward the AP comes up but clients can't reach the
-    # uplink — UI reports a healthy hotspot with broken sharing. Treat both as hard
+    # uplink. UI reports a healthy hotspot with broken sharing. Treat both as hard
     # failures so the existing _start_tethering rollback path tears the AP back down.
     subprocess.run(_tethering_nat_rule("-A"), check=True)
     if self._ipv4_forward:

@@ -214,3 +214,23 @@ class TestLifecycle:
     manager.process_callbacks()
 
     updated.assert_called_once_with(manager.networks)
+
+
+class TestTetheringPassword:
+  def test_persist_failure_reenables_active_tethering_controls(self):
+    manager = build_wifi_manager()
+    manager._tethering_active = True
+    manager._tethering_psk = "old-password"
+    activated = MagicMock()
+    manager.add_callbacks(activated=activated)
+
+    with (
+      patch.object(wifi_manager_module, "atomic_write", side_effect=OSError("read-only")),
+      patch.object(wifi_manager_module.threading, "Thread") as thread,
+    ):
+      manager.set_tethering_password("replacement-password")
+      thread.call_args.kwargs["target"]()
+
+    manager.process_callbacks()
+    assert manager.tethering_password == "old-password"
+    activated.assert_called_once()

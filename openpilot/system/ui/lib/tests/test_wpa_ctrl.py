@@ -135,7 +135,7 @@ class TestParseScanResults:
     assert results[0].ssid == ""
 
   def test_escaped_ssid(self):
-    # \xc3\xa9 is UTF-8 for é — decode_ssid must reinterpret as UTF-8,
+    # \xc3\xa9 is UTF-8 for é, so decode_ssid must reinterpret as UTF-8,
     # not one-codepoint-per-byte (Latin-1), or SET_NETWORK round-trip
     # will re-encode as 7 bytes and fail to match the 5-byte AP SSID.
     raw = self.HEADER + '00:11:22:33:44:55\t2437\t-65\t[ESS]\tcaf\\xc3\\xa9 \\"home\\"\n'
@@ -222,7 +222,7 @@ class TestDecodeSsid:
     assert decoded.encode("utf-8") == b"caf\xc3\xa9"  # codespell:ignore caf
 
   def test_utf8_three_byte(self):
-    # "日本" (UTF-8: e6 97 a5 e6 9c ac) — common 3-byte CJK case.
+    # "日本" (UTF-8: e6 97 a5 e6 9c ac), a common 3-byte CJK case.
     decoded = decode_ssid("\\xe6\\x97\\xa5\\xe6\\x9c\\xac")
     assert decoded == "日本"
     assert decoded.encode("utf-8") == b"\xe6\x97\xa5\xe6\x9c\xac"
@@ -402,7 +402,7 @@ class TestSupplicantBringup:
     kill = mocker.patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant")
     run = mocker.patch.object(wpa_ctrl_module.subprocess, "run")
 
-    result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False, "/tmp/connections")
+    result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False)
 
     assert result is ctrl
     ctrl.request.assert_called_once_with("ENABLE_NETWORK all")
@@ -422,7 +422,7 @@ class TestSupplicantBringup:
     unmanage = mocker.patch.object(wpa_ctrl_module, "_unmanage_wlan0")
     kill = mocker.patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant")
 
-    result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False, "/tmp/connections")
+    result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False)
 
     assert result is ctrl
     unmanage.assert_not_called()
@@ -449,11 +449,10 @@ class TestSupplicantBringup:
     mocker.patch.object(wpa_ctrl_module, "_unmanage_wlan0", return_value=True)
     kill = mocker.patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant")
     mocker.patch.object(wpa_ctrl_module, "stop_tethering_dnsmasq")
-    mocker.patch.object(wpa_ctrl_module.glob, "glob", return_value=[])
     mocker.patch.object(wpa_ctrl_module.time, "sleep")
     run = mocker.patch.object(wpa_ctrl_module.subprocess, "run")
 
-    result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False, "/tmp/connections")
+    result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False)
 
     assert result is ctrl
     kill.assert_called_once_with(wpa_ctrl_module.WPA_SUPPLICANT_CONF)
@@ -468,7 +467,7 @@ class TestSupplicantBringup:
     kill = mocker.patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant")
     run = mocker.patch.object(wpa_ctrl_module.subprocess, "run")
 
-    result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: True, "/tmp/connections")
+    result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: True)
 
     assert result is None
     unmanage.assert_not_called()

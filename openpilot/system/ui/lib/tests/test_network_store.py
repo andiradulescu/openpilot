@@ -126,6 +126,7 @@ class TestNetworkStore:
 
     removed = [args.args[0][-1] for args in run.call_args_list if args.args[0][:3] == ["sudo", "rm", "-f"]]
     assert str(netplan_path) in removed
+    assert str(Path(self.runtime, "netplan.nmconnection")) in removed
     assert store.get("Runtime") is None
 
   def test_forget_keeps_profile_when_disk_removal_fails(self, mocker):
@@ -191,16 +192,23 @@ class TestNetworkStore:
     assert install[-1].endswith("-Cafe_Wifi.nmconnection")
     assert install[install.index("-m") + 1] == "600"
 
-  def test_rejects_boundary_whitespace_that_keyfiles_cannot_round_trip(self, mocker):
-    run = mocker.patch.object(store_module.subprocess, "run")
+  def test_round_trips_boundary_whitespace_with_keyfile_escaping(self, mocker):
+    def run(command, **_):
+      if command[:2] == ["sudo", "install"] and "-d" not in command:
+        shutil.copyfile(command[-2], command[-1])
+      return MagicMock(returncode=0)
+
+    mocker.patch.object(store_module.subprocess, "run", side_effect=run)
     store = self.make_store()
 
-    store.save_network(" Leading", psk="password123")
-    store.save_network("Trailing ", psk="password123")
-    store.save_network("Valid", psk=" password123")
+    store.save_network(" Cafe ", psk=" password123 ")
+    self.patch_reads(mocker)
+    reloaded = self.make_store()
 
-    assert store.get_all() == {}
-    run.assert_not_called()
+    assert require_entry(reloaded, " Cafe ")["psk"] == " password123 "
+    raw = next(Path(self.persistent).glob("*.nmconnection")).read_text()
+    assert r"ssid = \sCafe\s" in raw
+    assert r"psk = \spassword123\s" in raw
 
   def test_get_returns_copy(self):
     store = self.make_store()

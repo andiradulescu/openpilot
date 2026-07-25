@@ -17,10 +17,17 @@ RUNTIME_CONNECTIONS_DIR = "/run/NetworkManager/system-connections"
 NETPLAN_CONNECTIONS_DIR = "/data/etc/netplan"
 
 # Only key-mgmt values we can actually drive via wpa_supplicant. Anything else
-# (wpa-eap, sae, ieee8021x, ...) gets skipped on load — coercing those to
+# (wpa-eap, sae, ieee8021x, ...) gets skipped on load. Coercing those to
 # psk="" would render as key_mgmt=NONE in wpa_supplicant.conf, silently turning
 # a secure profile into an open one for the same SSID and inviting open spoofing.
 _SUPPORTED_KEY_MGMT = {"wpa-psk", "none"}
+_KEYFILE_ESCAPES = {
+  "\\": "\\",
+  "n": "\n",
+  "r": "\r",
+  "s": " ",
+  "t": "\t",
+}
 
 
 class MeteredType(IntEnum):
@@ -36,8 +43,46 @@ def _canonical_filename(file_uuid: str, ssid: str) -> str:
   return f"{file_uuid}-{ssid_safe}.nmconnection"
 
 
+def _decode_keyfile_string(value: str) -> str:
+  """Decode GLib keyfile string escapes."""
+  decoded = []
+  i = 0
+  while i < len(value):
+    if value[i] == "\\" and i + 1 < len(value):
+      escaped = _KEYFILE_ESCAPES.get(value[i + 1])
+      if escaped is not None:
+        decoded.append(escaped)
+        i += 2
+        continue
+    decoded.append(value[i])
+    i += 1
+  return "".join(decoded)
+
+
+def _encode_keyfile_string(value: str) -> str:
+  """Encode GLib keyfile string escapes, including boundary spaces."""
+  leading_spaces = len(value) - len(value.lstrip(" "))
+  trailing_spaces = len(value) - len(value.rstrip(" "))
+  encoded = []
+  for i, char in enumerate(value):
+    if char == "\\":
+      encoded.append("\\\\")
+    elif char == "\n":
+      encoded.append("\\n")
+    elif char == "\r":
+      encoded.append("\\r")
+    elif char == "\t":
+      encoded.append("\\t")
+    elif char == " " and (i < leading_spaces or i >= len(value) - trailing_spaces):
+      encoded.append("\\s")
+    else:
+      encoded.append(char)
+  return "".join(encoded)
+
+
 def _decode_keyfile_ssid(ssid: str) -> str:
   """Decode NM keyfile byte-list SSIDs while leaving ordinary ASCII literals alone."""
+  ssid = _decode_keyfile_string(ssid)
   if not ssid.endswith(";"):
     return ssid
 
@@ -101,9 +146,9 @@ class NetworkStore:
       # NM keyfile schema documents [802-11-wireless]/[802-11-wireless-security]
       # as canonical with [wifi]/[wifi-security] as aliases. AGNOS NM 1.46 writes
       # the alias form for every wifi profile it generates; only hand-written or
-      # imported-from-old-NM keyfiles use canonical names, and none ship with
-      # AGNOS. We deliberately accept only the alias spelling so a keyfile we
-      # can't round-trip (we only write [wifi] back) doesn't get half-migrated.
+      # imported keyfiles can use canonical names. We deliberately accept only
+      # the alias spelling so a keyfile we can't round-trip (we only write
+      # [wifi] back) remains untouched.
       if not cp.has_section("wifi"):
         return
       ssid = _decode_keyfile_ssid(cp.get("wifi", "ssid", fallback=""))
@@ -127,20 +172,20 @@ class NetworkStore:
           return
         # NM stores WEP as `key-mgmt=none` plus `wep-key*`/`wep-key-type`/`auth-alg=shared`.
         # Loading those as open (psk="") would let _generate_wpa_conf demote the secured
-        # SSID to key_mgmt=NONE — auto-association to an open spoof of the same SSID.
+        # SSID to key_mgmt=NONE, enabling auto-association to an open spoof of the same SSID.
         wep_keys = ("wep-key0", "wep-key1", "wep-key2", "wep-key3", "wep-key-type", "auth-alg")
         if key_mgmt == "none" and any(cp.has_option("wifi-security", k) for k in wep_keys):
           cloudlog.warning(f"NetworkStore: skipping {ssid!r} (WEP profile, unsupported)")
           return
-        psk = cp.get("wifi-security", "psk", fallback="")
+        psk = _decode_keyfile_string(cp.get("wifi-security", "psk", fallback=""))
         # NM agent-managed secrets (psk-flags=1) live outside the keyfile. We can't
         # drive them via wpa_supplicant, and loading with psk="" would render as
-        # key_mgmt=NONE — a secure profile silently demoted to open, inviting spoofs.
+        # key_mgmt=NONE, silently demoting a secure profile to open and inviting spoofs.
         if key_mgmt == "wpa-psk" and not psk:
           cloudlog.warning(f"NetworkStore: skipping {ssid!r} (wpa-psk with no inline secret)")
           return
 
-      # connection.autoconnect=false is user/provisioning intent — don't load it
+      # connection.autoconnect=false is user/provisioning intent. Do not load it
       # only to have ENABLE_NETWORK all silently re-arm the auto-join.
       if not cp.getboolean("connection", "autoconnect", fallback=True):
         cloudlog.warning(f"NetworkStore: skipping {ssid!r} (connection.autoconnect=false)")
@@ -153,8 +198,9 @@ class NetworkStore:
         "metered": cp.getint("connection", "metered", fallback=0),
         "hidden": cp.getboolean("wifi", "hidden", fallback=False),
         "uuid": file_uuid,
-        # Remember the on-disk filename so save/remove stay consistent with legacy files.
+        # Remember the on-disk filename so save/remove stay consistent with noncanonical files.
         "_filename": None if imported else fname,
+        "_runtime_filename": fname if imported else None,
         "_netplan_filename": f"90-NM-{file_uuid}.yaml" if imported and file_uuid else None,
       }
     except (configparser.Error, ValueError):
@@ -167,18 +213,18 @@ class NetworkStore:
 
     canonical_fname = _canonical_filename(file_uuid, ssid)
     canonical_path = os.path.join(self._directory, canonical_fname)
-    old_fname = entry.get("_filename")
+    stored_fname = entry.get("_filename")
     entry["_filename"] = canonical_fname
 
     cp = configparser.ConfigParser(interpolation=None)
     cp["connection"] = {
-      "id": ssid,
+      "id": _encode_keyfile_string(ssid),
       "uuid": file_uuid,
       "type": "wifi",
       "metered": str(entry.get("metered", 0)),
     }
     cp["wifi"] = {
-      "ssid": ssid,
+      "ssid": _encode_keyfile_string(ssid),
       "mode": "infrastructure",
       "hidden": str(entry.get("hidden", False)).lower(),
     }
@@ -187,7 +233,7 @@ class NetworkStore:
     if psk:
       cp["wifi-security"] = {
         "key-mgmt": "wpa-psk",
-        "psk": psk,
+        "psk": _encode_keyfile_string(psk),
       }
 
     cp["ipv4"] = {"method": "auto"}
@@ -207,21 +253,21 @@ class NetworkStore:
       except FileNotFoundError:
         pass
 
-    # Migrate from any prior naming (legacy percent-encoded, or earlier UUID with stale ssid suffix).
-    if old_fname and old_fname != canonical_fname:
-      old_path = os.path.join(self._directory, old_fname)
-      result = subprocess.run(["sudo", "rm", "-f", old_path], check=False)
+    # Keep one canonical filename even when the tracked profile uses another name.
+    if stored_fname and stored_fname != canonical_fname:
+      stored_path = os.path.join(self._directory, stored_fname)
+      result = subprocess.run(["sudo", "rm", "-f", stored_path], check=False)
       # If cleanup fails (FS read-only, etc.) both files survive. _load's listdir
       # order would pick winners non-deterministically. Make both files hold the
-      # same content so the duplicate is harmless; pin _filename to the legacy
-      # name so future updates land there too and we keep retrying the cleanup.
+      # same content so the duplicate is harmless. Pin _filename to the stored
+      # name so each update retries the cleanup.
       if result.returncode != 0:
-        cloudlog.warning(f"NetworkStore: cleanup of legacy {old_fname} failed; mirroring content to keep both files in sync")
+        cloudlog.warning(f"NetworkStore: cleanup of noncanonical {stored_fname} failed; mirroring content to keep both files in sync")
         try:
-          subprocess.run(["sudo", "install", "-o", "root", "-g", "root", "-m", "600", os.path.join(self._directory, canonical_fname), old_path], check=True)
+          subprocess.run(["sudo", "install", "-o", "root", "-g", "root", "-m", "600", os.path.join(self._directory, canonical_fname), stored_path], check=True)
         except Exception:
-          cloudlog.exception("NetworkStore: failed to mirror migrated keyfile back to legacy path")
-        entry["_filename"] = old_fname
+          cloudlog.exception("NetworkStore: failed to mirror keyfile to noncanonical path")
+        entry["_filename"] = stored_fname
 
     netplan_filename = entry.get("_netplan_filename")
     if self._netplan_directory is not None and netplan_filename:
@@ -246,16 +292,6 @@ class NetworkStore:
       return dict(entry) if entry else None
 
   def save_network(self, ssid: str, psk: str | None = None, metered: int | None = None, hidden: bool | None = None):
-    # ConfigParser.write/get strips boundary whitespace on round-trip, so an SSID
-    # or PSK with leading/trailing spaces would silently change on next restart —
-    # the in-memory connection works for the session, then breaks after reload.
-    # Refuse rather than corrupt; the user gets a clear failure to investigate.
-    if ssid != ssid.strip():
-      cloudlog.warning(f"NetworkStore: refusing to save SSID with boundary whitespace: {ssid!r}")
-      return
-    if psk is not None and psk != psk.strip():
-      cloudlog.warning(f"NetworkStore: refusing to save PSK with boundary whitespace for {ssid!r}")
-      return
     with self._lock:
       existing = dict(self._networks.get(ssid, {}))
       if psk is not None:
@@ -279,8 +315,8 @@ class NetworkStore:
       entry = self._networks.get(ssid)
       if entry is None:
         return False
-      # Migrated profiles can leave duplicate keyfiles around (legacy + canonical,
-      # or the failed-cleanup mirror path). Removing only the tracked file leaves
+      # Profiles can have duplicate keyfiles (noncanonical plus canonical, or a
+      # failed-cleanup mirror). Removing only the tracked file leaves
       # the others on disk and _load would silently restore the network. Always
       # include the canonical and tracked paths plus any other files matching
       # this SSID on disk, then `rm -f` them all.
@@ -289,14 +325,19 @@ class NetworkStore:
       tracked = entry.get("_filename")
       if tracked:
         paths.add(os.path.join(self._directory, tracked))
+      runtime_filename = entry.get("_runtime_filename")
+      if self._runtime_directory is not None and runtime_filename:
+        paths.add(os.path.join(self._runtime_directory, runtime_filename))
       netplan_filename = entry.get("_netplan_filename")
       if self._netplan_directory is not None and netplan_filename:
         paths.add(os.path.join(self._netplan_directory, netplan_filename))
-      paths.update(self._find_keyfiles_for(ssid))
+      paths.update(self._find_keyfiles_for(self._directory, ssid))
+      if self._runtime_directory is not None:
+        paths.update(self._find_keyfiles_for(self._runtime_directory, ssid))
       for p in paths:
         result = subprocess.run(["sudo", "rm", "-f", p], check=False)
         # `rm -f` returns 0 even if the file is absent; non-zero is a real failure
-        # (FS read-only, sudo broken). Leave the in-memory entry alone — _load on
+        # (FS read-only, sudo broken). Leave the in-memory entry alone. _load on
         # next start would restore the file and silently re-enable auto-connect.
         if result.returncode != 0:
           cloudlog.warning(f"NetworkStore: failed to remove {p} (rc={result.returncode})")
@@ -304,17 +345,17 @@ class NetworkStore:
       del self._networks[ssid]
       return True
 
-  def _find_keyfiles_for(self, ssid: str) -> list[str]:
-    """Return all .nmconnection paths in our directory whose [wifi] ssid == ssid."""
+  def _find_keyfiles_for(self, directory: str, ssid: str) -> list[str]:
+    """Return all .nmconnection paths in a directory whose [wifi] ssid == ssid."""
     matches = []
     try:
-      filenames = os.listdir(self._directory)
+      filenames = os.listdir(directory)
     except OSError:
       return matches
     for fname in filenames:
       if not fname.endswith(".nmconnection"):
         continue
-      fpath = os.path.join(self._directory, fname)
+      fpath = os.path.join(directory, fname)
       raw = sudo_read(fpath)
       if not raw:
         continue
