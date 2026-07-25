@@ -558,6 +558,22 @@ mode=ap
 
     assert store.get("Duplicate")["psk"] == "persistent-secret"
 
+  def test_remove_runtime_profile_removes_netplan_source(self, mocker: MockerFixture):
+    runtime_dir = tempfile.mkdtemp()
+    netplan_dir = tempfile.mkdtemp()
+    self._write_profile(runtime_dir, "netplan-NM-testnet-uuid-TestNet.nmconnection", "TestNet")
+    netplan_path = os.path.join(netplan_dir, "90-NM-testnet-uuid.yaml")
+    with open(netplan_path, "w") as f:
+      f.write("network:\n  version: 2\n")
+    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=self._read_file)
+
+    store = NetworkStore(directory=self.tmpdir, runtime_directory=runtime_dir, netplan_directory=netplan_dir)
+    mock_run = mocker.patch("subprocess.run", return_value=mocker.MagicMock(returncode=0))
+
+    assert store.remove("TestNet")
+    removed_paths = [c.args[0][-1] for c in mock_run.call_args_list if c.args[0][:3] == ["sudo", "rm", "-f"]]
+    assert netplan_path in removed_paths
+
   def test_unsupported_persistent_profile_blocks_runtime_duplicate(self, mocker: MockerFixture):
     runtime_dir = tempfile.mkdtemp()
     self._write_profile(self.tmpdir, "persistent.nmconnection", "Enterprise", key_mgmt="wpa-eap")
