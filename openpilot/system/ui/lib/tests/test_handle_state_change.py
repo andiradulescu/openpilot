@@ -74,13 +74,11 @@ class TestConnected:
     wm._dhcp.start.assert_called_once()
     cb.assert_called_once()
 
-  def test_handle_connected_retries_runtime_profile_import(self, wm):
-    wm._store.has_pending_imports = True
-
+  def test_handle_connected_does_not_migrate_runtime_profiles(self, wm):
     wm._handle_connected("MyNet")
     wm._handle_connected("MyNet")
 
-    assert wm._store.persist_imported.call_count == 2
+    wm._store.persist_imported.assert_not_called()
 
   def test_handle_connected_re_fires_on_ssid_change(self, wm, mocker):
     """Switching networks — second _handle_connected with a different ssid

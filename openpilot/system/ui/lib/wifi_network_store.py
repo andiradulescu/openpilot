@@ -15,7 +15,6 @@ from openpilot.common.utils import sudo_read
 NM_CONNECTIONS_DIR = "/data/etc/NetworkManager/system-connections"
 RUNTIME_CONNECTIONS_DIR = "/run/NetworkManager/system-connections"
 NETPLAN_CONNECTIONS_DIR = "/data/etc/netplan"
-IMPORT_MARKER = ".wpa_supplicant-import-complete"
 
 # Only key-mgmt values we can actually drive via wpa_supplicant. Anything else
 # (wpa-eap, sae, ieee8021x, ...) gets skipped on load — coercing those to
@@ -68,18 +67,14 @@ class NetworkStore:
     self._netplan_directory = NETPLAN_CONNECTIONS_DIR if directory == NM_CONNECTIONS_DIR else None
     if netplan_directory is not None:
       self._netplan_directory = netplan_directory
-    self._import_marker_path = os.path.join(self._directory, IMPORT_MARKER)
-    self._migration_complete = os.path.exists(self._import_marker_path)
     self._lock = threading.Lock()
     self._networks: dict[str, dict] = {}
-    self._pending_imports: set[str] = set()
     self._load()
 
   def _load(self):
     self._networks = {}
-    self._pending_imports = set()
     sources = [(self._directory, False)]
-    if self._runtime_directory is not None and not self._migration_complete:
+    if self._runtime_directory is not None:
       sources.append((self._runtime_directory, True))
 
     persistent_ssids: set[str] = set()
@@ -162,53 +157,8 @@ class NetworkStore:
         "_filename": None if imported else fname,
         "_netplan_filename": f"90-NM-{file_uuid}.yaml" if imported and file_uuid else None,
       }
-      if imported:
-        self._pending_imports.add(ssid)
     except (configparser.Error, ValueError):
       return
-
-  def persist_imported(self):
-    """Persist supported runtime-only profiles after wlan0 is released by NM."""
-    with self._lock:
-      for ssid in list(self._pending_imports):
-        entry = self._networks.get(ssid)
-        if entry is None:
-          self._pending_imports.discard(ssid)
-          continue
-        try:
-          file_uuid, updated = self._render_nmconnection(ssid, entry)
-        except Exception:
-          cloudlog.exception(f"NetworkStore: failed to persist imported profile {ssid!r}")
-          continue
-        updated["uuid"] = file_uuid
-        self._networks[ssid] = updated
-        self._pending_imports.discard(ssid)
-
-      if self._runtime_directory is not None and not self._pending_imports and not self._migration_complete:
-        try:
-          self._write_import_marker()
-        except Exception:
-          cloudlog.exception("NetworkStore: failed to mark runtime profile import complete")
-
-  def _write_import_marker(self):
-    with tempfile.NamedTemporaryFile(mode="w", dir="/tmp", delete=False) as f:
-      f.write("Runtime NetworkManager profiles imported by wpa_supplicant backend.\n")
-      temp_path = f.name
-    try:
-      os.chmod(temp_path, 0o644)
-      subprocess.run(["sudo", "install", "-d", "-m", "755", self._directory], check=True)
-      subprocess.run(["sudo", "install", "-o", "root", "-g", "root", "-m", "644", temp_path, self._import_marker_path], check=True)
-      self._migration_complete = True
-    finally:
-      try:
-        os.unlink(temp_path)
-      except FileNotFoundError:
-        pass
-
-  @property
-  def has_pending_imports(self) -> bool:
-    with self._lock:
-      return bool(self._pending_imports) or (self._runtime_directory is not None and not self._migration_complete)
 
   def _render_nmconnection(self, ssid: str, entry: dict) -> tuple[str, dict]:
     file_uuid = entry.get("uuid") or str(uuid.uuid5(uuid.NAMESPACE_DNS, ssid))

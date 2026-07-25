@@ -5,7 +5,7 @@ import tempfile
 
 from pytest_mock import MockerFixture
 
-from openpilot.system.ui.lib.wifi_network_store import IMPORT_MARKER, NetworkStore
+from openpilot.system.ui.lib.wifi_network_store import NetworkStore
 from openpilot.system.ui.lib.wpa_ctrl import _generate_wpa_conf, _format_psk_value, _is_raw_psk
 
 
@@ -529,24 +529,18 @@ mode=ap
 
     assert store.get("Hotspot") is None
 
-  def test_imports_runtime_profile_then_marks_migration_complete(self, mocker: MockerFixture):
+  def test_loads_runtime_profile_without_persisting_it(self, mocker: MockerFixture):
     runtime_dir = tempfile.mkdtemp()
     runtime_path = self._write_profile(runtime_dir, "netplan-TestNet.nmconnection", "TestNet")
     mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=self._read_file)
+    mock_run = mocker.patch("subprocess.run")
 
     store = NetworkStore(directory=self.tmpdir, runtime_directory=runtime_dir)
 
     assert store.get("TestNet")["psk"] == "secret123"
-    assert store.has_pending_imports
-    mock_run = mocker.patch("subprocess.run", return_value=mocker.MagicMock(returncode=0))
-    store.persist_imported()
-
-    install_targets = [c.args[0][-1] for c in mock_run.call_args_list if c.args[0][:2] == ["sudo", "install"] and "-d" not in c.args[0]]
-    assert any(target.endswith("testnet-uuid-TestNet.nmconnection") for target in install_targets)
-    assert os.path.join(self.tmpdir, IMPORT_MARKER) in install_targets
-    assert not any(c.args[0][:2] == ["sudo", "rm"] for c in mock_run.call_args_list)
-    assert os.path.exists(runtime_path), "rollback source must remain untouched"
-    assert not store.has_pending_imports
+    assert os.listdir(self.tmpdir) == []
+    assert os.path.exists(runtime_path)
+    mock_run.assert_not_called()
 
   def test_persistent_profile_wins_over_runtime_duplicate(self, mocker: MockerFixture):
     runtime_dir = tempfile.mkdtemp()
@@ -584,17 +578,16 @@ mode=ap
 
     assert store.get("Enterprise") is None
 
-  def test_import_marker_prevents_forgotten_profile_resurrection(self, mocker: MockerFixture):
+  def test_old_import_marker_does_not_hide_runtime_profile(self, mocker: MockerFixture):
     runtime_dir = tempfile.mkdtemp()
-    self._write_profile(runtime_dir, "stale.nmconnection", "Forgotten")
-    with open(os.path.join(self.tmpdir, IMPORT_MARKER), "w") as f:
+    self._write_profile(runtime_dir, "netplan.nmconnection", "NetplanProfile")
+    with open(os.path.join(self.tmpdir, ".wpa_supplicant-import-complete"), "w") as f:
       f.write("complete\n")
     mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=self._read_file)
 
     store = NetworkStore(directory=self.tmpdir, runtime_directory=runtime_dir)
 
-    assert store.get("Forgotten") is None
-    assert not store.has_pending_imports
+    assert store.get("NetplanProfile") is not None
 
   def test_unsupported_runtime_profile_is_not_imported(self, mocker: MockerFixture):
     runtime_dir = tempfile.mkdtemp()
@@ -604,20 +597,6 @@ mode=ap
     store = NetworkStore(directory=self.tmpdir, runtime_directory=runtime_dir)
 
     assert store.get("Enterprise") is None
-    mocker.patch("subprocess.run", return_value=mocker.MagicMock(returncode=0))
-    store.persist_imported()
-    assert not store.has_pending_imports
-
-  def test_import_persistence_failure_remains_pending(self, mocker: MockerFixture):
-    runtime_dir = tempfile.mkdtemp()
-    self._write_profile(runtime_dir, "retry.nmconnection", "RetryNet")
-    mocker.patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=self._read_file)
-    store = NetworkStore(directory=self.tmpdir, runtime_directory=runtime_dir)
-    mocker.patch.object(store, "_render_nmconnection", side_effect=OSError("read-only filesystem"))
-
-    store.persist_imported()
-
-    assert store.has_pending_imports
 
 
 class TestPskFormatting:

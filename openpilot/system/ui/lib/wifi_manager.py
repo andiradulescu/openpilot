@@ -155,10 +155,6 @@ class WifiManager:
       try:
         _generate_wpa_conf(self._store)
         self._ensure_wpa_supplicant()
-        if self._ctrl is not None:
-          # Runtime netplan profiles are persisted only after wlan0 is no longer
-          # managed by NetworkManager. The runtime/YAML originals remain intact.
-          self._store.persist_imported()
 
         # Populate networks before wifi state so the connected SSID's strength is
         # known on first render; otherwise it flashes the disconnected icon.
@@ -447,14 +443,10 @@ class WifiManager:
       pending = self._pending_connection
       if pending is not None and pending.ssid == ssid:
         self._persist_pending_connection(ssid)
-      if self._store.has_pending_imports:
-        self._store.persist_imported()
       return
     self._last_connecting_at = 0.0
     self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTED)
     self._persist_pending_connection(ssid)
-    if self._store.has_pending_imports:
-      self._store.persist_imported()
     # Re-enable saved networks so wpa_supplicant can auto-roam: SELECT_NETWORK disables
     # every other network as a side effect.
     if self._ctrl is not None:

@@ -21,7 +21,6 @@ def wm(mocker):
   wm._dhcp = mocker.MagicMock()
   wm._store = mocker.MagicMock()
   wm._store.get_metered.return_value = 0
-  wm._store.has_pending_imports = False
   wm._tethering_active = False
   wm._wifi_state = WifiState()
   wm._user_epoch = 0
