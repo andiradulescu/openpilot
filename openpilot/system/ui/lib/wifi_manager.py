@@ -235,8 +235,7 @@ class WifiManager:
         return
 
       if new_status == ConnectStatus.CONNECTED and ssid is not None:
-        # We own DHCP — must (re)start udhcpc since the previous UI's died with its parent.
-        self._handle_connected(ssid)
+        self._handle_connected(ssid, adopt_dhcp=True)
       else:
         self._wifi_state = WifiState(ssid=ssid, status=new_status)
 
@@ -432,7 +431,7 @@ class WifiManager:
     self._enqueue_callbacks(self._activated)
     return True
 
-  def _handle_connected(self, ssid: str):
+  def _handle_connected(self, ssid: str, adopt_dhcp: bool = False):
     """Transition to CONNECTED. Idempotent on (ssid, CONNECTED) so the monitor and
     reconcile paths can both call in without each one killing the previous udhcpc."""
     if (self._wifi_state.status == ConnectStatus.CONNECTED
@@ -454,7 +453,8 @@ class WifiManager:
         self._request("ENABLE_NETWORK all")
       except Exception:
         cloudlog.exception("Failed to re-enable saved networks for auto-roam")
-    self._dhcp.start()
+    if not adopt_dhcp or not self._dhcp.adopt():
+      self._dhcp.start()
     self._enqueue_callbacks(self._activated)
     self._poll_for_ip()
 
@@ -1213,8 +1213,6 @@ class WifiManager:
         self._scan_thread.join()
       if self._state_thread.is_alive():
         self._state_thread.join()
-      if self._tethering_active:
-        self._stop_tethering()
       if self._ctrl is not None:
         self._ctrl.close()
-      self._dhcp.stop()
+      # Network daemons outlive the UI and are adopted by the next controller.

@@ -881,7 +881,7 @@ class TestNetworksUpdatedCoalescing:
 
 
 class TestStop:
-  def test_stop_calls_stop_tethering_when_active(self, wm, mocker):
+  def test_stop_leaves_network_data_plane_running(self, wm, mocker):
     wm._tethering_active = True
     wm._scan_thread = mocker.MagicMock(is_alive=mocker.MagicMock(return_value=False))
     wm._state_thread = mocker.MagicMock(is_alive=mocker.MagicMock(return_value=False))
@@ -890,7 +890,9 @@ class TestStop:
 
     wm.stop()
 
-    wm._stop_tethering.assert_called_once()
+    wm._stop_tethering.assert_not_called()
+    wm._dhcp.stop.assert_not_called()
+    wm._ctrl.close.assert_called_once()
 
   def test_stop_skips_tethering_when_not_active(self, wm, mocker):
     wm._tethering_active = False
@@ -960,16 +962,25 @@ class TestInitWifiState:
     assert wm._ctrl is None
     pkill.assert_called_with(wifi_manager_module.WPA_AP_CONF)
 
-  def test_station_completed_still_starts_dhcp(self, wm):
-    """Happy path: attaching to a connected STA daemon must re-launch udhcpc
-    (the prior UI's udhcpc died with its parent)."""
+  def test_station_completed_adopts_surviving_dhcp(self, wm):
     wm._ctrl.request.return_value = "wpa_state=COMPLETED\nmode=station\nssid=HomeNet\n"
+    wm._dhcp.adopt.return_value = True
 
     wm._init_wifi_state()
 
     assert wm._tethering_active is False
     assert wm._wifi_state.status == ConnectStatus.CONNECTED
     assert wm._wifi_state.ssid == "HomeNet"
+    wm._dhcp.adopt.assert_called_once()
+    wm._dhcp.start.assert_not_called()
+
+  def test_station_completed_starts_dhcp_when_none_survives(self, wm):
+    wm._ctrl.request.return_value = "wpa_state=COMPLETED\nmode=station\nssid=HomeNet\n"
+    wm._dhcp.adopt.return_value = False
+
+    wm._init_wifi_state()
+
+    wm._dhcp.adopt.assert_called_once()
     wm._dhcp.start.assert_called_once()
 
   def test_station_disconnected_does_not_touch_dhcp(self, wm):

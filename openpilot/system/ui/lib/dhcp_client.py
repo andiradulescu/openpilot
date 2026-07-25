@@ -14,17 +14,28 @@ class DhcpClient:
   def __init__(self, iface: str = "wlan0"):
     self._iface = iface
     self._proc: subprocess.Popen | None = None
+    self._adopted = False
     self._metric_thread: threading.Thread | None = None
     self._metric_stop = threading.Event()
 
+  def _start_metric_thread(self):
+    self._metric_stop.clear()
+    self._metric_thread = threading.Thread(target=self._fix_default_route_metric, daemon=True)
+    self._metric_thread.start()
+
+  def adopt(self) -> bool:
+    result = subprocess.run(["pgrep", "-f", f"udhcpc.*-i {self._iface}"], capture_output=True, check=False)
+    if result.returncode != 0:
+      return False
+    self._adopted = True
+    self._start_metric_thread()
+    return True
+
   def start(self):
     self.stop()
-    # If a previous UI/manager process crashed, its sudo udhcpc -f survives as
-    # an orphan and self.stop() above can't reach it (we only track our own Popen).
-    # Without this, two udhcpc instances would race lease renewals on the same
-    # interface and the orphan can re-add the address after a managed flush.
+    # A client from a previous controller can survive independently. A fresh
+    # connection needs a new lease, so replace any client we did not adopt.
     subprocess.run(["sudo", "pkill", "-f", f"udhcpc.*-i {self._iface}"], check=False)
-    self._metric_stop.clear()
     try:
       self._proc = subprocess.Popen(
         ["sudo", "udhcpc", "-i", self._iface, "-f", "-t", "5", "-T", "3"],
@@ -34,8 +45,7 @@ class DhcpClient:
     except Exception:
       cloudlog.exception("Failed to start udhcpc")
       return
-    self._metric_thread = threading.Thread(target=self._fix_default_route_metric, daemon=True)
-    self._metric_thread.start()
+    self._start_metric_thread()
 
   def _fix_default_route_metric(self):
     """Replace udhcpc's metric-0 default route with metric 600.
@@ -88,6 +98,7 @@ class DhcpClient:
     if self._metric_thread is not None:
       self._metric_thread.join(timeout=2)
       self._metric_thread = None
+    had_client = self._proc is not None or self._adopted
     if self._proc is not None:
       try:
         self._proc.terminate()
@@ -99,6 +110,8 @@ class DhcpClient:
         except Exception:
           pass
       self._proc = None
+    self._adopted = False
+    if had_client:
       # Same orphan risk as start(): a previous sudo udhcpc -f can survive our
       # tracked Popen (e.g. terminate timed out, sudo wrapper died but child
       # didn't). Without this, the orphan re-adds the address right after the

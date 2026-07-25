@@ -5,6 +5,18 @@ from openpilot.system.ui.lib.dhcp_client import DhcpClient
 
 
 class TestDhcpClient:
+  def test_adopt_existing_udhcpc_without_restarting_it(self, mocker):
+    client = DhcpClient()
+    run = mocker.patch.object(dhcp_client_module.subprocess, "run", return_value=mocker.MagicMock(returncode=0))
+    popen = mocker.patch.object(dhcp_client_module.subprocess, "Popen")
+    thread = mocker.patch.object(dhcp_client_module.threading, "Thread")
+
+    assert client.adopt()
+
+    run.assert_called_once_with(["pgrep", "-f", "udhcpc.*-i wlan0"], capture_output=True, check=False)
+    popen.assert_not_called()
+    thread.return_value.start.assert_called_once()
+
   def test_start_detaches_udhcpc_from_ui_session(self, mocker):
     client = DhcpClient()
     stop = mocker.patch.object(client, "stop")
