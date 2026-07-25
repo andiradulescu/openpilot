@@ -166,6 +166,7 @@ class NetworkStore:
     entry["uuid"] = file_uuid
 
     canonical_fname = _canonical_filename(file_uuid, ssid)
+    canonical_path = os.path.join(self._directory, canonical_fname)
     old_fname = entry.get("_filename")
     entry["_filename"] = canonical_fname
 
@@ -199,7 +200,7 @@ class NetworkStore:
     try:
       os.chmod(temp_path, 0o600)
       subprocess.run(["sudo", "install", "-d", "-m", "755", self._directory], check=True)
-      subprocess.run(["sudo", "install", "-o", "root", "-g", "root", "-m", "600", temp_path, os.path.join(self._directory, canonical_fname)], check=True)
+      subprocess.run(["sudo", "install", "-o", "root", "-g", "root", "-m", "600", temp_path, canonical_path], check=True)
     finally:
       try:
         os.unlink(temp_path)
@@ -221,6 +222,17 @@ class NetworkStore:
         except Exception:
           cloudlog.exception("NetworkStore: failed to mirror migrated keyfile back to legacy path")
         entry["_filename"] = old_fname
+
+    netplan_filename = entry.get("_netplan_filename")
+    if self._netplan_directory is not None and netplan_filename:
+      netplan_path = os.path.join(self._netplan_directory, netplan_filename)
+      result = subprocess.run(["sudo", "rm", "-f", netplan_path], check=False)
+      if result.returncode != 0:
+        cleanup_result = subprocess.run(["sudo", "rm", "-f", canonical_path], check=False)
+        if cleanup_result.returncode != 0:
+          raise OSError(f"failed to remove {netplan_path} and roll back {canonical_path}")
+        raise OSError(f"failed to remove {netplan_path}")
+      entry["_netplan_filename"] = None
 
     return file_uuid, entry
 
