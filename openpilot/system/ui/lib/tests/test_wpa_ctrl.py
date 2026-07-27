@@ -1,0 +1,453 @@
+"""Tests for wpa_ctrl parsing helpers and constants."""
+from pathlib import Path
+import socket
+import tempfile
+import threading
+import time
+from typing import cast
+from unittest import TestCase
+from unittest.mock import MagicMock, patch
+
+from openpilot.system.ui.lib import wpa_ctrl as wpa_ctrl_module
+from openpilot.system.ui.lib.wpa_ctrl import (
+  RECV_BUF_SIZE,
+  SecurityType,
+  WpaCtrl,
+  decode_ssid,
+  normalize_ssid,
+  parse_event_network_id,
+  parse_event_ssid,
+  parse_scan_results,
+  parse_status,
+  flags_to_security_type,
+  dbm_to_percent,
+)
+
+
+class TestParseStatus(TestCase):
+  def test_values(self):
+    # STATUS emits ssid via wpa_ssid_txt (printf_encode), so non-ASCII
+    # bytes come through escaped and must be decoded as UTF-8.
+    # Only the ssid value is decoded; other fields must pass through.
+    cases = (
+      ("", {}),
+      ("ssid=My=Network\n", {"ssid": "My=Network"}),
+      ('ssid=My \\"Home\\"\n', {"ssid": 'My "Home"'}),
+      (
+        "wpa_state=COMPLETED\nssid=MyNet\nip_address=10.0.0.5\n",
+        {"wpa_state": "COMPLETED", "ssid": "MyNet", "ip_address": "10.0.0.5"},
+      ),
+      (
+        "wpa_state=COMPLETED\nssid=caf\\xc3\\xa9\nip_address=10.0.0.5\n",  # codespell:ignore caf
+        {"wpa_state": "COMPLETED", "ssid": "café", "ip_address": "10.0.0.5"},
+      ),
+      (
+        "bssid=00:11:22:33:44:55\nssid=\\x41\n",
+        {"bssid": "00:11:22:33:44:55", "ssid": "A"},
+      ),
+    )
+    for raw, expected in cases:
+      with self.subTest(raw=raw):
+        assert parse_status(raw) == expected
+
+
+class TestParseEventSsid(TestCase):
+  def test_values(self):
+    cases = (
+      ('id=0 ssid="MyNetwork" reason=WRONG_KEY', "MyNetwork"),
+      ("id=0 reason=WRONG_KEY", None),
+      (r'id=0 ssid="My \"Home\"" reason=WRONG_KEY', 'My "Home"'),
+      (r'id=0 ssid="caf\xc3\xa9" reason=WRONG_KEY', "café"),  # codespell:ignore caf
+    )
+    for event, expected in cases:
+      with self.subTest(event=event):
+        assert parse_event_ssid(event) == expected
+
+
+class TestParseEventNetworkId(TestCase):
+  def test_values(self):
+    cases = (
+      ('id=42 ssid="MyNetwork" reason=WRONG_KEY', "42"),
+      ('ssid="MyNetwork" reason=WRONG_KEY', None),
+    )
+    for event, expected in cases:
+      with self.subTest(event=event):
+        assert parse_event_network_id(event) == expected
+
+
+class TestFlagsToSecurityType(TestCase):
+  def test_security_types(self):
+    cases = (
+      ("[WPA2-PSK-CCMP][ESS]", SecurityType.WPA),
+      ("[RSN-PSK-CCMP]", SecurityType.WPA),
+      ("[WPA-PSK-TKIP]", SecurityType.WPA),
+      ("[WPA2-PSK-CCMP][SAE]", SecurityType.WPA),
+      ("[RSN-PSK-CCMP][SAE-CCMP]", SecurityType.WPA),
+      ("[SAE]", SecurityType.UNSUPPORTED),
+      ("[SAE-CCMP]", SecurityType.UNSUPPORTED),
+      ("[OWE-CCMP][ESS]", SecurityType.UNSUPPORTED),
+      ("[OWE-TRANSITION][ESS]", SecurityType.UNSUPPORTED),
+      ("[DPP][ESS]", SecurityType.UNSUPPORTED),
+      ("[OSEN][ESS]", SecurityType.UNSUPPORTED),
+      ("[FILS-SHA256][ESS]", SecurityType.UNSUPPORTED),
+      ("[ESS]", SecurityType.OPEN),
+      ("", SecurityType.OPEN),
+      ("[WPA2-EAP-CCMP]", SecurityType.UNSUPPORTED),
+      ("[802.1X]", SecurityType.UNSUPPORTED),
+    )
+    for flags, expected in cases:
+      assert flags_to_security_type(flags) == expected
+
+
+class TestDbmToPercent(TestCase):
+  def test_values(self):
+    cases = ((-120, 0), (-100, 0), (-92, 14), (-81, 32), (-74, 44), (-70, 50), (-40, 100), (-30, 100))
+    for dbm, expected in cases:
+      with self.subTest(dbm=dbm):
+        assert dbm_to_percent(dbm) == expected
+
+
+class TestParseScanResults(TestCase):
+  HEADER = "bssid / frequency / signal level / flags / ssid\n"
+
+  def test_basic(self):
+    raw = self.HEADER + "00:11:22:33:44:55\t2437\t-65\t[WPA2-PSK-CCMP][ESS]\tMyNetwork\n"
+    results = parse_scan_results(raw)
+    assert len(results) == 1
+    r = results[0]
+    assert r.bssid == "00:11:22:33:44:55"
+    assert r.freq == 2437
+    assert r.signal == -65
+    assert r.ssid == "MyNetwork"
+
+  def test_ssid_values(self):
+    # Some APs broadcast 32 null bytes instead of an empty SSID; wpa_supplicant
+    # emits them as `\x00` escapes. Those should normalize to empty so the UI
+    # filters them out the same as empty hidden networks.
+    # \xc3\xa9 is UTF-8 for é, so decode_ssid must reinterpret as UTF-8,
+    # not one-codepoint-per-byte (Latin-1), or SET_NETWORK round-trip
+    # will re-encode as 7 bytes and fail to match the 5-byte AP SSID.
+    # SSIDs may legally end with spaces and wpa_supplicant leaves printable
+    # spaces unescaped. Stripping the whole payload would clip the last line's
+    # trailing-space SSID, so connect/forget would target the wrong name.
+    cases = (
+      ("00:11:22:33:44:55\t2437\t-65\t[ESS]\t\n", ""),
+      (f"00:11:22:33:44:55\t2437\t-65\t[ESS]\t{'\\x00' * 32}\n", ""),
+      ('00:11:22:33:44:55\t2437\t-65\t[ESS]\tcaf\\xc3\\xa9 \\"home\\"\n', 'café "home"'),
+      ("00:11:22:33:44:55\t2437\t-65\t[ESS]\tMyNet \n", "MyNet "),
+      ("00:11:22:33:44:55\t2437\t-65\t[ESS]\n", ""),
+      ("garbage\n00:11:22:33:44:55\t2437\t-65\t[ESS]\tGood\n", "Good"),
+    )
+    for body, expected in cases:
+      with self.subTest(body=body):
+        results = parse_scan_results(self.HEADER + body)
+        assert len(results) == 1
+        assert results[0].ssid == expected
+
+  def test_large_scan_fits_in_recv_buffer(self):
+    """A dense AP environment can return many results. Verify they parse
+    correctly and that RECV_BUF_SIZE is large enough for a realistic worst case."""
+    lines = [self.HEADER.strip()]
+    for i in range(200):
+      bssid = f"00:11:22:33:{i // 256:02x}:{i % 256:02x}"
+      ssid = f"Network_{i:03d}_with_a_longer_name_padding"
+      lines.append(f"{bssid}\t2437\t{-30 - (i % 70)}\t[WPA2-PSK-CCMP][ESS]\t{ssid}")
+    raw = "\n".join(lines) + "\n"
+
+    # Ensure the payload fits in our buffer and would overflow the old 4096-byte buffer.
+    assert 4096 < len(raw.encode()) < RECV_BUF_SIZE
+
+    results = parse_scan_results(raw)
+    assert len(results) == 200
+    assert results[0].ssid == "Network_000_with_a_longer_name_padding"
+    assert results[199].ssid == "Network_199_with_a_longer_name_padding"
+
+class TestDecodeSsid(TestCase):
+  """Must match wpa_supplicant printf_decode (hostap/src/utils/common.c:526)."""
+
+  def test_values(self):
+    # "café" (UTF-8: 63 61 66 c3 a9) must decode as 4 codepoints, not 5.
+    # "日本" (UTF-8: e6 97 a5 e6 9c ac), a common 3-byte CJK case.
+    # 4-byte UTF-8 sequence (🚗 U+1F697 = f0 9f 9a 97).
+    # `\x1Z`: hex2byte("1Z") fails (Z not hex), hex2num('1')=1, byte 0x01.
+    # `\xA` at end-of-string: 2-digit fails, 1-digit succeeds, byte 0x0a.
+    # `\xGZ`: both hex2byte and hex2num fail, then G and Z are emitted as literals.
+    # `\101` = 0o101 = 65 = 'A'.
+    # `\78`: '7' is octal, '8' is not, then '8' is emitted as a literal.
+    # `\q`: the backslash is consumed and 'q' is emitted as a literal.
+    # A trailing backslash advances to the string terminator and is dropped.
+    # Hidden APs broadcast 32 null bytes, which normalize to an empty SSID.
+    # Mixed content with an embedded NUL stays as-is.
+    cases = (
+      ("MyNetwork", "MyNetwork"),
+      ("", ""),
+      ("\\x41\\x42", "AB"),
+      ("caf\\xc3\\xa9", "café"),  # codespell:ignore caf
+      ("\\xe6\\x97\\xa5\\xe6\\x9c\\xac", "日本"),
+      ("\\xf0\\x9f\\x9a\\x97", "🚗"),
+      ("\\x1Z", "\x01Z"),
+      ("\\xA", "\x0a"),
+      ("\\xGZ", "GZ"),
+      ("\\101", "A"),
+      ("\\0X", "\x00X"),
+      ("\\78", "\x078"),
+      ("\\\\", "\\"),
+      ('\\"', '"'),
+      ("\\n", "\n"),
+      ("\\r", "\r"),
+      ("\\t", "\t"),
+      ("\\e", "\x1b"),
+      ("a\\qb", "aqb"),
+      ("abc\\", "abc"),
+      ("\\x00" * 32, ""),
+      ("A\\x00B", "A\x00B"),
+    )
+    for encoded, expected in cases:
+      with self.subTest(encoded=encoded):
+        assert decode_ssid(encoded) == expected
+
+  def test_invalid_utf8_preserves_identity(self):
+    for encoded, expected in (("\\xFF", b"\xff"), ("\\x80", b"\x80")):
+      with self.subTest(encoded=encoded):
+        decoded = decode_ssid(encoded)
+        assert decoded.encode("utf-8", errors="surrogateescape") == expected
+        assert normalize_ssid(decoded) == "\ufffd"
+
+
+class TestWpaConfig(TestCase):
+  def setUp(self):
+    self.path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "wpa_supplicant.conf"
+
+  def generate(self, ssid, profile):
+    store = MagicMock()
+    store.get_profiles.return_value = [(ssid, profile)]
+    wpa_ctrl_module._generate_wpa_conf(store, str(self.path))
+    return self.path.read_text()
+
+  def test_emits_saved_network_priority(self):
+    assert "  priority=42\n" in self.generate("Preferred", {"psk": "password123", "hidden": False, "priority": 42})
+
+  def test_emits_saved_bssid_restriction(self):
+    assert "  bssid=00:11:22:33:44:55\n" in self.generate(
+      "Pinned", {"psk": "password123", "bssid": "00:11:22:33:44:55"},
+    )
+
+  def test_encodes_control_characters_in_ssid_losslessly(self):
+    assert f"  ssid={b'Line\nBreak\r'.hex()}\n" in self.generate("Line\nBreak\r", {"psk": "password123"})
+
+
+class _RacySock:
+  """Stub ctrl socket that models the reply/command pairing race.
+
+  The real wpa_supplicant ctrl socket delivers replies in send order. If two
+  threads interleave their send/recv calls, the first reader sees the other
+  thread's reply. This stub reproduces that: `send` stores the last command,
+  `recv` sleeps briefly to widen the race window, then returns a reply
+  based on whichever command was most recently sent.
+
+  Under `WpaCtrl.request`'s lock, each send/recv pair is atomic, so each
+  caller sees its own reply. Without the lock, thread B's send overwrites
+  the stored command during thread A's sleep and A observes B's reply.
+  """
+
+  def __init__(self):
+    self._lock = threading.Lock()
+    self._last_sent: bytes = b""
+
+  def send(self, data: bytes):
+    with self._lock:
+      self._last_sent = data
+
+  def recv(self, _bufsize: int) -> bytes:
+    # Widen the race window so any unlocked caller would mispair.
+    time.sleep(0.005)
+    with self._lock:
+      return b"REPLY:" + self._last_sent
+
+
+class TestWpaCtrlRequestSerialization(TestCase):
+  def test_request_pairs_reply_with_command_under_concurrency(self):
+    """Regression: concurrent WpaCtrl.request callers must each observe
+    the reply for their own command, not a peer's."""
+    ctrl = WpaCtrl()
+    ctrl._sock = cast(socket.socket, _RacySock())
+
+    results: dict[str, str] = {}
+    errors: list[BaseException] = []
+
+    def worker(cmd: str):
+      try:
+        results[cmd] = ctrl.request(cmd)
+      except BaseException as exc:
+        errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(cmd,))
+               for cmd in ("STATUS", "SCAN_RESULTS", "LIST_NETWORKS", "PING")]
+    for t in threads:
+      t.start()
+    for t in threads:
+      t.join(timeout=5)
+
+    assert not errors, errors
+    for cmd in ("STATUS", "SCAN_RESULTS", "LIST_NETWORKS", "PING"):
+      assert results[cmd] == f"REPLY:{cmd}", \
+        f"concurrent request mispaired reply for {cmd}: {results[cmd]}"
+
+    # Clear the socket so __del__ doesn't try to close the stub.
+    ctrl._sock = None
+
+
+class TestNetworkManagerCompatibility(TestCase):
+  def test_unmanage_skips_when_nmcli_is_absent(self):
+    with (
+      patch.object(wpa_ctrl_module.shutil, "which", return_value=None),
+      patch.object(wpa_ctrl_module.subprocess, "run") as run,
+    ):
+      assert wpa_ctrl_module._unmanage_wlan0()
+
+      run.assert_not_called()
+
+  def test_unmanage_uses_discovered_nmcli(self):
+    with (
+      patch.object(wpa_ctrl_module.shutil, "which", return_value="/usr/bin/nmcli"),
+      patch.object(wpa_ctrl_module.subprocess, "run") as run,
+    ):
+      run.return_value.returncode = 0
+
+      assert wpa_ctrl_module._unmanage_wlan0()
+      run.assert_called_once_with(
+        ["sudo", "/usr/bin/nmcli", "dev", "set", "wlan0", "managed", "no"],
+        capture_output=True,
+      )
+
+  def test_unmanage_failure_is_nonfatal(self):
+    with (
+      patch.object(wpa_ctrl_module.shutil, "which", return_value="/usr/bin/nmcli"),
+      patch.object(wpa_ctrl_module.subprocess, "run") as run,
+    ):
+      run.return_value.returncode = 10
+
+      assert not wpa_ctrl_module._unmanage_wlan0()
+
+
+class TestTetheringDnsmasqOwnership(TestCase):
+  def test_stop_targets_only_openpilot_tethering(self):
+    with patch.object(wpa_ctrl_module.subprocess, "run") as run:
+      wpa_ctrl_module.stop_tethering_dnsmasq()
+
+      run.assert_called_once_with(
+        ["sudo", "pkill", "-f", wpa_ctrl_module.TETHERING_DNSMASQ_PATTERN],
+        check=False,
+      )
+
+
+class TestSupplicantBringup(TestCase):
+  def test_attaches_existing_station_without_mutation(self):
+    ctrl = MagicMock()
+    with (
+      patch.object(wpa_ctrl_module.os.path, "exists", return_value=True),
+      patch.object(
+        wpa_ctrl_module,
+        "_wpa_supplicant_running",
+        side_effect=lambda conf: conf == wpa_ctrl_module.WPA_SUPPLICANT_CONF,
+      ),
+      patch.object(wpa_ctrl_module, "try_attach_ctrl", return_value=ctrl),
+      patch.object(wpa_ctrl_module, "_unmanage_wlan0") as unmanage,
+      patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant") as kill,
+      patch.object(wpa_ctrl_module.subprocess, "run") as run,
+    ):
+      result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False)
+
+      assert result is ctrl
+      ctrl.request.assert_called_once_with("ENABLE_NETWORK all")
+      unmanage.assert_not_called()
+      kill.assert_not_called()
+      run.assert_not_called()
+
+  def test_attaches_existing_hotspot_before_station_cleanup(self):
+    ctrl = MagicMock()
+    with (
+      patch.object(wpa_ctrl_module.os.path, "exists", return_value=True),
+      patch.object(
+        wpa_ctrl_module,
+        "_wpa_supplicant_running",
+        side_effect=lambda conf: conf == wpa_ctrl_module.WPA_AP_CONF,
+      ),
+      patch.object(wpa_ctrl_module, "try_attach_ctrl", return_value=ctrl),
+      patch.object(wpa_ctrl_module, "_unmanage_wlan0") as unmanage,
+      patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant") as kill,
+    ):
+      result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False)
+
+      assert result is ctrl
+      unmanage.assert_not_called()
+      kill.assert_not_called()
+
+  def test_spawns_owned_station_daemon(self):
+    ctrl = MagicMock()
+    station_checks = 0
+
+    def running(conf):
+      nonlocal station_checks
+      if conf == wpa_ctrl_module.WPA_AP_CONF:
+        return False
+      station_checks += 1
+      return station_checks > 1
+
+    with (
+      patch.object(
+        wpa_ctrl_module.os.path,
+        "exists",
+        side_effect=lambda path: path == "/sys/class/net/wlan0",
+      ),
+      patch.object(wpa_ctrl_module, "_wpa_supplicant_running", side_effect=running),
+      patch.object(wpa_ctrl_module, "try_attach_ctrl", return_value=ctrl),
+      patch.object(wpa_ctrl_module, "_unmanage_wlan0", return_value=True),
+      patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant") as kill,
+      patch.object(wpa_ctrl_module, "stop_tethering_dnsmasq"),
+      patch.object(wpa_ctrl_module.time, "sleep"),
+      patch.object(wpa_ctrl_module.subprocess, "run") as run,
+    ):
+      result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False)
+
+      assert result is ctrl
+      kill.assert_called_once_with(wpa_ctrl_module.WPA_SUPPLICANT_CONF)
+      assert [
+        "sudo", "wpa_supplicant", "-B", "-i", "wlan0",
+        "-c", wpa_ctrl_module.WPA_SUPPLICANT_CONF, "-D", "nl80211",
+      ] in [item.args[0] for item in run.call_args_list]
+
+  def test_failed_networkmanager_handoff_does_not_mutate_interface(self):
+    with (
+      patch.object(
+        wpa_ctrl_module.os.path,
+        "exists",
+        side_effect=lambda path: path == "/sys/class/net/wlan0",
+      ),
+      patch.object(wpa_ctrl_module, "_wpa_supplicant_running", return_value=False),
+      patch.object(wpa_ctrl_module, "_unmanage_wlan0", return_value=False),
+      patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant") as kill,
+      patch.object(wpa_ctrl_module, "stop_tethering_dnsmasq") as stop_dnsmasq,
+      patch.object(wpa_ctrl_module.time, "sleep"),
+      patch.object(wpa_ctrl_module.subprocess, "run") as run,
+    ):
+      result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False)
+
+    assert result is None
+    kill.assert_not_called()
+    stop_dnsmasq.assert_not_called()
+    run.assert_not_called()
+
+  def test_exit_before_interface_mutation(self):
+    with (
+      patch.object(wpa_ctrl_module.os.path, "exists", return_value=True),
+      patch.object(wpa_ctrl_module, "_unmanage_wlan0") as unmanage,
+      patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant") as kill,
+      patch.object(wpa_ctrl_module.subprocess, "run") as run,
+    ):
+      result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: True)
+
+      assert result is None
+      unmanage.assert_not_called()
+      kill.assert_not_called()
+      assert all(item.args[0][0] == "pgrep" for item in run.call_args_list)
