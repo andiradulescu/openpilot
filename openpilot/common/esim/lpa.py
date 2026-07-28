@@ -128,11 +128,12 @@ def b64d(s: str) -> bytes:
 
 
 class AtClient:
-  def __init__(self, device: str, baud: int, timeout: float) -> None:
+  def __init__(self, device: str, baud: int, timeout: float, allow_modem_reset: bool = True) -> None:
     self.channel: str | None = None
     self._device = device
     self._baud = baud
     self._timeout = timeout
+    self._allow_modem_reset = allow_modem_reset
     self._serial: Serial | None = None
 
   def send_raw(self, data: bytes) -> None:
@@ -232,7 +233,7 @@ class AtClient:
         return
       except (RuntimeError, TimeoutError, termios.error, SerialException):
         time.sleep(OPEN_ISDR_RETRY_DELAY_S)
-        if attempt == OPEN_ISDR_RESET_ATTEMPT:
+        if attempt == OPEN_ISDR_RESET_ATTEMPT and self._allow_modem_reset:
           self._reset_modem()
     raise RuntimeError("Failed to open ISD-R after retries")
 
@@ -684,10 +685,10 @@ def download_profile(client: AtClient, activation_code: str) -> str:
 
 
 class TiciLPA(LPABase):
-  def __init__(self):
+  def __init__(self, allow_modem_reset: bool = True):
     if hasattr(self, '_client'):
       return
-    self._client = AtClient(DEFAULT_DEVICE, DEFAULT_BAUD, DEFAULT_TIMEOUT)
+    self._client = AtClient(DEFAULT_DEVICE, DEFAULT_BAUD, DEFAULT_TIMEOUT, allow_modem_reset)
     atexit.register(self._client.close)
 
   @contextmanager

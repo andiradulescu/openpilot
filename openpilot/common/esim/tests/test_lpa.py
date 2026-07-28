@@ -5,6 +5,24 @@ import pytest
 from openpilot.common.esim import lpa
 
 
+@pytest.mark.parametrize(("allow_modem_reset", "expected_resets"), ((True, 1), (False, 0)))
+def test_open_isdr_modem_reset(monkeypatch, allow_modem_reset, expected_resets):
+  client = lpa.AtClient("", 0, 0, allow_modem_reset)
+  resets = []
+
+  def fail_open():
+    raise RuntimeError
+
+  monkeypatch.setattr(client, "_open_isdr_once", fail_open)
+  monkeypatch.setattr(client, "_reset_modem", lambda: resets.append(True))
+  monkeypatch.setattr(lpa.time, "sleep", lambda _: None)
+
+  with pytest.raises(RuntimeError, match="Failed to open ISD-R"):
+    client.open_isdr()
+
+  assert len(resets) == expected_resets
+
+
 @pytest.mark.parametrize("tag", (lpa.TAG_PROFILE_INSTALL_RESULT, 0x30))
 def test_process_notifications_sends_complete_tlv(monkeypatch, tag):
   client = lpa.AtClient("", 0, 0)

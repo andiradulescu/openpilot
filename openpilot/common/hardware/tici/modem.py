@@ -79,7 +79,7 @@ ESIM_NOTIFICATION_RETRY_WAIT = 60.0
 
 
 def _process_esim_notifications(exit_event: threading.Event) -> None:
-  lpa = TiciLPA()
+  lpa = TiciLPA(allow_modem_reset=False)
   while not exit_event.is_set():
     try:
       lpa.process_notifications()
