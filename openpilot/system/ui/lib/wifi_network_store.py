@@ -172,7 +172,7 @@ class NetworkStore:
         return
       ssid = _decode_keyfile_ssid(cp.get("wifi", "ssid", fallback=""))
       mode = cp.get("wifi", "mode", fallback="infrastructure")
-      if not ssid or mode == "ap":
+      if not ssid or mode != "infrastructure":
         return
       file_uuid = cp.get("connection", "uuid", fallback="")
       # Persistent /data profiles are authoritative over netplan's runtime

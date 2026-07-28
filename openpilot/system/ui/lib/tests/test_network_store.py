@@ -144,6 +144,15 @@ class TestNetworkStore(TestCase):
 
     assert store.get_all() == {}
 
+  def test_skips_non_infrastructure_profiles(self):
+    for mode in ("adhoc", "mesh"):
+      write_profile(self.persistent, f"{mode}.nmconnection", mode.title(), mode=mode)
+
+    with self.patch_reads():
+      store = self.make_store()
+
+    assert store.get_all() == {}
+
   def test_skips_profile_with_unsupported_security_constraints(self):
     write_profile(
       self.persistent,
