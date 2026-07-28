@@ -267,6 +267,7 @@ def flags_to_security_type(flags: str) -> SecurityType:
   Examples: [WPA2-PSK-CCMP][WPA-PSK-CCMP], [ESS], [WPA2-PSK-CCMP+TKIP]
   """
   flags_upper = flags.upper()
+  flag_groups = re.findall(r"\[([^\]]+)\]", flags_upper)
 
   # Enterprise / 802.1X / WEP → unsupported
   if "EAP" in flags_upper or "802.1X" in flags_upper:
@@ -276,9 +277,8 @@ def flags_to_security_type(flags: str) -> SecurityType:
 
   # WPA2/WPA3 transitional networks advertise both PSK and SAE; PSK matches first
   # and connects via WPA-PSK. Pure WPA3-Personal (SAE-only) falls through below.
-  if "WPA2-PSK" in flags_upper or "RSN-PSK" in flags_upper:
-    return SecurityType.WPA
-  if "WPA-PSK" in flags_upper:
+  psk_groups = [group for group in flag_groups if re.match(r"^(?:WPA2|RSN|WPA)-PSK(?:-|$)", group)]
+  if any(not re.match(r"^(?:WPA2|RSN|WPA)-PSK-SHA256(?:-|$)", group) for group in psk_groups):
     return SecurityType.WPA
   # SAE-only: would need key_mgmt=SAE, which the current AGNOS kernel + wpa_supplicant
   # build doesn't support. Mark unsupported so the UI doesn't prompt for a password
