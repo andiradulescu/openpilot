@@ -277,8 +277,7 @@ def flags_to_security_type(flags: str) -> SecurityType:
 
   # WPA2/WPA3 transitional networks advertise both PSK and SAE; PSK matches first
   # and connects via WPA-PSK. Pure WPA3-Personal (SAE-only) falls through below.
-  psk_groups = [group for group in flag_groups if re.match(r"^(?:WPA2|RSN|WPA)-PSK(?:-|$)", group)]
-  if any(not re.match(r"^(?:WPA2|RSN|WPA)-PSK-SHA256(?:-|$)", group) for group in psk_groups):
+  if any(re.search(r"(?:^|\+)(?:(?:WPA2|RSN|WPA)-)?PSK(?!-SHA256)(?:[-+]|$)", group) for group in flag_groups):
     return SecurityType.WPA
   # SAE-only: would need key_mgmt=SAE, which the current AGNOS kernel + wpa_supplicant
   # build doesn't support. Mark unsupported so the UI doesn't prompt for a password

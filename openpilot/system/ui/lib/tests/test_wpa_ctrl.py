@@ -83,6 +83,8 @@ class TestFlagsToSecurityType(TestCase):
       ("[WPA-PSK-TKIP]", SecurityType.WPA),
       ("[WPA2-PSK-CCMP][SAE]", SecurityType.WPA),
       ("[RSN-PSK-CCMP][SAE-CCMP]", SecurityType.WPA),
+      ("[WPA2-PSK+SAE-CCMP][ESS]", SecurityType.WPA),
+      ("[WPA2-PSK-SHA256+SAE-CCMP][ESS]", SecurityType.UNSUPPORTED),
       ("[WPA2-PSK-SHA256-CCMP][ESS]", SecurityType.UNSUPPORTED),
       ("[WPA-PSK-SHA256-TKIP][ESS]", SecurityType.UNSUPPORTED),
       ("[WPA2-PSK-CCMP][WPA2-PSK-SHA256-CCMP][ESS]", SecurityType.WPA),
