@@ -826,9 +826,6 @@ class WifiManager:
       self._last_connecting_at = time.monotonic()
     elif wpa_state in ("DISCONNECTED", "INACTIVE", "SCANNING"):
       ssid = current_state.ssid
-      network = next((n for n in self._networks if n.ssid == ssid), None)
-      if wpa_state != "SCANNING" and network is not None and network.security_type != SecurityType.OPEN:
-        self._enqueue_callbacks(self._need_auth, ssid)
       pending = self._pending_connection
       temporary_ssid = ssid if (
         pending is not None

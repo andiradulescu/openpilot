@@ -474,6 +474,21 @@ class TestConnectionState(TestCase):
     assert call("ENABLE_NETWORK all") in self.manager._ctrl.request.call_args_list
     assert self.manager.wifi_state == WifiState()
 
+  def test_reconcile_does_not_report_generic_disconnect_as_auth_failure(self):
+    need_auth = MagicMock()
+    self.manager.add_callbacks(need_auth=need_auth)
+    self.manager._store.contains.return_value = True
+    self.manager._networks = [wifi_manager_module.Network("SavedNet", 100, SecurityType.WPA, False)]
+    self.manager._set_connecting("SavedNet")
+    self.manager._last_connecting_at = time.monotonic() - CONNECTING_STALE_TIMEOUT_SECONDS - 1
+    self.manager._ctrl.request.return_value = "wpa_state=DISCONNECTED\n"
+
+    self.manager._reconcile_connecting_state()
+    self.manager.process_callbacks()
+
+    assert self.manager.wifi_state == WifiState()
+    need_auth.assert_not_called()
+
   def test_stale_network_not_found_does_not_clear_fresh_connection(self):
     self.manager._set_connecting("TestNet")
     self.manager._set_pending_connection("TestNet", "password123", False)
