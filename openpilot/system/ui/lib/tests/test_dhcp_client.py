@@ -215,5 +215,21 @@ class TestDhcpClient(TestCase):
 
     assert [item.args[0] for item in run.call_args_list] == [
       ["sudo", "ip", "-6", "addr", "flush", "dev", "wlan0", "scope", "global"],
+      ["sudo", "ip", "-6", "route", "del", "default", "dev", "wlan0"],
       ["sudo", "ip", "-6", "route", "flush", "dev", "wlan0"],
     ]
+
+  def test_clear_ipv6_state_ignores_absent_default_route(self):
+    client = DhcpClient()
+    results = (
+      MagicMock(returncode=0, stderr=b""),
+      MagicMock(returncode=2, stderr=b"RTNETLINK answers: No such process\n"),
+      MagicMock(returncode=0, stderr=b""),
+    )
+    with (
+      patch.object(dhcp_client_module.subprocess, "run", side_effect=results),
+      patch.object(dhcp_client_module.cloudlog, "warning") as warning,
+    ):
+      client.clear_ipv6_state()
+
+    warning.assert_not_called()

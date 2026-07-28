@@ -53,13 +53,21 @@ class DhcpClient:
     self._flush_address()
 
   def clear_ipv6_state(self):
+    delete_default_route = ["sudo", "ip", "-6", "route", "del", "default", "dev", self._iface]
     for command in (
       ["sudo", "ip", "-6", "addr", "flush", "dev", self._iface, "scope", "global"],
+      # Router-advertised default routes require an explicit delete before the remaining routes can be flushed.
+      delete_default_route,
       ["sudo", "ip", "-6", "route", "flush", "dev", self._iface],
     ):
       try:
         result = subprocess.run(command, capture_output=True, check=False)
-        if result.returncode != 0:
+        missing_default_route = (
+          command == delete_default_route
+          and result.returncode == 2
+          and b"No such process" in result.stderr
+        )
+        if result.returncode != 0 and not missing_default_route:
           cloudlog.warning(f"Failed to clear {self._iface} IPv6 state (rc={result.returncode})")
       except OSError:
         cloudlog.exception(f"Failed to clear {self._iface} IPv6 state")
