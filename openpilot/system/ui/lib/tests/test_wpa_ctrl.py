@@ -345,8 +345,9 @@ class TestTetheringDnsmasqOwnership(TestCase):
 
 
 class TestSupplicantBringup(TestCase):
-  def test_attaches_existing_station_without_mutation(self):
+  def test_reconciles_existing_station_configuration(self):
     ctrl = MagicMock()
+    ctrl.request.return_value = "OK"
     with (
       patch.object(wpa_ctrl_module.os.path, "exists", return_value=True),
       patch.object(
@@ -362,10 +363,47 @@ class TestSupplicantBringup(TestCase):
       result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False)
 
       assert result is ctrl
-      ctrl.request.assert_called_once_with("ENABLE_NETWORK all")
+      ctrl.request.assert_called_once_with("RECONFIGURE")
       unmanage.assert_not_called()
       kill.assert_not_called()
       run.assert_not_called()
+
+  def test_failed_station_reconciliation_restarts_daemon(self):
+    stale_ctrl = MagicMock()
+    stale_ctrl.request.return_value = "FAIL"
+    fresh_ctrl = MagicMock()
+    station_checks = 0
+
+    def running(conf):
+      nonlocal station_checks
+      if conf == wpa_ctrl_module.WPA_AP_CONF:
+        return False
+      station_checks += 1
+      return station_checks in (1, 3)
+
+    with (
+      patch.object(
+        wpa_ctrl_module.os.path,
+        "exists",
+        side_effect=lambda path: path == "/sys/class/net/wlan0",
+      ),
+      patch.object(wpa_ctrl_module, "_wpa_supplicant_running", side_effect=running),
+      patch.object(wpa_ctrl_module, "try_attach_ctrl", side_effect=[stale_ctrl, fresh_ctrl]),
+      patch.object(wpa_ctrl_module, "_unmanage_wlan0", return_value=True),
+      patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant") as kill,
+      patch.object(wpa_ctrl_module, "stop_tethering_dnsmasq"),
+      patch.object(wpa_ctrl_module.time, "sleep"),
+      patch.object(wpa_ctrl_module.subprocess, "run") as run,
+    ):
+      result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False)
+
+    assert result is fresh_ctrl
+    stale_ctrl.close.assert_called_once()
+    kill.assert_called_once_with(wpa_ctrl_module.WPA_SUPPLICANT_CONF)
+    assert [
+      "sudo", "wpa_supplicant", "-B", "-i", "wlan0",
+      "-c", wpa_ctrl_module.WPA_SUPPLICANT_CONF, "-D", "nl80211",
+    ] in [item.args[0] for item in run.call_args_list]
 
   def test_attaches_existing_hotspot_before_station_cleanup(self):
     ctrl = MagicMock()

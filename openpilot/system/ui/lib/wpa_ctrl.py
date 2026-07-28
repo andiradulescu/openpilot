@@ -492,10 +492,13 @@ def ensure_wpa_supplicant(should_exit: Callable[[], bool]) -> WpaCtrl | None:
     ctrl = try_attach_ctrl()
     if ctrl is not None:
       try:
-        ctrl.request("ENABLE_NETWORK all")
+        response = ctrl.request("RECONFIGURE").strip()
+        if response.startswith("OK"):
+          return ctrl
+        cloudlog.warning(f"Station configuration reconciliation failed: {response}")
       except Exception:
-        pass
-      return ctrl
+        cloudlog.exception("Failed to reconcile running station configuration")
+      ctrl.close()
 
   # Honor cancellation before mutating NM / killing daemons / flushing IPs.
   if should_exit():
