@@ -121,6 +121,7 @@ class WifiManager:
     self._user_epoch: int = 0
     self._ipv4_address: str = ""
     self._connected_bssid: str | None = None
+    self._dhcp_adoption_ssid: str | None = None
     self._current_network_metered: MeteredType = MeteredType.UNKNOWN
     self._ipv4_forward = False
     self._tethering_active = False
@@ -198,7 +199,10 @@ class WifiManager:
     threading.Thread(target=worker, daemon=True).start()
 
   def _ensure_wpa_supplicant(self):
-    ctrl = ensure_wpa_supplicant(lambda: self._exit)
+    self._dhcp_adoption_ssid = None
+    def station_reconfigured(ssid: str):
+      self._dhcp_adoption_ssid = ssid
+    ctrl = ensure_wpa_supplicant(lambda: self._exit, station_reconfigured)
     if ctrl is not None:
       self._ctrl = ctrl
 
@@ -261,7 +265,9 @@ class WifiManager:
         return
 
       if connection_status == ConnectStatus.CONNECTED and ssid is not None:
-        self._handle_connected(ssid, bssid=status.get("bssid"), expected_epoch=epoch)
+        adopt_dhcp = self._dhcp_adoption_ssid == ssid
+        self._dhcp_adoption_ssid = None
+        self._handle_connected(ssid, adopt_dhcp=adopt_dhcp, bssid=status.get("bssid"), expected_epoch=epoch)
       else:
         self._wifi_state = WifiState(ssid=ssid, status=connection_status)
 
@@ -323,6 +329,7 @@ class WifiManager:
     return self._tethering_psk
 
   def _set_connecting(self, ssid: str | None):
+    self._dhcp_adoption_ssid = None
     if ssid is not None and self._wifi_state.status == ConnectStatus.CONNECTED:
       self._dhcp.stop()
       self._dhcp.clear_ipv6_state()
@@ -573,7 +580,9 @@ class WifiManager:
 
       ssid = status.get("ssid")
       if ssid:
-        self._handle_connected(ssid, bssid=status.get("bssid"), expected_epoch=epoch)
+        adopt_dhcp = self._dhcp_adoption_ssid == ssid
+        self._dhcp_adoption_ssid = None
+        self._handle_connected(ssid, adopt_dhcp=adopt_dhcp, bssid=status.get("bssid"), expected_epoch=epoch)
 
     elif "CTRL-EVENT-DISCONNECTED" in event:
       if self._tethering_active:

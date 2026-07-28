@@ -454,7 +454,7 @@ def _unmanage_wlan0() -> bool:
   return result.returncode == 0
 
 
-def ensure_wpa_supplicant(should_exit: Callable[[], bool]) -> WpaCtrl | None:
+def ensure_wpa_supplicant(should_exit: Callable[[], bool], station_reconfigured: Callable[[str], None] | None = None) -> WpaCtrl | None:
   """Attach to a wpa_supplicant we own, or spawn one. Never attach to NM's daemon.
   Returns the attached WpaCtrl, or None if ownership cannot be acquired."""
   from openpilot.common.swaglog import cloudlog
@@ -491,8 +491,12 @@ def ensure_wpa_supplicant(should_exit: Callable[[], bool]) -> WpaCtrl | None:
     ctrl = try_attach_ctrl()
     if ctrl is not None:
       try:
+        status = parse_status(ctrl.request("STATUS"))
+        station_ssid = status.get("ssid") if status.get("wpa_state") == "COMPLETED" and status.get("mode") == "station" else None
         response = ctrl.request("RECONFIGURE").strip()
         if response.startswith("OK"):
+          if station_ssid is not None and station_reconfigured is not None:
+            station_reconfigured(station_ssid)
           return ctrl
         cloudlog.warning(f"Station configuration reconciliation failed: {response}")
       except Exception:

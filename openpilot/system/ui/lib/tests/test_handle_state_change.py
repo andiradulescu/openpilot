@@ -47,6 +47,7 @@ def build_wifi_manager() -> WifiManager:
   manager._networks = []
   manager._ipv4_address = ""
   manager._connected_bssid = None
+  manager._dhcp_adoption_ssid = None
   manager._current_network_metered = MeteredType.UNKNOWN
   manager._pending_connection = None
   manager._network_not_found_epoch = None
@@ -700,10 +701,54 @@ class TestStartupAdoption(TestCase):
   def setUp(self):
     self.manager = build_wifi_manager()
 
-  def test_station_starts_fresh_dhcp_client(self):
+  def test_station_adopts_existing_dhcp_client(self):
     self.manager._ctrl.request.return_value = "wpa_state=COMPLETED\nmode=station\nssid=TestNet\n"
+    self.manager._dhcp_adoption_ssid = "TestNet"
+    self.manager._dhcp.adopt.return_value = True
 
     self.manager._init_wifi_state()
+
+    assert self.manager.wifi_state == WifiState("TestNet", ConnectStatus.CONNECTED)
+    self.manager._dhcp.adopt.assert_called_once()
+    self.manager._dhcp.start.assert_not_called()
+
+  def test_station_restarts_missing_dhcp_client(self):
+    self.manager._ctrl.request.return_value = "wpa_state=COMPLETED\nmode=station\nssid=TestNet\n"
+    self.manager._dhcp_adoption_ssid = "TestNet"
+    self.manager._dhcp.adopt.return_value = False
+
+    self.manager._init_wifi_state()
+
+    assert self.manager.wifi_state == WifiState("TestNet", ConnectStatus.CONNECTED)
+    self.manager._dhcp.adopt.assert_called_once()
+    self.manager._dhcp.start.assert_called_once()
+
+  def test_station_reconnect_adopts_existing_dhcp_client(self):
+    self.manager._dhcp_adoption_ssid = "TestNet"
+    self.manager._dhcp.adopt.return_value = True
+    self.manager._ctrl.request.side_effect = (
+      "wpa_state=ASSOCIATING\nmode=station\nssid=TestNet\n",
+      "wpa_state=COMPLETED\nmode=station\nssid=TestNet\n",
+      "OK",
+    )
+
+    self.manager._init_wifi_state()
+    self.manager._handle_event("CTRL-EVENT-CONNECTED")
+
+    assert self.manager.wifi_state == WifiState("TestNet", ConnectStatus.CONNECTED)
+    self.manager._dhcp.adopt.assert_called_once()
+    self.manager._dhcp.start.assert_not_called()
+
+  def test_station_reconnect_replaces_dhcp_for_another_network(self):
+    self.manager._dhcp_adoption_ssid = "PreviousNet"
+    self.manager._ctrl.request.side_effect = (
+      "wpa_state=ASSOCIATING\nmode=station\nssid=TestNet\n",
+      "wpa_state=COMPLETED\nmode=station\nssid=TestNet\n",
+      "OK",
+    )
+
+    self.manager._init_wifi_state()
+    self.manager._handle_event("CTRL-EVENT-CONNECTED")
 
     assert self.manager.wifi_state == WifiState("TestNet", ConnectStatus.CONNECTED)
     self.manager._dhcp.adopt.assert_not_called()

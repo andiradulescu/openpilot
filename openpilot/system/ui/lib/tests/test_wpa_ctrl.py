@@ -6,7 +6,7 @@ import threading
 import time
 from typing import cast
 from unittest import TestCase
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from openpilot.system.ui.lib import wpa_ctrl as wpa_ctrl_module
 from openpilot.system.ui.lib.wpa_ctrl import (
@@ -349,7 +349,11 @@ class TestTetheringDnsmasqOwnership(TestCase):
 class TestSupplicantBringup(TestCase):
   def test_reconciles_existing_station_configuration(self):
     ctrl = MagicMock()
-    ctrl.request.return_value = "OK"
+    ctrl.request.side_effect = (
+      "wpa_state=COMPLETED\nmode=station\nssid=TestNet\n",
+      "OK",
+    )
+    station_reconfigured = MagicMock()
     with (
       patch.object(wpa_ctrl_module.os.path, "exists", return_value=True),
       patch.object(
@@ -362,10 +366,11 @@ class TestSupplicantBringup(TestCase):
       patch.object(wpa_ctrl_module, "_pkill_wpa_supplicant") as kill,
       patch.object(wpa_ctrl_module.subprocess, "run") as run,
     ):
-      result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False)
+      result = wpa_ctrl_module.ensure_wpa_supplicant(lambda: False, station_reconfigured)
 
       assert result is ctrl
-      ctrl.request.assert_called_once_with("RECONFIGURE")
+      assert ctrl.request.call_args_list == [call("STATUS"), call("RECONFIGURE")]
+      station_reconfigured.assert_called_once_with("TestNet")
       unmanage.assert_not_called()
       kill.assert_not_called()
       run.assert_not_called()
