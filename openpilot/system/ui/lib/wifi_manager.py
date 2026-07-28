@@ -325,6 +325,7 @@ class WifiManager:
   def _set_connecting(self, ssid: str | None):
     if ssid is not None and self._wifi_state.status == ConnectStatus.CONNECTED:
       self._dhcp.stop()
+      self._dhcp.clear_ipv6_state()
       self._ipv4_address = ""
       self._connected_bssid = None
       self._current_network_metered = MeteredType.UNKNOWN
@@ -596,6 +597,7 @@ class WifiManager:
 
       self._wifi_state = WifiState(ssid=None, status=ConnectStatus.DISCONNECTED)
       self._dhcp.stop()
+      self._dhcp.clear_ipv6_state()
       self._ipv4_address = ""
       self._connected_bssid = None
       self._current_network_metered = MeteredType.UNKNOWN
@@ -801,6 +803,7 @@ class WifiManager:
       # Actually disconnected under us.
       self._wifi_state = WifiState(ssid=None, status=ConnectStatus.DISCONNECTED)
       self._dhcp.stop()
+      self._dhcp.clear_ipv6_state()
       self._ipv4_address = ""
       self._connected_bssid = None
       self._current_network_metered = MeteredType.UNKNOWN

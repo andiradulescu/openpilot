@@ -247,6 +247,14 @@ class TestConnectionState(TestCase):
         assert manager.current_network_metered == MeteredType.UNKNOWN
         assert manager.wifi_state == WifiState("NextNet", ConnectStatus.CONNECTING)
 
+  def test_selection_clears_previous_ipv6_state(self):
+    self.manager._wifi_state = WifiState("TestNet", ConnectStatus.CONNECTED)
+
+    with patch.object(wifi_manager_module.threading.Thread, "start"):
+      self.manager.connect_to_network("NextNet", "password123")
+
+    self.manager._dhcp.clear_ipv6_state.assert_called_once()
+
   def test_activate_enables_every_profile_sharing_ssid(self):
     self.manager._ctrl.request.return_value = "OK"
 

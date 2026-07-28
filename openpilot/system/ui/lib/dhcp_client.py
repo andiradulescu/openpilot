@@ -52,6 +52,18 @@ class DhcpClient:
     subprocess.run(["sudo", "ip", "-4", "route", "flush", "dev", self._iface], capture_output=True, check=False)
     self._flush_address()
 
+  def clear_ipv6_state(self):
+    for command in (
+      ["sudo", "ip", "-6", "addr", "flush", "dev", self._iface, "scope", "global"],
+      ["sudo", "ip", "-6", "route", "flush", "dev", self._iface],
+    ):
+      try:
+        result = subprocess.run(command, capture_output=True, check=False)
+        if result.returncode != 0:
+          cloudlog.warning(f"Failed to clear {self._iface} IPv6 state (rc={result.returncode})")
+      except OSError:
+        cloudlog.exception(f"Failed to clear {self._iface} IPv6 state")
+
   def _spawn(self) -> bool:
     try:
       self._proc = subprocess.Popen(

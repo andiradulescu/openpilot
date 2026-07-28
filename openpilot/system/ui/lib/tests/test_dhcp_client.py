@@ -207,3 +207,13 @@ class TestDhcpClient(TestCase):
         ["sudo", "ip", "-4", "route", "flush", "dev", "wlan0"],
         ["sudo", "ip", "-4", "addr", "flush", "dev", "wlan0"],
       ]
+
+  def test_clear_ipv6_state_cleans_global_addresses_and_routes(self):
+    client = DhcpClient()
+    with patch.object(dhcp_client_module.subprocess, "run", return_value=MagicMock(returncode=0)) as run:
+      client.clear_ipv6_state()
+
+    assert [item.args[0] for item in run.call_args_list] == [
+      ["sudo", "ip", "-6", "addr", "flush", "dev", "wlan0", "scope", "global"],
+      ["sudo", "ip", "-6", "route", "flush", "dev", "wlan0"],
+    ]
