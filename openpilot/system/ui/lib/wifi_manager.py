@@ -794,6 +794,7 @@ class WifiManager:
       if wpa_state == "COMPLETED" and status_ssid:
         # Roamed while the monitor was down; adopt the current network instead of
         # synthesizing a disconnect that would flush the live lease.
+        self._dhcp.clear_ipv6_state()
         self._handle_connected(status_ssid, bssid=status.get("bssid"), expected_epoch=epoch)
         return
       # Normal roam/rekey transits through these states briefly; treating them as

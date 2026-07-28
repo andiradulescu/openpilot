@@ -516,6 +516,18 @@ class TestConnectionState(TestCase):
     assert self.manager.wifi_state == WifiState()
     need_auth.assert_not_called()
 
+  def test_reconcile_clears_ipv6_state_before_adopting_another_network(self):
+    previous_state = WifiState("PreviousNet", ConnectStatus.CONNECTED)
+    self.manager._wifi_state = previous_state
+    self.manager._ctrl.request.return_value = "wpa_state=COMPLETED\nmode=station\nssid=TestNet\n"
+    self.manager._dhcp.clear_ipv6_state.side_effect = lambda: self.assertEqual(self.manager.wifi_state, previous_state)
+
+    self.manager._reconcile_connecting_state()
+
+    assert self.manager.wifi_state == WifiState("TestNet", ConnectStatus.CONNECTED)
+    self.manager._dhcp.clear_ipv6_state.assert_called_once()
+    self.manager._dhcp.start.assert_called_once()
+
   def test_stale_network_not_found_does_not_clear_fresh_connection(self):
     self.manager._set_connecting("TestNet")
     self.manager._set_pending_connection("TestNet", "password123", False)
