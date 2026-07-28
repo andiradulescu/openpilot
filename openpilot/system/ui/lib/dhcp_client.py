@@ -48,6 +48,10 @@ class DhcpClient:
   def _flush_address(self):
     subprocess.run(["sudo", "ip", "-4", "addr", "flush", "dev", self._iface], capture_output=True, check=False)
 
+  def _flush_lease(self):
+    subprocess.run(["sudo", "ip", "-4", "route", "flush", "dev", self._iface], capture_output=True, check=False)
+    self._flush_address()
+
   def _spawn(self) -> bool:
     try:
       self._proc = subprocess.Popen(
@@ -65,7 +69,7 @@ class DhcpClient:
   def _monitor_client(self):
     while not self._client_stop.wait(self.DISCOVER_TIMEOUT_SECONDS):
       if not self._client_running():
-        self._flush_address()
+        self._flush_lease()
         if self._spawn():
           self._start_metric_thread()
 
@@ -82,7 +86,7 @@ class DhcpClient:
     # A client from a previous controller can survive independently. A fresh
     # connection needs a new lease, so replace any client we did not adopt.
     subprocess.run(["sudo", "pkill", "-f", f"udhcpc.*-i {self._iface}"], check=False)
-    self._flush_address()
+    self._flush_lease()
     started = self._spawn()
     self._start_client_thread()
     if started:
@@ -172,4 +176,4 @@ class DhcpClient:
       # didn't). Without this, the orphan re-adds the address right after the
       # flush below and resurrects the route after we've moved on.
       subprocess.run(["sudo", "pkill", "-f", f"udhcpc.*-i {self._iface}"], check=False)
-      self._flush_address()
+      self._flush_lease()

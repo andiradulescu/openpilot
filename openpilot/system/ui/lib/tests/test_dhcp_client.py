@@ -64,6 +64,7 @@ class TestDhcpClient(TestCase):
       stop.assert_called_once()
       assert [call.args[0] for call in run.call_args_list] == [
         ["sudo", "pkill", "-f", "udhcpc.*-i wlan0"],
+        ["sudo", "ip", "-4", "route", "flush", "dev", "wlan0"],
         ["sudo", "ip", "-4", "addr", "flush", "dev", "wlan0"],
       ]
       popen.assert_called_once_with(
@@ -194,7 +195,7 @@ class TestDhcpClient(TestCase):
       call(DhcpClient.ROUTE_MONITOR_INTERVAL_SECONDS),
     ]
 
-  def test_stop_cleans_only_wlan_dhcp_and_address(self):
+  def test_stop_cleans_only_wlan_dhcp_routes_and_address(self):
     client = DhcpClient()
     client._proc = MagicMock()
     with patch.object(dhcp_client_module.subprocess, "run") as run:
@@ -203,5 +204,6 @@ class TestDhcpClient(TestCase):
       assert client._proc is None
       assert [call.args[0] for call in run.call_args_list] == [
         ["sudo", "pkill", "-f", "udhcpc.*-i wlan0"],
+        ["sudo", "ip", "-4", "route", "flush", "dev", "wlan0"],
         ["sudo", "ip", "-4", "addr", "flush", "dev", "wlan0"],
       ]
