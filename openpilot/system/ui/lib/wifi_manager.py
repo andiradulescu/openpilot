@@ -16,7 +16,7 @@ from openpilot.system.ui.lib.wifi_network_store import MeteredType, NetworkStore
 from openpilot.system.ui.lib.wpa_ctrl import (WpaCtrl, WpaCtrlMonitor, SecurityType,
                                                WPA_SUPPLICANT_CONF, WPA_AP_CONF,
                                                _pkill_wpa_supplicant, _wpa_supplicant_running,
-                                               _sanitize_for_conf, _format_psk_value, _format_ssid_value, _is_raw_psk,
+                                               _sanitize_for_conf, _format_psk_value, _format_ssid_value, _is_valid_psk,
                                                _generate_wpa_conf, parse_event_network_id, parse_event_ssid,
                                                parse_scan_results, flags_to_security_type,
                                                parse_status, dbm_to_percent, decode_ssid,
@@ -950,6 +950,10 @@ class WifiManager:
     if self._tethering_active:
       cloudlog.warning(f"Ignoring connect to {ssid!r} while tethering is active")
       return
+    if password and not _is_valid_psk(password):
+      cloudlog.warning(f"Ignoring connect to {ssid!r} with invalid passphrase")
+      self._enqueue_callbacks(self._need_auth, ssid)
+      return
     with self._connect_lock:
       self._set_connecting(ssid)
       self._set_pending_connection(ssid, password, hidden)
@@ -1180,7 +1184,7 @@ class WifiManager:
     # (e.g. 32 'é' = 64 UTF-8 bytes) past the check; AP bringup then fails forever
     # because the bad value is persisted to /data/tethering_password.
     pw_bytes = len(password.encode("utf-8"))
-    if not (8 <= pw_bytes <= 63 or _is_raw_psk(password)):
+    if not _is_valid_psk(password):
       cloudlog.warning(f"set_tethering_password: rejecting invalid password (bytes={pw_bytes})")
       # The UI disables tethering controls before calling this and only re-enables
       # them from activated/disconnected. Notify so the controls don't stay stuck.

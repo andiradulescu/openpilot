@@ -420,6 +420,23 @@ class TestConnectionState(TestCase):
     assert self.manager._pending_connection is not None
     assert self.manager._pending_connection.network_id == "1"
 
+  def test_connect_rejects_invalid_passphrases(self):
+    invalid_passwords = ("short", "x" * 64, "é" * 32)
+
+    for password in invalid_passwords:
+      with self.subTest(password=password):
+        manager = build_wifi_manager()
+        need_auth = MagicMock()
+        manager.add_callbacks(need_auth=need_auth)
+
+        with patch.object(wifi_manager_module.threading.Thread, "start"):
+          manager.connect_to_network("TestNet", password)
+
+        manager.process_callbacks()
+        assert manager.wifi_state == WifiState()
+        assert manager._pending_connection is None
+        need_auth.assert_called_once_with("TestNet")
+
   def test_network_not_found_clears_connecting_state_after_reconciliation(self):
     disconnected = MagicMock()
     self.manager.add_callbacks(disconnected=disconnected)

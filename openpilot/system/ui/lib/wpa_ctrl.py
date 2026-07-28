@@ -377,6 +377,13 @@ def _is_raw_psk(psk: str) -> bool:
   return len(psk) == 64 and all(c in "0123456789abcdefABCDEF" for c in psk)
 
 
+def _is_valid_psk(psk: str) -> bool:
+  try:
+    return 8 <= len(psk.encode("utf-8")) <= 63 or _is_raw_psk(psk)
+  except UnicodeEncodeError:
+    return False
+
+
 def _format_psk_value(psk: str) -> str:
   """Render a psk value for wpa_supplicant: raw 64-hex unquoted, else quoted."""
   if _is_raw_psk(psk):
