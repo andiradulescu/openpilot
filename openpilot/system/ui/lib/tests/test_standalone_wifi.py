@@ -71,3 +71,30 @@ class TestStandaloneWifi(TestCase):
       layout.hide_event()
 
     layout._wifi_manager.set_active.assert_called_once_with(False)
+
+  def test_mici_wrong_password_opens_password_dialog(self):
+    try:
+      from openpilot.selfdrive.ui.mici.layouts.settings.network import wifi_ui as wifi_ui_module
+      from openpilot.selfdrive.ui.mici.layouts.settings.network.wifi_ui import WifiUIMici
+    except ImportError as e:
+      raise SkipTest("mici UI dependencies are unavailable") from e
+
+    class WifiButton:
+      def __init__(self):
+        self.network = MagicMock(ssid="SavedNet")
+        self.set_wrong_password = MagicMock()
+
+    button = WifiButton()
+    wifi_ui = WifiUIMici.__new__(WifiUIMici)
+    wifi_ui._scroller = MagicMock(items=[button])
+    dialog = MagicMock()
+
+    with (
+      patch.object(wifi_ui_module, "WifiButton", WifiButton),
+      patch.object(wifi_ui_module, "BigInputDialog", return_value=dialog),
+      patch.object(wifi_ui_module.gui_app, "push_widget") as push_widget,
+    ):
+      wifi_ui._on_need_auth("SavedNet")
+
+    button.set_wrong_password.assert_called_once()
+    push_widget.assert_called_once_with(dialog)
