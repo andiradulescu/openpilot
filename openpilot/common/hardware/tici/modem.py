@@ -6,12 +6,14 @@ import os
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 
 from ipaddress import IPv4Address, AddressValueError
 
 from enum import Enum
 
+from openpilot.common.esim.lpa import TiciLPA
 from openpilot.common.serial import Serial
 
 logging.basicConfig(
@@ -73,6 +75,17 @@ class State(Enum):
 
 
 STATE_WAIT = 1.0  # seconds to wait after each state handler returns
+ESIM_NOTIFICATION_RETRY_WAIT = 60.0
+
+
+def _process_esim_notifications(exit_event: threading.Event) -> None:
+  lpa = TiciLPA()
+  while not exit_event.is_set():
+    try:
+      lpa.process_notifications()
+    except Exception:
+      logging.exception("eSIM notification processing failed")
+    exit_event.wait(ESIM_NOTIFICATION_RETRY_WAIT)
 
 
 class PPPSession:
@@ -177,8 +190,16 @@ class Modem:
     self._sim_change = False
     self._apn = ""  # blank = network-provided via PCO
     self._roaming_allowed = True
+    self._notification_exit_event = threading.Event()
+    self._notification_thread: threading.Thread | None = None
     self.running = True
     self.S = INITIAL_STATE.copy()
+
+  def _start_notification_thread(self) -> None:
+    if self._notification_thread is None:
+      self._notification_thread = threading.Thread(target=_process_esim_notifications, args=(self._notification_exit_event,),
+                                                   name="esim_notifications", daemon=True)
+      self._notification_thread.start()
 
   @staticmethod
   def _read_param(key):
@@ -558,6 +579,8 @@ class Modem:
         if state != prev:
           self._publish_state(state=state.value)
           logging.info(f"{prev.value} -> {state.value}")
+          if prev == State.INITIALIZING and state == State.SEARCHING:
+            self._start_notification_thread()
       except Exception:
         logging.exception(f"error in {state.value}")
         state = State.DISCONNECTING
@@ -565,6 +588,7 @@ class Modem:
 
   def stop(self):
     self.running = False
+    self._notification_exit_event.set()
     self._ppp.kill()
     self._ppp.cleanup_routes()
     try:
