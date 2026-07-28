@@ -877,7 +877,8 @@ class WifiManager:
         networks = []
         for ssid, aps in ssid_map.items():
           strongest = max(aps, key=lambda a: a.signal)
-          security = flags_to_security_type(strongest.flags)
+          security_types = {flags_to_security_type(ap.flags) for ap in aps}
+          security = security_types.pop() if len(security_types) == 1 else SecurityType.UNSUPPORTED
           is_tethering = ssid == self._tethering_ssid
           strength = 100 if is_tethering else dbm_to_percent(strongest.signal)
           networks.append(Network(ssid=ssid, strength=strength, security_type=security, is_tethering=is_tethering))

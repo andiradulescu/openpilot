@@ -8,6 +8,7 @@ from openpilot.system.ui.lib.wifi_manager import (
   CONNECTING_STALE_TIMEOUT_SECONDS,
   ConnectStatus,
   MeteredType,
+  SecurityType,
   WifiManager,
   WifiState,
 )
@@ -28,6 +29,7 @@ def build_wifi_manager() -> WifiManager:
   manager._callback_queue = []
   manager._callback_lock = threading.Lock()
   manager._connect_lock = threading.Lock()
+  manager._scan_lock = threading.Lock()
   manager._tethering_lock = threading.Lock()
   manager._tethering_epoch = 0
   manager._tethering_transition_pending = False
@@ -309,6 +311,19 @@ class TestConnectionState(TestCase):
         manager._request_scan()
 
         manager._ctrl.request.assert_called_once_with(command)
+
+  def test_scan_rejects_conflicting_security_variants(self):
+    self.manager._ctrl.request.return_value = "\n".join((
+      "bssid / frequency / signal level / flags / ssid",
+      "00:11:22:33:44:55\t2437\t-40\t[ESS]\tMixed",
+      "66:77:88:99:aa:bb\t2437\t-60\t[WPA2-PSK-CCMP][ESS]\tMixed",
+    ))
+
+    self.manager._update_networks()
+
+    assert len(self.manager.networks) == 1
+    assert self.manager.networks[0].ssid == "Mixed"
+    assert self.manager.networks[0].security_type == SecurityType.UNSUPPORTED
 
   def test_wrong_key_removes_runtime_credentials_and_stops_dhcp(self):
     need_auth = MagicMock()
