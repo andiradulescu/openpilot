@@ -49,6 +49,7 @@ def build_wifi_manager() -> WifiManager:
   manager._current_network_metered = MeteredType.UNKNOWN
   manager._pending_connection = None
   manager._network_not_found_epoch = None
+  manager._network_not_found_events = 0
   manager._last_connecting_at = time.monotonic() - CONNECTING_STALE_TIMEOUT_SECONDS - 1
   manager._last_connected_recheck = 0.0
   manager._last_wrong_key_dispatch = {}
@@ -445,12 +446,13 @@ class TestConnectionState(TestCase):
     self.manager._ctrl.request.return_value = "wpa_state=SCANNING\n"
 
     with patch.object(self.manager, "_remove_wpa_network") as remove_wpa_network:
+      self.manager._last_connecting_at = time.monotonic() - CONNECTING_STALE_TIMEOUT_SECONDS - 1
+      self.manager._handle_event("CTRL-EVENT-NETWORK-NOT-FOUND")
       self.manager._handle_event("CTRL-EVENT-NETWORK-NOT-FOUND")
       assert self.manager.wifi_state == WifiState("MissingNet", ConnectStatus.CONNECTING)
       assert self.manager._pending_connection is not None
       remove_wpa_network.assert_not_called()
 
-      self.manager._last_connecting_at = time.monotonic() - CONNECTING_STALE_TIMEOUT_SECONDS - 1
       self.manager._reconcile_connecting_state()
 
     self.manager.process_callbacks()
@@ -460,6 +462,21 @@ class TestConnectionState(TestCase):
     assert call("ENABLE_NETWORK all") in self.manager._ctrl.request.call_args_list
     self.manager._dhcp.stop.assert_called_once()
     disconnected.assert_called_once()
+
+  def test_delayed_network_not_found_does_not_bind_to_fresh_attempt(self):
+    self.manager._set_connecting("PreviousNet")
+    self.manager._last_connecting_at = time.monotonic() - CONNECTING_STALE_TIMEOUT_SECONDS - 1
+    self.manager._set_connecting("HiddenNet")
+    self.manager._set_pending_connection("HiddenNet", "password123", True)
+    self.manager._ctrl.request.return_value = "wpa_state=SCANNING\n"
+
+    self.manager._last_connecting_at = time.monotonic() - CONNECTING_STALE_TIMEOUT_SECONDS - 1
+    self.manager._handle_event("CTRL-EVENT-NETWORK-NOT-FOUND")
+    self.manager._reconcile_connecting_state()
+
+    assert self.manager.wifi_state == WifiState("HiddenNet", ConnectStatus.CONNECTING)
+    assert self.manager._pending_connection is not None
+    self.manager._dhcp.stop.assert_not_called()
 
   def test_reconcile_keeps_saved_runtime_network_after_transient_failure(self):
     self.manager._store.contains.return_value = True

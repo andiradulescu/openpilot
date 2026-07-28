@@ -38,6 +38,7 @@ DEFAULT_TETHERING_PASSWORD = "swagswagcomma"
 TETHERING_PASSWORD_FILE = "/data/tethering_password"
 SCAN_PERIOD_SECONDS = 5
 CONNECTING_STALE_TIMEOUT_SECONDS = 5
+NETWORK_NOT_FOUND_EVENTS_REQUIRED = 2
 # Suppress WRONG_KEY events from prior attempts that can clobber fresh credentials on a fast retry.
 WRONG_KEY_DEBOUNCE_SECONDS = 2.0
 
@@ -126,6 +127,7 @@ class WifiManager:
     self._dnsmasq_proc: subprocess.Popen | None = None
     self._pending_connection: PendingConnection | None = None
     self._network_not_found_epoch: int | None = None
+    self._network_not_found_events = 0
 
     self._last_network_scan: float = 0.0
     self._last_connecting_at: float = 0.0
@@ -328,6 +330,7 @@ class WifiManager:
       self._current_network_metered = MeteredType.UNKNOWN
     self._user_epoch += 1
     self._network_not_found_epoch = None
+    self._network_not_found_events = 0
     self._last_connecting_at = time.monotonic() if ssid is not None else 0.0
     self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.DISCONNECTED if ssid is None else ConnectStatus.CONNECTING)
 
@@ -538,6 +541,7 @@ class WifiManager:
         return
       self._last_connecting_at = 0.0
       self._network_not_found_epoch = None
+      self._network_not_found_events = 0
       self._wifi_state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTED)
       self._connected_bssid = bssid
       self._persist_pending_connection(ssid)
@@ -644,6 +648,7 @@ class WifiManager:
                 self._select_network_ids(remaining_ids)
                 self._last_connecting_at = now
                 self._network_not_found_epoch = None
+                self._network_not_found_events = 0
                 return
               self._request("ENABLE_NETWORK all")
             except Exception:
@@ -664,7 +669,10 @@ class WifiManager:
       # The event has no network ID or SSID. A delayed event from the previous
       # profile can arrive after a fresh SELECT_NETWORK, so let the existing
       # stale-connection reconciliation confirm that this attempt also failed.
-      self._network_not_found_epoch = self._user_epoch
+      if time.monotonic() - self._last_connecting_at >= CONNECTING_STALE_TIMEOUT_SECONDS:
+        self._network_not_found_events += 1
+        if self._network_not_found_events >= NETWORK_NOT_FOUND_EVENTS_REQUIRED:
+          self._network_not_found_epoch = self._user_epoch
 
     elif "Trying to associate with" in event or "Associated with" in event:
       # Auto-connect case: wpa_supplicant is connecting on its own
