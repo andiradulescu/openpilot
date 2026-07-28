@@ -36,6 +36,7 @@ def build_wifi_manager() -> WifiManager:
   manager._tethering_password_epoch = 0
   manager._tethering_ssid = "Hotspot"
   manager._tethering_psk = "hotspot-password"
+  manager._dnsmasq_proc = None
   manager._networks_updated_pending = False
   manager._need_auth = []
   manager._activated = []
@@ -756,12 +757,14 @@ class TestStartupAdoption(TestCase):
       patch.object(wifi_manager_module, "_our_dnsmasq_running", return_value=False),
       patch.object(wifi_manager_module, "stop_tethering_dnsmasq"),
       patch.object(wifi_manager_module, "_pkill_wpa_supplicant") as kill_supplicant,
+      patch.object(self.manager, "_stop_tethering") as stop_tethering,
     ):
       self.manager._init_wifi_state()
 
     assert self.manager.wifi_state == WifiState()
     assert not self.manager.is_tethering_active()
-    kill_supplicant.assert_called_once_with(wifi_manager_module.WPA_AP_CONF)
+    stop_tethering.assert_called_once()
+    kill_supplicant.assert_not_called()
 
   def test_hotspot_without_nat_is_removed(self):
     self.manager._ctrl.request.return_value = "wpa_state=COMPLETED\nmode=AP\nssid=Hotspot\n"
@@ -771,12 +774,14 @@ class TestStartupAdoption(TestCase):
       patch.object(wifi_manager_module.subprocess, "run", return_value=MagicMock(returncode=1)),
       patch.object(wifi_manager_module, "stop_tethering_dnsmasq"),
       patch.object(wifi_manager_module, "_pkill_wpa_supplicant") as kill_supplicant,
+      patch.object(self.manager, "_stop_tethering") as stop_tethering,
     ):
       self.manager._init_wifi_state()
 
     assert self.manager.wifi_state == WifiState()
     assert not self.manager.is_tethering_active()
-    kill_supplicant.assert_called_once_with(wifi_manager_module.WPA_AP_CONF)
+    stop_tethering.assert_called_once()
+    kill_supplicant.assert_not_called()
 
   def test_reconcile_adopts_missed_connection(self):
     self.manager._ctrl.request.return_value = "wpa_state=COMPLETED\nmode=station\nssid=TestNet\n"

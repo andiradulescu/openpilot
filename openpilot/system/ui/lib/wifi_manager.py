@@ -468,17 +468,10 @@ class WifiManager:
 
   def _adopt_ap_state(self, ssid: str | None) -> bool:
     """Adopt a hotspot only when its DHCP and NAT services are ready. On refusal,
-    close the AP control socket and daemon so the monitor can recover station mode."""
+    tear down its network services so the monitor can recover station mode."""
     if not (_our_dnsmasq_running() and _tethering_nat_ready()):
       cloudlog.warning("AP services are incomplete; refusing adoption and tearing down orphan AP")
-      if self._ctrl is not None:
-        try:
-          self._ctrl.close()
-        except Exception:
-          cloudlog.exception("Failed to close AP ctrl on adoption refusal")
-        self._ctrl = None
-      stop_tethering_dnsmasq()
-      _pkill_wpa_supplicant(WPA_AP_CONF)
+      self._stop_tethering()
       return False
     if not self._ap_config_matches_password():
       cloudlog.warning("Persisted tethering password differs from the running AP; rebuilding hotspot")
