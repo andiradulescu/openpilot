@@ -21,6 +21,7 @@ NETPLAN_CONNECTIONS_DIR = "/data/etc/netplan"
 # psk="" would render as key_mgmt=NONE in wpa_supplicant.conf, silently turning
 # a secure profile into an open one for the same SSID and inviting open spoofing.
 _SUPPORTED_KEY_MGMT = {"wpa-psk", "none"}
+_SUPPORTED_WIFI_OPTIONS = {"ssid", "mode", "hidden", "bssid"}
 _SUPPORTED_SECURITY_OPTIONS = {"key-mgmt", "psk", "psk-flags", "auth-alg"}
 _SUPPORTED_IPV4_METHODS = {"auto"}
 _SUPPORTED_IPV6_METHODS = {"auto", "ignore"}
@@ -173,6 +174,9 @@ class NetworkStore:
       ssid = _decode_keyfile_ssid(cp.get("wifi", "ssid", fallback=""))
       mode = cp.get("wifi", "mode", fallback="infrastructure")
       if not ssid or mode != "infrastructure":
+        return
+      if set(cp.options("wifi")) - _SUPPORTED_WIFI_OPTIONS:
+        cloudlog.warning(f"NetworkStore: skipping {ssid!r} with unsupported Wi-Fi options")
         return
       file_uuid = cp.get("connection", "uuid", fallback="")
       # Persistent /data profiles are authoritative over netplan's runtime

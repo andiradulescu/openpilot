@@ -14,7 +14,8 @@ def write_profile(directory: str, filename: str, ssid: str, *,
                   file_uuid: str | None = None, psk: str | None = "password123",
                   key_mgmt: str = "wpa-psk", mode: str = "infrastructure",
                   autoconnect: bool = True, autoconnect_priority: int = 0,
-                  bssid: str | None = None, extra_security: str = "") -> str:
+                  bssid: str | None = None, extra_wifi: str = "",
+                  extra_security: str = "") -> str:
   security = ""
   if psk is not None or extra_security:
     security = f"""
@@ -35,6 +36,7 @@ autoconnect-priority={autoconnect_priority}
 ssid={ssid}
 mode={mode}
 {f"bssid={bssid}" if bssid is not None else ""}
+{extra_wifi}
 {security}
 """
   path = os.path.join(directory, filename)
@@ -152,6 +154,19 @@ class TestNetworkStore(TestCase):
       store = self.make_store()
 
     assert store.get_all() == {}
+
+  def test_skips_profile_with_unsupported_wifi_options(self):
+    write_profile(
+      self.persistent,
+      "randomized.nmconnection",
+      "Randomized",
+      extra_wifi="cloned-mac-address=stable",
+    )
+
+    with self.patch_reads():
+      store = self.make_store()
+
+    assert store.get("Randomized") is None
 
   def test_skips_profile_with_unsupported_security_constraints(self):
     write_profile(
