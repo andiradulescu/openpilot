@@ -93,8 +93,15 @@ def set_ipv4_forward(enabled: bool) -> None:
   subprocess.run(["sudo", "sysctl", f"net.ipv4.ip_forward={value}"], check=True)
 
 
+def _replace_operation(command: list[str], operation: str) -> list[str]:
+  result = command.copy()
+  result[result.index("-A")] = operation
+  return result
+
+
 def _delete_jump(command: list[str]) -> None:
-  while subprocess.run(command, capture_output=True, check=False).returncode == 0:
+  delete = _replace_operation(command, "-D")
+  while subprocess.run(delete, capture_output=True, check=False).returncode == 0:
     pass
 
 
@@ -126,14 +133,14 @@ def install_firewall() -> None:
   for rule in rules:
     subprocess.run(rule, check=True)
   for jump in jumps:
-    _delete_jump([*jump[:-3], "-D", *jump[-2:]])
+    _delete_jump(jump)
     subprocess.run(jump, check=True)
 
 
 def remove_firewall() -> None:
   nat, filt, _, jumps = _commands()
   for jump in jumps:
-    _delete_jump([*jump[:-3], "-D", *jump[-2:]])
+    _delete_jump(jump)
   for command, chain in ((nat, NAT_CHAIN), (filt, INPUT_CHAIN), (filt, FORWARD_CHAIN)):
     subprocess.run([*command, "-F", chain], capture_output=True, check=False)
     subprocess.run([*command, "-X", chain], capture_output=True, check=False)
@@ -141,8 +148,5 @@ def remove_firewall() -> None:
 
 def firewall_ready() -> bool:
   _, _, rules, jumps = _commands()
-  checks = [
-    [*command[:command.index("-A")], "-C", *command[command.index("-A") + 1:]]
-    for command in (*rules, *jumps)
-  ]
+  checks = [_replace_operation(command, "-C") for command in (*rules, *jumps)]
   return all(subprocess.run(command, capture_output=True, check=False).returncode == 0 for command in checks)
