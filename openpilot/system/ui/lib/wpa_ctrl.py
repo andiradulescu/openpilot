@@ -244,10 +244,12 @@ class WpaCtrl(_WpaCtrlSocket):
 
 class WpaCtrlMonitor(_WpaCtrlSocket):
   def open(self):
-    self._open("wpa_mon")
+    self._open("wpa_mon", 2.0)
     if not self._request("ATTACH").startswith("OK"):
       self.close()
       raise RuntimeError("ATTACH failed")
+    assert self._sock is not None
+    self._sock.settimeout(None)
 
   def recv(self, timeout: float = 1.0) -> str | None:
     if self._sock is None:
@@ -263,6 +265,7 @@ class WpaCtrlMonitor(_WpaCtrlSocket):
   def close(self):
     if self._sock is not None:
       try:
+        self._sock.settimeout(2.0)
         self._request("DETACH")
       except (OSError, RuntimeError):
         pass
