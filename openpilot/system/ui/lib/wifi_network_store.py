@@ -232,21 +232,27 @@ class NetworkStore:
       filenames = sorted(os.listdir(self._directory))
     except OSError:
       return
-    committed = {
-      match.group("token")
+
+    markers = {
+      match.group("token"): os.path.join(self._directory, filename)
       for filename in filenames
       if (match := _FORGET_MARKER_RE.fullmatch(filename)) is not None
     }
+    cleanup_failed: set[str] = set()
     for filename in filenames:
       match = _FORGET_RE.fullmatch(filename)
       if match is None:
         continue
+      token = match.group("token")
       staged = os.path.join(self._directory, filename)
       original = os.path.join(self._directory, match.group("name"))
-      command = ["sudo", "rm", "-f", staged] if match.group("token") in committed else ["sudo", "mv", "-f", staged, original]
-      subprocess.run(command, check=False)
-    for token in committed:
-      subprocess.run(["sudo", "rm", "-f", os.path.join(self._directory, f".openpilot-forget-committed-{token}")], check=False)
+      command = ["sudo", "rm", "-f", staged] if token in markers else ["sudo", "mv", "-f", staged, original]
+      if subprocess.run(command, check=False).returncode != 0 and token in markers:
+        cleanup_failed.add(token)
+
+    for token, marker in markers.items():
+      if token not in cleanup_failed:
+        subprocess.run(["sudo", "rm", "-f", marker], check=False)
 
   def reload(self) -> None:
     profiles: dict[str, NetworkProfile] = {}
@@ -329,9 +335,11 @@ class NetworkStore:
         subprocess.run(["sudo", "mv", "-f", staged_file, original], check=False)
       return False
 
+    cleanup_failed = False
     for _, staged_file in staged:
-      subprocess.run(["sudo", "rm", "-f", staged_file], check=False)
-    subprocess.run(["sudo", "rm", "-f", marker], check=False)
+      cleanup_failed |= subprocess.run(["sudo", "rm", "-f", staged_file], check=False).returncode != 0
+    if not cleanup_failed:
+      subprocess.run(["sudo", "rm", "-f", marker], check=False)
     for profile in profiles:
       self._profiles.pop(profile.uuid, None)
     return True
