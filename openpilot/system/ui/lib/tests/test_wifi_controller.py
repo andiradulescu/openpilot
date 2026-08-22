@@ -2,6 +2,7 @@ import threading
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
+from openpilot.system.ui.lib import wifi_controller
 from openpilot.system.ui.lib.wifi_controller import ConnectStatus, WifiController
 from openpilot.system.ui.lib.wifi_network_store import MeteredType, NetworkProfile
 from openpilot.system.ui.lib.wpa_ctrl import SecurityType
@@ -24,6 +25,10 @@ def make_controller(profiles=()):
 
 
 class TestWifiController(TestCase):
+  def setUp(self):
+    self.clear_active = self.enterContext(patch.object(wifi_controller, "clear_active_profile"))
+    self.write_active = self.enterContext(patch.object(wifi_controller, "write_active_profile"))
+
   def test_mutation_is_owner_only(self):
     controller, _, _ = make_controller()
     errors = []
@@ -112,4 +117,77 @@ class TestWifiController(TestCase):
     assert controller.state.status == ConnectStatus.CONNECTED
     assert controller.state.ipv4_address == "10.0.0.2"
     assert controller.state.metered == MeteredType.YES
+    self.write_active.assert_called_once_with(UUID_A, int(MeteredType.YES))
     assert controller.get_callback() == ("activated", None)
+
+  def test_auto_fallback_adopts_different_saved_ssid(self):
+    old = NetworkProfile(UUID_A, "Old", SecurityType.WPA, "password123")
+    fallback = NetworkProfile(UUID_B, "Fallback", SecurityType.WPA, "password456")
+    controller, _, dhcp = make_controller((old, fallback))
+    controller._state = controller.state.__class__(ssid="Old", status=ConnectStatus.CONNECTED, profile_uuid=UUID_A)
+    controller._request = MagicMock(return_value="OK\n")
+    dhcp.running = False
+
+    controller._link_lost()
+    controller._adopt_status({"wpa_state": "COMPLETED", "ssid": "Fallback", "id_str": UUID_B})
+
+    assert controller.state.ssid == "Fallback"
+    assert controller.state.profile_uuid == UUID_B
+    assert controller.state.status == ConnectStatus.CONNECTING
+
+  def test_credential_replacement_reuses_profile_uuid(self):
+    old = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "old-password", priority=42, metered=MeteredType.YES)
+    controller, _, _ = make_controller((old,))
+    controller._runtime_profiles = {UUID_A: "3"}
+    controller._request = MagicMock(side_effect=["9", "OK", "OK", "OK", "OK", "OK", "OK", "OK"])
+
+    controller._connect(wifi_controller._Connect("Test", "new-password", False, SecurityType.WPA))
+
+    assert controller._pending_profile is not None
+    assert controller._pending_profile.uuid == UUID_A
+    assert controller._pending_profile.priority == 42
+    assert controller._pending_profile.metered == MeteredType.YES
+    assert controller._replacement_network_id == "3"
+    assert controller._runtime_profiles[UUID_A] == "9"
+
+  def test_failed_replacement_restores_old_runtime_mapping(self):
+    old = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "old-password")
+    controller, _, _ = make_controller((old,))
+    controller._runtime_profiles = {UUID_A: "3"}
+    controller._pending_profile = old
+    controller._temporary_network_id = "9"
+    controller._replacement_network_id = "3"
+    controller._runtime_profiles[UUID_A] = "9"
+    controller._request = MagicMock(return_value="OK")
+
+    controller._cancel_selection()
+
+    assert controller._runtime_profiles[UUID_A] == "3"
+    assert controller._replacement_network_id is None
+
+  def test_forget_disables_runtime_before_durable_remove(self):
+    profile = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "password123")
+    controller, store, _ = make_controller((profile,))
+    controller._runtime_profiles = {UUID_A: "3"}
+    events = []
+    controller._request = MagicMock(side_effect=lambda command: events.append(command) or "OK")
+    store.remove_ssid.side_effect = lambda ssid: events.append(f"remove:{ssid}") or True
+
+    with patch.object(wifi_controller.wpa_supplicant, "write_station_config"):
+      controller._forget("Test")
+
+    assert events[0:2] == ["DISABLE_NETWORK 3", "remove:Test"]
+    assert controller.get_callback() == ("forgotten", "Test")
+
+  def test_set_metered_updates_exact_active_profile(self):
+    old = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "password123", metered=MeteredType.NO)
+    updated = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "password123", metered=MeteredType.YES)
+    controller, store, _ = make_controller((old,))
+    controller._state = controller.state.__class__(ssid="Test", status=ConnectStatus.CONNECTED, profile_uuid=UUID_A, metered=MeteredType.NO)
+    store.set_metered.return_value = updated
+
+    controller._set_metered(MeteredType.YES)
+
+    store.set_metered.assert_called_once_with(UUID_A, MeteredType.YES)
+    self.write_active.assert_called_once_with(UUID_A, int(MeteredType.YES))
+    assert controller.state.metered == MeteredType.YES
