@@ -1,0 +1,15 @@
+#!/bin/sh
+
+default_script=${UDHCPC_DEFAULT_SCRIPT:-/etc/udhcpc/default.script}
+wifi_route_metric=600
+
+"$default_script" "$1" || exit $?
+
+case "$1" in
+  bound|renew)
+    router=${router%% *}
+    [ -n "$router" ] || exit 1
+    ip -4 route flush default dev "$interface" || exit $?
+    ip -4 route replace default via "$router" dev "$interface" metric "$wifi_route_metric" || exit $?
+    ;;
+esac
