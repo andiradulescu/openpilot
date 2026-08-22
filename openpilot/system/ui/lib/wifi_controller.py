@@ -88,6 +88,7 @@ class WifiController:
     self._runtime_profiles: dict[str, str] = {}
     self._pending_profile: NetworkProfile | None = None
     self._temporary_network_id: str | None = None
+    self._replacement_network_id: str | None = None
     self._requested_ssid: str | None = None
     self._connecting_since = 0.0
     self._last_scan = 0.0
@@ -290,17 +291,33 @@ class WifiController:
         self._callbacks.put(("need_auth", command.ssid))
         return
 
-    self._begin_selection(command.ssid)
-    profile = NetworkProfile(
-      uuid=str(uuid.uuid4()),
-      ssid=command.ssid,
-      security=command.security,
-      psk=command.password if command.security == SecurityType.WPA else "",
-      hidden=command.hidden,
-      ipv6_enabled=False,
-    )
+    existing = self._store.profiles_for_ssid(command.ssid)
+    if len(existing) == 1 and existing[0].persistent:
+      old = existing[0]
+      profile = NetworkProfile(
+        uuid=old.uuid,
+        ssid=old.ssid,
+        security=command.security,
+        psk=command.password if command.security == SecurityType.WPA else "",
+        hidden=command.hidden or old.hidden,
+        priority=old.priority,
+        bssid=old.bssid,
+        metered=old.metered,
+        ipv6_enabled=old.ipv6_enabled,
+      )
+      self._replacement_network_id = self._runtime_profiles.get(old.uuid)
+    else:
+      profile = NetworkProfile(
+        uuid=str(uuid.uuid4()),
+        ssid=command.ssid,
+        security=command.security,
+        psk=command.password if command.security == SecurityType.WPA else "",
+        hidden=command.hidden,
+        ipv6_enabled=False,
+      )
+      self._replacement_network_id = None
 
-    network_id = None
+    self._begin_selection(command.ssid)
     try:
       network_id = self._request("ADD_NETWORK").strip()
       if not network_id.isdigit():
@@ -312,9 +329,11 @@ class WifiController:
         self._request(f"SET_NETWORK {network_id} psk {self._psk_value(command.password)}")
         self._request(f"SET_NETWORK {network_id} key_mgmt WPA-PSK")
       else:
-        self._request(f"SET_NETWORK {network_id} key_mmt NONE")
-      if command.hidden:
+        self._request(f"SET_NETWORK {network_id} key_mgmt NONE")
+      if profile.hidden:
         self._request(f"SET_NETWORK {network_id} scan_ssid 1")
+      if profile.bssid:
+        self._request(f"SET_NETWORK {network_id} bssid {profile.bssid}")
       self._request("DISABLE_NETWORK all")
       self._request(f"ENABLE_NETWORK {network_id}")
       self._request(f"SELECT_NETWORK {network_id}")
@@ -391,6 +410,7 @@ class WifiController:
       self._connecting_since = 0.0
       self._pending_profile = None
       self._temporary_network_id = None
+      self._replacement_network_id = None
 
     for profile in profiles:
       self._runtime_profiles.pop(profile.uuid, None)
@@ -434,10 +454,15 @@ class WifiController:
 
   def _cancel_selection(self):
     self._assert_owner()
-    if self._pending_profile is not None:
-      self._runtime_profiles.pop(self._pending_profile.uuid, None)
+    pending_uuid = self._pending_profile.uuid if self._pending_profile is not None else None
     self._remove_temporary_network()
+    if pending_uuid is not None:
+      if self._replacement_network_id is None:
+        self._runtime_profiles.pop(pending_uuid, None)
+      else:
+        self._runtime_profiles[pending_uuid] = self._replacement_network_id
     self._pending_profile = None
+    self._replacement_network_id = None
     self._requested_ssid = None
     self._connecting_since = 0.0
     try:
@@ -504,8 +529,17 @@ class WifiController:
     if self._pending_profile is not None and profile_uuid == self._pending_profile.uuid:
       try:
         stored = self._store.write(self._pending_profile)
+        new_network_id = self._temporary_network_id
+        if self._replacement_network_id is not None and self._replacement_network_id != new_network_id:
+          try:
+            self._request(f"REMOVE_NETWORK {self._replacement_network_id}")
+          except (OSError, RuntimeError):
+            pass
+        if new_network_id is not None:
+          self._runtime_profiles[stored.uuid] = new_network_id
         self._pending_profile = None
         self._temporary_network_id = None
+        self._replacement_network_id = None
         wpa_supplicant.write_station_config([profile.as_wpa_network() for profile in self._store.profiles()])
         profile_uuid = stored.uuid
       except OSError:
