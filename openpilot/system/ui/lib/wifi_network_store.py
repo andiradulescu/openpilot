@@ -37,15 +37,7 @@ class NetworkProfile:
   persistent: bool = True
 
   def as_wpa_network(self) -> WpaNetwork:
-    return WpaNetwork(
-      ssid=self.ssid,
-      security=self.security,
-      psk=self.psk,
-      hidden=self.hidden,
-      profile_uuid=self.uuid,
-      priority=self.priority,
-      bssid=self.bssid,
-    )
+    return WpaNetwork(self.ssid, self.security, self.psk, self.hidden, self.uuid, self.priority, self.bssid)
 
 
 def _parse_uuid(value: str) -> str | None:
@@ -82,14 +74,25 @@ def _encode_ssid(value: str) -> str:
 
 
 def _encode_keyfile_string(value: str) -> str:
-  out = []
-  for char in value:
-    out.append({"\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t"}.get(char, char))
-  return "".join(out)
+  return "".join({"\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t"}.get(char, char) for char in value)
 
 
 def _section(cp: configparser.ConfigParser, *names: str) -> str | None:
   return next((name for name in names if cp.has_section(name)), None)
+
+
+def _getint(cp: configparser.ConfigParser, section: str, option: str, fallback: int) -> int | None:
+  try:
+    return cp.getint(section, option, fallback=fallback)
+  except ValueError:
+    return None
+
+
+def _getbool(cp: configparser.ConfigParser, section: str, option: str, fallback: bool) -> bool | None:
+  try:
+    return cp.getboolean(section, option, fallback=fallback)
+  except ValueError:
+    return None
 
 
 def _valid_psk(psk: str) -> bool:
@@ -113,15 +116,21 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
 
   profile_uuid = _parse_uuid(cp.get("connection", "uuid", fallback=""))
   ssid = _decode_ssid(cp.get(wifi, "ssid", fallback=""))
+  autoconnect = _getbool(cp, "connection", "autoconnect", True)
+  retries = _getint(cp, "connection", "autoconnect-retries", 0)
+  priority = _getint(cp, "connection", "autoconnect-priority", 0)
+  hidden = _getbool(cp, wifi, "hidden", False)
+  metered_value = _getint(cp, "connection", "metered", 0)
+  if None in (autoconnect, retries, priority, hidden, metered_value):
+    return None
+
   if profile_uuid is None or not is_valid_ssid(ssid):
     return None
   if cp.get("connection", "type", fallback="wifi") not in ("wifi", "802-11-wireless"):
     return None
   if cp.get("connection", "interface-name", fallback="") not in ("", "wlan0"):
     return None
-  if not cp.getboolean("connection", "autoconnect", fallback=True):
-    return None
-  if cp.getint("connection", "autoconnect-retries", fallback=0) != 0:
+  if not autoconnect or retries != 0 or not 0 <= priority <= 255:
     return None
   if cp.get(wifi, "mode", fallback="infrastructure") != "infrastructure":
     return None
@@ -133,10 +142,6 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
   if {key for key, value in cp.items("connection") if value} - supported_connection:
     return None
   if {key for key, value in cp.items(wifi) if value} - supported_wifi:
-    return None
-
-  priority = cp.getint("connection", "autoconnect-priority", fallback=0)
-  if not 0 <= priority <= 255:
     return None
 
   bssid = cp.get(wifi, "bssid", fallback="")
@@ -151,14 +156,15 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
     if {key for key, value in cp.items(security_section) if value} - supported_security:
       return None
     key_mgmt = cp.get(security_section, "key-mgmt", fallback="none").lower()
+    psk_flags = _getint(cp, security_section, "psk-flags", 0)
+    if psk_flags is None:
+      return None
     if key_mgmt == "wpa-psk":
       psk = _decode_keyfile_string(cp.get(security_section, "psk", fallback=""))
-      if not _valid_psk(psk) or cp.getint(security_section, "psk-flags", fallback=0) != 0:
+      if not _valid_psk(psk) or psk_flags != 0:
         return None
       security = SecurityType.WPA
-    elif key_mgmt != "none":
-      return None
-    elif cp.get(security_section, "psk", fallback=""):
+    elif key_mgmt != "none" or cp.get(security_section, "psk", fallback=""):
       return None
 
   ipv4 = dict(cp["ipv4"]) if cp.has_section("ipv4") else {"method": "auto"}
@@ -170,14 +176,13 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
   if ipv6.get("method", "auto") not in ("auto", "ignore") or {key for key, value in ipv6.items() if value} - {"method", "addr-gen-mode"}:
     return None
 
-  metered_value = cp.getint("connection", "metered", fallback=0)
   metered = MeteredType.YES if metered_value == 1 else MeteredType.NO if metered_value == 2 else MeteredType.UNKNOWN
   return NetworkProfile(
     uuid=profile_uuid,
     ssid=ssid,
     security=security,
     psk=psk,
-    hidden=cp.getboolean(wifi, "hidden", fallback=False),
+    hidden=hidden,
     priority=priority,
     bssid=bssid.lower(),
     metered=metered,
