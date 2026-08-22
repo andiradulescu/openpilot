@@ -57,7 +57,7 @@ def write_station_config(networks: list[WpaNetwork], path: str = WPA_SUPPLICANT_
     f.write("\n".join(lines))
 
 
-def _owned_pid(conf: str) -> int | None:
+def _owned_pid(conf: str | None = None) -> int | None:
   try:
     pid = int(Path(WPA_PID_FILE).read_text().strip())
     args = [os.fsdecode(arg) for arg in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0") if arg]
@@ -70,9 +70,14 @@ def _owned_pid(conf: str) -> int | None:
     except (ValueError, IndexError):
       return None
 
+  active_conf = arg_after("-c")
   if pid <= 1 or not args or os.path.basename(args[0]) != "wpa_supplicant":
     return None
-  if arg_after("-i") != "wlan0" or arg_after("-c") != conf or arg_after("-P") != WPA_PID_FILE:
+  if arg_after("-i") != "wlan0" or arg_after("-P") != WPA_PID_FILE:
+    return None
+  if active_conf not in (WPA_SUPPLICANT_CONF, WPA_AP_CONF):
+    return None
+  if conf is not None and active_conf != conf:
     return None
   return pid
 
@@ -88,9 +93,12 @@ def prepare_runtime() -> None:
 def start(conf: str) -> bool:
   if is_running(conf):
     return True
+
   prepare_runtime()
-  if Path(WPA_PID_FILE).exists() and _owned_pid(conf) is None:
-    subprocess.run(["sudo", "rm", "-f", WPA_PID_FILE, WPA_CTRL_PATH], check=True)
+  if _owned_pid() is not None:
+    return False
+
+  subprocess.run(["sudo", "rm", "-f", WPA_PID_FILE, WPA_CTRL_PATH], check=True)
   result = subprocess.run([
     "sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", conf, "-P", WPA_PID_FILE,
   ], capture_output=True)
