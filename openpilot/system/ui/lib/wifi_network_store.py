@@ -14,6 +14,8 @@ from openpilot.system.ui.lib.wpa_supplicant import WpaNetwork
 
 NM_CONNECTIONS_DIR = "/data/etc/NetworkManager/system-connections"
 RUNTIME_CONNECTIONS_DIR = "/run/NetworkManager/system-connections"
+_FORGET_RE = re.compile(r"^(?P<name>.+\.nmconnection)\.openpilot-forget-(?P<token>[0-9a-f]{32})$")
+_FORGET_MARKER_RE = re.compile(r"^\.openpilot-forget-committed-(?P<token>[0-9a-f]{32})$")
 
 
 class MeteredType(IntEnum):
@@ -222,7 +224,29 @@ class NetworkStore:
     self._directory = directory
     self._runtime_directory = RUNTIME_CONNECTIONS_DIR if runtime_directory is None and directory == NM_CONNECTIONS_DIR else runtime_directory
     self._profiles: dict[str, NetworkProfile] = {}
+    self._recover_forgets()
     self.reload()
+
+  def _recover_forgets(self) -> None:
+    try:
+      filenames = sorted(os.listdir(self._directory))
+    except OSError:
+      return
+    committed = {
+      match.group("token")
+      for filename in filenames
+      if (match := _FORGET_MARKER_RE.fullmatch(filename)) is not None
+    }
+    for filename in filenames:
+      match = _FORGET_RE.fullmatch(filename)
+      if match is None:
+        continue
+      staged = os.path.join(self._directory, filename)
+      original = os.path.join(self._directory, match.group("name"))
+      command = ["sudo", "rm", "-f", staged] if match.group("token") in committed else ["sudo", "mv", "-f", staged, original]
+      subprocess.run(command, check=False)
+    for token in committed:
+      subprocess.run(["sudo", "rm", "-f", os.path.join(self._directory, f".openpilot-forget-committed-{token}")], check=False)
 
   def reload(self) -> None:
     profiles: dict[str, NetworkProfile] = {}
@@ -274,3 +298,40 @@ class NetworkStore:
     stored = replace(profile, path=path, persistent=True)
     self._profiles[stored.uuid] = stored
     return stored
+
+  def set_metered(self, profile_uuid: str, metered: MeteredType) -> NetworkProfile | None:
+    profile = self.get(profile_uuid)
+    if profile is None or not profile.persistent:
+      return None
+    return self.write(replace(profile, metered=metered))
+
+  def remove_ssid(self, ssid: str) -> bool:
+    profiles = self.profiles_for_ssid(ssid)
+    if not profiles:
+      return True
+    if any(not profile.persistent or not profile.path.startswith(self._directory + os.sep) for profile in profiles):
+      return False
+
+    token = uuid.uuid4().hex
+    staged: list[tuple[str, str]] = []
+    for profile in profiles:
+      staged_path = f"{profile.path}.openpilot-forget-{token}"
+      result = subprocess.run(["sudo", "mv", "-f", profile.path, staged_path], check=False)
+      if result.returncode != 0:
+        for original, staged_file in reversed(staged):
+          subprocess.run(["sudo", "mv", "-f", staged_file, original], check=False)
+        return False
+      staged.append((profile.path, staged_path))
+
+    marker = os.path.join(self._directory, f".openpilot-forget-committed-{token}")
+    if subprocess.run(["sudo", "touch", marker], check=False).returncode != 0:
+      for original, staged_file in reversed(staged):
+        subprocess.run(["sudo", "mv", "-f", staged_file, original], check=False)
+      return False
+
+    for _, staged_file in staged:
+      subprocess.run(["sudo", "rm", "-f", staged_file], check=False)
+    subprocess.run(["sudo", "rm", "-f", marker], check=False)
+    for profile in profiles:
+      self._profiles.pop(profile.uuid, None)
+    return True
