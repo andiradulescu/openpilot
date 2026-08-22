@@ -76,6 +76,7 @@ class WifiController:
     self._monitor: WpaCtrlMonitor | None = None
     self._runtime_profiles: dict[str, str] = {}
     self._pending_profile: NetworkProfile | None = None
+    self._temporary_network_id: str | None = None
     self._requested_ssid: str | None = None
     self._connecting_since = 0.0
     self._last_scan = 0.0
@@ -202,6 +203,7 @@ class WifiController:
 
     self._ctrl = WpaCtrl()
     self._ctrl.open()
+    self._request("RECONFIGURE")
     self._monitor = WpaCtrlMonitor()
     self._monitor.open()
     self._sync_runtime_profiles()
@@ -276,10 +278,12 @@ class WifiController:
       ipv6_enabled=False,
     )
 
+    network_id = None
     try:
       network_id = self._request("ADD_NETWORK").strip()
       if not network_id.isdigit():
         raise RuntimeError("invalid network id")
+      self._temporary_network_id = network_id
       self._request(f"SET_NETWORK {network_id} ssid {command.ssid.encode('utf-8', errors='surrogateescape').hex()}")
       self._request(f"SET_NETWORK {network_id} id_str \"{profile.uuid}\"")
       if command.security == SecurityType.WPA:
@@ -317,14 +321,31 @@ class WifiController:
 
   def _begin_selection(self, ssid: str):
     self._assert_owner()
-    self._dhcp.stop()
-    self._dhcp.clear_ipv6()
+    self._clear_l3()
     self._requested_ssid = ssid
     self._connecting_since = time.monotonic()
     self._state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTING)
 
+  def _clear_l3(self):
+    self._assert_owner()
+    self._dhcp.stop()
+    self._dhcp.clear_ipv6()
+
+  def _remove_temporary_network(self):
+    self._assert_owner()
+    if self._temporary_network_id is None:
+      return
+    try:
+      self._request(f"REMOVE_NETWORK {self._temporary_network_id}")
+    except (OSError, RuntimeError):
+      pass
+    self._temporary_network_id = None
+
   def _cancel_selection(self):
     self._assert_owner()
+    if self._pending_profile is not None:
+      self._runtime_profiles.pop(self._pending_profile.uuid, None)
+    self._remove_temporary_network()
     self._pending_profile = None
     self._requested_ssid = None
     self._connecting_since = 0.0
@@ -332,10 +353,26 @@ class WifiController:
       self._request("ENABLE_NETWORK all")
     except (OSError, RuntimeError):
       pass
-    self._dhcp.stop()
-    self._dhcp.clear_ipv6()
+    self._clear_l3()
     self._state = WifiState()
     self._callbacks.put(("disconnected", None))
+
+  def _link_lost(self):
+    self._assert_owner()
+    previous = self._state
+    self._clear_l3()
+    self._connecting_since = time.monotonic()
+    if self._requested_ssid is not None:
+      self._state = WifiState(ssid=self._requested_ssid, status=ConnectStatus.CONNECTING)
+    elif previous.ssid is not None:
+      self._state = WifiState(
+        ssid=previous.ssid,
+        status=ConnectStatus.CONNECTING,
+        profile_uuid=previous.profile_uuid,
+        metered=previous.metered,
+      )
+    else:
+      self._state = WifiState()
 
   def _handle_wpa_event(self, event: str):
     self._assert_owner()
@@ -348,11 +385,15 @@ class WifiController:
         self._adopt_status(status)
       return
 
+    if event.startswith("CTRL-EVENT-DISCONNECTED"):
+      self._link_lost()
+      return
+
     if "WRONG_KEY" in event or "reason=WRONG_KEY" in event:
       failed_id = parse_event_network_id(event)
       failed_ssid = parse_event_ssid(event)
       pending_id = self._runtime_profiles.get(self._pending_profile.uuid) if self._pending_profile is not None else None
-      if self._requested_ssid is not None and (failed_ssid in (None, self._requested_ssid)) and (failed_id is None or failed_id == pending_id):
+      if self._requested_ssid is not None and (failed_ssid in (None, self._requested_ssid)) and (failed_id is None or pending_id is None or failed_id == pending_id):
         ssid = self._requested_ssid
         self._cancel_selection()
         self._callbacks.put(("need_auth", ssid))
@@ -373,6 +414,7 @@ class WifiController:
       try:
         stored = self._store.write(self._pending_profile)
         self._pending_profile = None
+        self._temporary_network_id = None
         wpa_supplicant.write_station_config([profile.as_wpa_network() for profile in self._store.profiles()])
         profile_uuid = stored.uuid
       except OSError:
@@ -423,5 +465,9 @@ class WifiController:
           self._callbacks.put(("activated", None))
       return
 
-    if self._state.status != ConnectStatus.DISCONNECTED and self._connecting_since and time.monotonic() - self._connecting_since >= CONNECT_TIMEOUT_SECONDS:
+    if self._state.status == ConnectStatus.CONNECTED:
+      self._link_lost()
+      return
+
+    if self._state.status == ConnectStatus.CONNECTING and self._connecting_since and time.monotonic() - self._connecting_since >= CONNECT_TIMEOUT_SECONDS:
       self._cancel_selection()
