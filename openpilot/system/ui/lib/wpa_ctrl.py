@@ -171,7 +171,7 @@ class _WpaCtrlSocket:
     self._sock: socket.socket | None = None
     self._local_path = ""
 
-  def _open(self, prefix: str):
+  def _open(self, prefix: str, timeout: float | None = None):
     with self._counter_lock:
       type(self)._counter += 1
       idx = type(self)._counter
@@ -186,6 +186,7 @@ class _WpaCtrlSocket:
     try:
       sock.bind(self._local_path)
       sock.connect(self._ctrl_path)
+      sock.settimeout(timeout)
     except Exception:
       sock.close()
       self._unlink()
@@ -230,7 +231,7 @@ class WpaCtrl(_WpaCtrlSocket):
     self._lock = threading.Lock()
 
   def open(self):
-    self._open("wpa_ctrl")
+    self._open("wpa_ctrl", 2.0)
 
   def request(self, command: str) -> str:
     with self._lock:
