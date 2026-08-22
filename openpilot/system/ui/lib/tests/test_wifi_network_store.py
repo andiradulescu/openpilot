@@ -1,3 +1,4 @@
+import os
 import tempfile
 from pathlib import Path
 from unittest import TestCase
@@ -8,6 +9,20 @@ from openpilot.system.ui.lib.wpa_ctrl import SecurityType
 
 
 PROFILE_UUID = "11111111-1111-4111-8111-111111111111"
+
+
+def profile_text(profile_uuid: str = PROFILE_UUID, ssid: str = "TestNet", metered: int = 0) -> str:
+  return f"""[connection]
+uuid={profile_uuid}
+type=wifi
+metered={metered}
+[wifi]
+ssid={ssid}
+[ipv4]
+method=auto
+[ipv6]
+method=auto
+"""
 
 
 class TestNetworkProfile(TestCase):
@@ -120,14 +135,63 @@ class TestNetworkStore(TestCase):
     with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
       persistent_path = Path(persistent) / "persistent.nmconnection"
       runtime_path = Path(runtime) / "runtime.nmconnection"
-      persistent_path.write_text(f"""[connection]\nuuid={PROFILE_UUID}\ntype=wifi\nmetered=1\n[wifi]\nssid=TestNet\n[ipv4]\nmethod=auto\n[ipv6]\nmethod=auto\n""")
-      runtime_path.write_text(f"""[connection]\nuuid={PROFILE_UUID}\ntype=wifi\nmetered=2\n[wifi]\nssid=TestNet\n[ipv4]\nmethod=auto\n[ipv6]\nmethod=auto\n""")
+      persistent_path.write_text(profile_text(metered=1))
+      runtime_path.write_text(profile_text(metered=2))
 
-      def read(path):
-        return Path(path).read_text()
-
-      with patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=read):
+      with patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=lambda path: Path(path).read_text()):
         store = NetworkStore(persistent, runtime)
 
       assert store.metered(PROFILE_UUID) == MeteredType.YES
       assert store.get(PROFILE_UUID).persistent
+
+  def test_runtime_only_profile_cannot_be_mutated(self):
+    with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
+      runtime_path = Path(runtime) / "runtime.nmconnection"
+      runtime_path.write_text(profile_text())
+      with patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=lambda path: Path(path).read_text()):
+        store = NetworkStore(persistent, runtime)
+
+      assert store.set_metered(PROFILE_UUID, MeteredType.YES) is None
+      assert not store.remove_ssid("TestNet")
+      assert runtime_path.exists()
+
+  def test_uncommitted_forget_is_restored(self):
+    with tempfile.TemporaryDirectory() as persistent:
+      original = Path(persistent) / "test.nmconnection"
+      staged = Path(f"{original}.openpilot-forget-{'a' * 32}")
+      staged.write_text(profile_text())
+
+      def run(command, **kwargs):
+        if command[:3] == ["sudo", "mv", "-f"]:
+          os.replace(command[3], command[4])
+        return type("Result", (), {"returncode": 0})()
+
+      with (
+        patch("openpilot.system.ui.lib.wifi_network_store.subprocess.run", side_effect=run),
+        patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=lambda path: Path(path).read_text()),
+      ):
+        NetworkStore(persistent, None)
+
+      assert original.exists()
+      assert not staged.exists()
+
+  def test_committed_forget_is_not_restored_when_cleanup_fails(self):
+    with tempfile.TemporaryDirectory() as persistent:
+      token = "b" * 32
+      original = Path(persistent) / "test.nmconnection"
+      staged = Path(f"{original}.openpilot-forget-{token}")
+      marker = Path(persistent) / f".openpilot-forget-committed-{token}"
+      staged.write_text(profile_text())
+      marker.touch()
+
+      def run(command, **kwargs):
+        returncode = 1 if command[:3] == ["sudo", "rm", "-f"] and command[3] == str(staged) else 0
+        return type("Result", (), {"returncode": returncode})()
+
+      with patch("openpilot.system.ui.lib.wifi_network_store.subprocess.run", side_effect=run):
+        store = NetworkStore(persistent, None)
+
+      assert store.profiles() == []
+      assert not original.exists()
+      assert staged.exists()
+      assert marker.exists()
