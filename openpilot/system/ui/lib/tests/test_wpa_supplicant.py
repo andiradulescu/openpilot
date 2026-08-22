@@ -66,6 +66,17 @@ class TestWpaProcess(TestCase):
       call(["sudo", "rm", "-f", wpa_supplicant.WPA_PID_FILE, wpa_supplicant.WPA_CTRL_PATH], check=False),
     ]
 
+  def test_start_refuses_owned_other_mode(self):
+    with (
+      patch.object(wpa_supplicant, "is_running", return_value=False),
+      patch.object(wpa_supplicant, "_owned_pid", return_value=123),
+      patch.object(wpa_supplicant, "prepare_runtime"),
+      patch.object(wpa_supplicant.subprocess, "run") as run,
+    ):
+      assert not wpa_supplicant.start(wpa_supplicant.WPA_SUPPLICANT_CONF)
+
+    run.assert_not_called()
+
   def test_owned_pid_checks_command_line(self):
     command = "\0".join((
       "/usr/sbin/wpa_supplicant", "-B", "-i", "wlan0", "-c",
@@ -75,5 +86,6 @@ class TestWpaProcess(TestCase):
       patch.object(Path, "read_text", return_value="123"),
       patch.object(Path, "read_bytes", return_value=command),
     ):
+      assert wpa_supplicant._owned_pid() == 123
       assert wpa_supplicant._owned_pid(wpa_supplicant.WPA_SUPPLICANT_CONF) == 123
       assert wpa_supplicant._owned_pid(wpa_supplicant.WPA_AP_CONF) is None
