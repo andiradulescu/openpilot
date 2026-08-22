@@ -58,6 +58,27 @@ def write_station_config(networks: list[WpaNetwork], path: str = WPA_SUPPLICANT_
     f.write("\n".join(lines))
 
 
+def write_ap_config(ssid: str, password: str, path: str = WPA_AP_CONF) -> None:
+  lines = [
+    WPA_CTRL_INTERFACE,
+    "update_config=0",
+    "p2p_disabled=1",
+    "network={",
+    f"  ssid={_format_ssid(ssid)}",
+    "  mode=2",
+    "  frequency=2412",
+    "  key_mgmt=WPA-PSK",
+    f"  psk={_format_psk(password)}",
+    "  proto=RSN",
+    "  pairwise=CCMP",
+    "  group=CCMP",
+    "}",
+    "",
+  ]
+  with atomic_write(path, overwrite=True) as f:
+    f.write("\n".join(lines))
+
+
 def _owned_pid(conf: str | None = None) -> int | None:
   try:
     pid = int(Path(WPA_PID_FILE).read_text().strip())
