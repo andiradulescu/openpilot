@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -86,6 +87,14 @@ def is_running(conf: str) -> bool:
   return _owned_pid(conf) is not None
 
 
+def release_networkmanager() -> bool:
+  nmcli = shutil.which("nmcli")
+  if nmcli is None:
+    return True
+  result = subprocess.run(["sudo", nmcli, "dev", "set", "wlan0", "managed", "no"], capture_output=True)
+  return result.returncode == 0
+
+
 def prepare_runtime() -> None:
   subprocess.run(["sudo", "install", "-d", "-o", "root", "-g", "netdev", "-m", "775", WPA_CTRL_DIR], check=True)
 
@@ -93,6 +102,8 @@ def prepare_runtime() -> None:
 def start(conf: str) -> bool:
   if is_running(conf):
     return True
+  if not release_networkmanager():
+    return False
 
   prepare_runtime()
   if _owned_pid() is not None:
