@@ -12,6 +12,8 @@ WPA_CTRL_PATH = "/run/openpilot-wpa/wlan0"
 IEEE80211_MAX_SSID_BYTES = 32
 
 _HEX = "0123456789abcdefABCDEF"
+_EVENT_ID_RE = re.compile(r"\bid=(\d+)\b")
+_EVENT_SSID_RE = re.compile(r'\bssid="((?:\\.|[^"])*)"')
 
 
 class SecurityType(IntEnum):
@@ -136,6 +138,16 @@ def parse_status(raw: str) -> dict[str, str]:
     key, _, value = line.partition("=")
     status[key] = decode_ssid(value) if key == "ssid" else value
   return status
+
+
+def parse_event_network_id(event: str) -> str | None:
+  match = _EVENT_ID_RE.search(event)
+  return match.group(1) if match is not None else None
+
+
+def parse_event_ssid(event: str) -> str | None:
+  match = _EVENT_SSID_RE.search(event)
+  return decode_ssid(match.group(1)) if match is not None else None
 
 
 def dbm_to_percent(dbm: int) -> int:
