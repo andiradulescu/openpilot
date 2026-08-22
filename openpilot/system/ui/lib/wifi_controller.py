@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 from openpilot.common.swaglog import cloudlog
+from openpilot.common.wifi import clear_active_profile, write_active_profile
 from openpilot.system.ui.lib.dhcp_client import DhcpClient
 from openpilot.system.ui.lib.wifi_network_store import MeteredType, NetworkProfile, NetworkStore
 from openpilot.system.ui.lib.wpa_ctrl import (SecurityType, WpaCtrl, WpaCtrlMonitor, dbm_to_percent,
@@ -57,6 +58,16 @@ class _Activate:
 @dataclass(frozen=True)
 class _SetActive:
   active: bool
+
+
+@dataclass(frozen=True)
+class _SetMetered:
+  metered: MeteredType
+
+
+@dataclass(frozen=True)
+class _Forget:
+  ssid: str
 
 
 class _Stop:
@@ -126,6 +137,12 @@ class WifiController:
   def activate(self, ssid: str):
     self._commands.put(_Activate(ssid))
 
+  def set_metered(self, metered: MeteredType):
+    self._commands.put(_SetMetered(metered))
+
+  def forget(self, ssid: str):
+    self._commands.put(_Forget(ssid))
+
   def get_callback(self) -> tuple[str, object | None] | None:
     try:
       return self._callbacks.get_nowait()
@@ -168,6 +185,7 @@ class WifiController:
     except Exception:
       cloudlog.exception("Wi-Fi controller failed")
     finally:
+      clear_active_profile()
       if self._monitor is not None:
         self._monitor.close()
       if self._ctrl is not None:
@@ -194,6 +212,10 @@ class WifiController:
         self._connect(command)
       elif isinstance(command, _Activate):
         self._activate(command.ssid)
+      elif isinstance(command, _SetMetered):
+        self._set_metered(command.metered)
+      elif isinstance(command, _Forget):
+        self._forget(command.ssid)
 
   def _initialize_station(self):
     self._assert_owner()
@@ -290,7 +312,7 @@ class WifiController:
         self._request(f"SET_NETWORK {network_id} psk {self._psk_value(command.password)}")
         self._request(f"SET_NETWORK {network_id} key_mgmt WPA-PSK")
       else:
-        self._request(f"SET_NETWORK {network_id} key_mgmt NONE")
+        self._request(f"SET_NETWORK {network_id} key_mmt NONE")
       if command.hidden:
         self._request(f"SET_NETWORK {network_id} scan_ssid 1")
       self._request("DISABLE_NETWORK all")
@@ -319,6 +341,74 @@ class WifiController:
     except (OSError, RuntimeError):
       self._cancel_selection()
 
+  def _set_metered(self, metered: MeteredType):
+    self._assert_owner()
+    profile_uuid = self._state.profile_uuid
+    if profile_uuid is None:
+      return
+    profile = self._store.set_metered(profile_uuid, metered)
+    if profile is None:
+      return
+    self._state = WifiState(
+      ssid=self._state.ssid,
+      status=self._state.status,
+      profile_uuid=profile.uuid,
+      ipv4_address=self._state.ipv4_address,
+      metered=profile.metered,
+    )
+    if self._state.status == ConnectStatus.CONNECTED:
+      self._publish_active_profile(profile)
+
+  def _forget(self, ssid: str):
+    self._assert_owner()
+    profiles = self._store.profiles_for_ssid(ssid)
+    runtime_ids = [self._runtime_profiles[profile.uuid] for profile in profiles if profile.uuid in self._runtime_profiles]
+    try:
+      for network_id in runtime_ids:
+        self._request(f"DISABLE_NETWORK {network_id}")
+    except (OSError, RuntimeError):
+      for network_id in runtime_ids:
+        try:
+          self._request(f"ENABLE_NETWORK {network_id}")
+        except (OSError, RuntimeError):
+          pass
+      self._callbacks.put(("forget_failed", ssid))
+      return
+
+    if not self._store.remove_ssid(ssid):
+      for network_id in runtime_ids:
+        try:
+          self._request(f"ENABLE_NETWORK {network_id}")
+        except (OSError, RuntimeError):
+          pass
+      self._callbacks.put(("forget_failed", ssid))
+      return
+
+    if self._state.ssid == ssid or self._requested_ssid == ssid:
+      self._clear_l3()
+      self._state = WifiState()
+      self._requested_ssid = None
+      self._connecting_since = 0.0
+      self._pending_profile = None
+      self._temporary_network_id = None
+
+    for profile in profiles:
+      self._runtime_profiles.pop(profile.uuid, None)
+    for network_id in runtime_ids:
+      try:
+        self._request(f"REMOVE_NETWORK {network_id}")
+      except (OSError, RuntimeError):
+        pass
+
+    wpa_supplicant.write_station_config([profile.as_wpa_network() for profile in self._store.profiles()])
+    try:
+      self._request("RECONFIGURE")
+      self._sync_runtime_profiles()
+      self._request("ENABLE_NETWORK all")
+    except (OSError, RuntimeError):
+      pass
+    self._callbacks.put(("forgotten", ssid))
+
   def _begin_selection(self, ssid: str):
     self._assert_owner()
     self._clear_l3()
@@ -328,6 +418,7 @@ class WifiController:
 
   def _clear_l3(self):
     self._assert_owner()
+    clear_active_profile()
     self._dhcp.stop()
     self._dhcp.clear_ipv6()
 
@@ -436,6 +527,13 @@ class WifiController:
     except (OSError, RuntimeError):
       pass
 
+  def _publish_active_profile(self, profile: NetworkProfile):
+    self._assert_owner()
+    try:
+      write_active_profile(profile.uuid, int(profile.metered))
+    except Exception:
+      cloudlog.exception("Failed to publish active Wi-Fi profile")
+
   def _reconcile(self):
     self._assert_owner()
     try:
@@ -454,13 +552,16 @@ class WifiController:
           self._dhcp.start()
         if self._dhcp.ready():
           profile = self._store.get(profile_uuid)
+          if profile is None:
+            return
           self._state = WifiState(
             ssid=ssid,
             status=ConnectStatus.CONNECTED,
             profile_uuid=profile_uuid,
             ipv4_address=self._dhcp.ipv4_address(),
-            metered=profile.metered if profile is not None else MeteredType.UNKNOWN,
+            metered=profile.metered,
           )
+          self._publish_active_profile(profile)
           self._connecting_since = 0.0
           self._callbacks.put(("activated", None))
       return
