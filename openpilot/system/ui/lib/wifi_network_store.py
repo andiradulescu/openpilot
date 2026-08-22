@@ -2,10 +2,10 @@ import configparser
 import os
 import re
 import subprocess
+import tempfile
 import uuid
 from dataclasses import dataclass, replace
 from enum import IntEnum
-from pathlib import Path
 
 from openpilot.common.utils import sudo_read
 from openpilot.system.ui.lib.wpa_ctrl import SecurityType, is_valid_ssid
@@ -121,14 +121,22 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
     return None
   if not cp.getboolean("connection", "autoconnect", fallback=True):
     return None
+  if cp.getint("connection", "autoconnect-retries", fallback=0) != 0:
+    return None
   if cp.get(wifi, "mode", fallback="infrastructure") != "infrastructure":
     return None
 
-  supported_connection = {"id", "uuid", "type", "interface-name", "autoconnect", "autoconnect-priority", "timestamp", "metered"}
+  supported_connection = {
+    "id", "uuid", "type", "interface-name", "autoconnect", "autoconnect-priority", "autoconnect-retries", "timestamp", "metered",
+  }
   supported_wifi = {"ssid", "mode", "hidden", "bssid"}
   if {key for key, value in cp.items("connection") if value} - supported_connection:
     return None
   if {key for key, value in cp.items(wifi) if value} - supported_wifi:
+    return None
+
+  priority = cp.getint("connection", "autoconnect-priority", fallback=0)
+  if not 0 <= priority <= 255:
     return None
 
   bssid = cp.get(wifi, "bssid", fallback="")
@@ -155,11 +163,11 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
 
   ipv4 = dict(cp["ipv4"]) if cp.has_section("ipv4") else {"method": "auto"}
   ipv6 = dict(cp["ipv6"]) if cp.has_section("ipv6") else {"method": "auto"}
-  if ipv4.get("method", "auto") != "auto" or set(k for k, v in ipv4.items() if v) - {"method", "dns-priority"}:
+  if ipv4.get("method", "auto") != "auto" or {key for key, value in ipv4.items() if value} - {"method", "dns-priority"}:
     return None
   if ipv4.get("dns-priority", "600") != "600":
     return None
-  if ipv6.get("method", "auto") not in ("auto", "ignore") or set(k for k, v in ipv6.items() if v) - {"method", "addr-gen-mode"}:
+  if ipv6.get("method", "auto") not in ("auto", "ignore") or {key for key, value in ipv6.items() if value} - {"method", "addr-gen-mode"}:
     return None
 
   metered_value = cp.getint("connection", "metered", fallback=0)
@@ -170,7 +178,7 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
     security=security,
     psk=psk,
     hidden=cp.getboolean(wifi, "hidden", fallback=False),
-    priority=cp.getint("connection", "autoconnect-priority", fallback=0),
+    priority=priority,
     bssid=bssid.lower(),
     metered=metered,
     ipv6_enabled=ipv6.get("method", "auto") != "ignore",
@@ -186,6 +194,7 @@ def render_profile(profile: NetworkProfile) -> str:
     f"uuid={profile.uuid}",
     "type=wifi",
     "autoconnect=true",
+    "autoconnect-retries=0",
     f"autoconnect-priority={profile.priority}",
     f"metered={int(profile.metered)}",
     "",
@@ -249,11 +258,14 @@ class NetworkStore:
 
   def write(self, profile: NetworkProfile) -> NetworkProfile:
     path = self._path(profile)
-    Path(self._directory).mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(["sudo", "tee", path], input=render_profile(profile), text=True, stdout=subprocess.DEVNULL)
-    if result.returncode != 0:
-      raise OSError(f"failed to write {path}")
-    subprocess.run(["sudo", "chmod", "600", path], check=True)
+    subprocess.run(["sudo", "install", "-d", "-m", "700", self._directory], check=True)
+    with tempfile.NamedTemporaryFile("w", delete=False) as f:
+      f.write(render_profile(profile))
+      temp_path = f.name
+    try:
+      subprocess.run(["sudo", "install", "-m", "600", temp_path, path], check=True)
+    finally:
+      os.unlink(temp_path)
     stored = replace(profile, path=path, persistent=True)
     self._profiles[stored.uuid] = stored
     return stored
