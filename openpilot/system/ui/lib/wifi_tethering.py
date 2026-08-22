@@ -9,8 +9,9 @@ TETHERING_ADDRESS = "192.168.43.1"
 TETHERING_CIDR = f"{TETHERING_ADDRESS}/24"
 TETHERING_SUBNET = "192.168.43.0/24"
 DNSMASQ_PID_FILE = "/run/openpilot-wifi/dnsmasq.pid"
-NAT_CHAIN = "OPENPILOT_TETHERING"
-FILTER_CHAIN = "OPENPILOT_TETHERING"
+NAT_CHAIN = "OPENPILOT_TETHERING_NAT"
+INPUT_CHAIN = "OPENPILOT_TETHERING_INPUT"
+FORWARD_CHAIN = "OPENPILOT_TETHERING_FORWARD"
 
 
 def _iptables() -> str:
@@ -97,53 +98,51 @@ def _delete_jump(command: list[str]) -> None:
     pass
 
 
-def install_firewall() -> None:
+def _commands():
   iptables = _iptables()
   nat = ["sudo", iptables, "-t", "nat"]
   filt = ["sudo", iptables]
+  rules = (
+    [*nat, "-A", NAT_CHAIN, "-s", TETHERING_SUBNET, "!", "-d", TETHERING_SUBNET, "-j", "MASQUERADE"],
+    [*filt, "-A", INPUT_CHAIN, "-i", "wlan0", "-p", "udp", "--dport", "67", "-j", "ACCEPT"],
+    [*filt, "-A", INPUT_CHAIN, "-i", "wlan0", "-p", "udp", "--dport", "53", "-j", "ACCEPT"],
+    [*filt, "-A", INPUT_CHAIN, "-i", "wlan0", "-p", "tcp", "--dport", "53", "-j", "ACCEPT"],
+    [*filt, "-A", FORWARD_CHAIN, "-i", "wlan0", "-s", TETHERING_SUBNET, "-j", "ACCEPT"],
+    [*filt, "-A", FORWARD_CHAIN, "-o", "wlan0", "-d", TETHERING_SUBNET, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
+  )
+  jumps = (
+    [*nat, "-A", "POSTROUTING", "-j", NAT_CHAIN],
+    [*filt, "-A", "INPUT", "-j", INPUT_CHAIN],
+    [*filt, "-A", "FORWARD", "-j", FORWARD_CHAIN],
+  )
+  return nat, filt, rules, jumps
 
-  subprocess.run([*nat, "-N", NAT_CHAIN], capture_output=True, check=False)
-  subprocess.run([*filt, "-N", FILTER_CHAIN], capture_output=True, check=False)
-  subprocess.run([*nat, "-F", NAT_CHAIN], check=True)
-  subprocess.run([*filt, "-F", FILTER_CHAIN], check=True)
-  subprocess.run([*nat, "-A", NAT_CHAIN, "-s", TETHERING_SUBNET, "!", "-d", TETHERING_SUBNET, "-j", "MASQUERADE"], check=True)
-  subprocess.run([*filt, "-A", FILTER_CHAIN, "-i", "wlan0", "-p", "udp", "--dport", "67", "-j", "ACCEPT"], check=True)
-  subprocess.run([*filt, "-A", FILTER_CHAIN, "-i", "wlan0", "-p", "udp", "--dport", "53", "-j", "ACCEPT"], check=True)
-  subprocess.run([*filt, "-A", FILTER_CHAIN, "-i", "wlan0", "-p", "tcp", "--dport", "53", "-j", "ACCEPT"], check=True)
-  subprocess.run([*filt, "-A", FILTER_CHAIN, "-i", "wlan0", "-s", TETHERING_SUBNET, "-j", "ACCEPT"], check=True)
-  subprocess.run([*filt, "-A", FILTER_CHAIN, "-o", "wlan0", "-d", TETHERING_SUBNET, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"], check=True)
 
-  nat_jump = [*nat, "-D", "POSTROUTING", "-j", NAT_CHAIN]
-  input_jump = [*filt, "-D", "INPUT", "-j", FILTER_CHAIN]
-  forward_jump = [*filt, "-D", "FORWARD", "-j", FILTER_CHAIN]
-  for jump in (nat_jump, input_jump, forward_jump):
-    _delete_jump(jump)
-
-  subprocess.run([*nat, "-A", "POSTROUTING", "-j", NAT_CHAIN], check=True)
-  subprocess.run([*filt, "-A", "INPUT", "-j", FILTER_CHAIN], check=True)
-  subprocess.run([*filt, "-A", "FORWARD", "-j", FILTER_CHAIN], check=True)
+def install_firewall() -> None:
+  nat, filt, rules, jumps = _commands()
+  for command, chain in ((nat, NAT_CHAIN), (filt, INPUT_CHAIN), (filt, FORWARD_CHAIN)):
+    subprocess.run([*command, "-N", chain], capture_output=True, check=False)
+    subprocess.run([*command, "-F", chain], check=True)
+  for rule in rules:
+    subprocess.run(rule, check=True)
+  for jump in jumps:
+    _delete_jump([*jump[:-3], "-D", *jump[-2:]])
+    subprocess.run(jump, check=True)
 
 
 def remove_firewall() -> None:
-  iptables = _iptables()
-  nat = ["sudo", iptables, "-t", "nat"]
-  filt = ["sudo", iptables]
-  for jump in (
-    [*nat, "-D", "POSTROUTING", "-j", NAT_CHAIN],
-    [*filt, "-D", "INPUT", "-j", FILTER_CHAIN],
-    [*filt, "-D", "FORWARD", "-j", FILTER_CHAIN],
-  ):
-    _delete_jump(jump)
-  for command, chain in ((nat, NAT_CHAIN), (filt, FILTER_CHAIN)):
+  nat, filt, _, jumps = _commands()
+  for jump in jumps:
+    _delete_jump([*jump[:-3], "-D", *jump[-2:]])
+  for command, chain in ((nat, NAT_CHAIN), (filt, INPUT_CHAIN), (filt, FORWARD_CHAIN)):
     subprocess.run([*command, "-F", chain], capture_output=True, check=False)
     subprocess.run([*command, "-X", chain], capture_output=True, check=False)
 
 
 def firewall_ready() -> bool:
-  iptables = _iptables()
-  checks = (
-    ["sudo", iptables, "-t", "nat", "-C", "POSTROUTING", "-j", NAT_CHAIN],
-    ["sudo", iptables, "-C", "INPUT", "-j", FILTER_CHAIN],
-    ["sudo", iptables, "-C", "FORWARD", "-j", FILTER_CHAIN],
-  )
+  _, _, rules, jumps = _commands()
+  checks = [
+    [*command[:command.index("-A")], "-C", *command[command.index("-A") + 1:]]
+    for command in (*rules, *jumps)
+  ]
   return all(subprocess.run(command, capture_output=True, check=False).returncode == 0 for command in checks)
