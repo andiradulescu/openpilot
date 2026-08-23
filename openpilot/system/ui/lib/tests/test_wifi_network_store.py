@@ -98,6 +98,27 @@ method=auto
 """
     assert parse_profile(raw) is None
 
+  def test_rejects_control_characters_in_psk(self):
+    raw = f"""\
+[connection]
+uuid={PROFILE_UUID}
+type=wifi
+
+[wifi]
+ssid=TestNet
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=password\\n123
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+"""
+    assert parse_profile(raw) is None
+
   def test_round_trip_keeps_networkmanager_semantics(self):
     raw = f"""\
 [connection]
@@ -169,6 +190,40 @@ class TestNetworkStore(TestCase):
       assert store.set_metered(PROFILE_UUID, MeteredType.YES) is None
       assert not store.remove_ssid("TestNet")
       assert runtime_path.exists()
+
+  def test_update_keeps_existing_noncanonical_path(self):
+    with tempfile.TemporaryDirectory() as persistent:
+      existing_path = Path(persistent) / "saved.nmconnection"
+      existing_path.write_text(profile_text(metered=0))
+      commands = []
+
+      def run(command, **kwargs):
+        commands.append(command)
+        if command[:2] == ["sudo", "install"] and "-d" not in command:
+          Path(command[-1]).write_bytes(Path(command[-2]).read_bytes())
+        elif command[:3] == ["sudo", "mv", "-f"]:
+          os.replace(command[3], command[4])
+        elif command[:3] == ["sudo", "rm", "-f"]:
+          Path(command[3]).unlink(missing_ok=True)
+        return type("Result", (), {"returncode": 0})()
+
+      with (
+        patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=lambda path: Path(path).read_text()),
+        patch("openpilot.system.ui.lib.wifi_network_store.subprocess.run", side_effect=run),
+      ):
+        store = NetworkStore(persistent, None)
+        updated = store.set_metered(PROFILE_UUID, MeteredType.YES)
+
+      assert updated is not None
+      assert updated.path == str(existing_path)
+      assert existing_path.exists()
+      assert len(list(Path(persistent).glob("*.nmconnection"))) == 1
+      assert parse_profile(existing_path.read_text()).metered == MeteredType.YES
+      install_idx = next(i for i, command in enumerate(commands) if command[:2] == ["sudo", "install"] and "-d" not in command)
+      move_idx = next(i for i, command in enumerate(commands) if command[:3] == ["sudo", "mv", "-f"])
+      assert install_idx < move_idx
+      assert commands[install_idx][-1] != str(existing_path)
+      assert commands[move_idx][-1] == str(existing_path)
 
   def test_uncommitted_forget_is_restored(self):
     with tempfile.TemporaryDirectory() as persistent:
