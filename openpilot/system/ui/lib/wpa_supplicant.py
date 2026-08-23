@@ -108,12 +108,21 @@ def is_running(conf: str) -> bool:
   return _owned_pid(conf) is not None
 
 
-def release_networkmanager() -> bool:
+def _set_networkmanager_managed(managed: bool) -> bool:
   nmcli = shutil.which("nmcli")
   if nmcli is None:
     return True
-  result = subprocess.run(["sudo", nmcli, "dev", "set", "wlan0", "managed", "no"], capture_output=True)
+  value = "yes" if managed else "no"
+  result = subprocess.run(["sudo", nmcli, "dev", "set", "wlan0", "managed", value], capture_output=True)
   return result.returncode == 0
+
+
+def release_networkmanager() -> bool:
+  return _set_networkmanager_managed(False)
+
+
+def restore_networkmanager() -> bool:
+  return _set_networkmanager_managed(True)
 
 
 def prepare_runtime() -> None:
