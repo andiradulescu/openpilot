@@ -197,6 +197,10 @@ class WifiManager:
         cloudlog.warning(f"Wi-Fi profile is read-only: {value!r}")
         for callback in self._disconnected:
           callback()
+      elif name == "settings_failed":
+        cloudlog.warning(f"Failed to update Wi-Fi settings for {value!r}")
+        self._emit_networks_updated()
+        emitted_network_update = True
       elif name == "tethering_failed":
         cloudlog.warning("Tethering operation failed")
         self._emit_networks_updated()
