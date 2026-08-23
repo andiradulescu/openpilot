@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from openpilot.system.ui.lib import wifi_controller
 from openpilot.system.ui.lib.wifi_controller import ConnectStatus, WifiController
 from openpilot.system.ui.lib.wifi_network_store import MeteredType, NetworkProfile
+from openpilot.system.ui.lib.wifi_tethering_store import TetheringProfile
 from openpilot.system.ui.lib.wpa_ctrl import SecurityType
 
 
@@ -17,8 +18,11 @@ def make_controller(profiles=()):
   store.profiles.return_value = list(profiles)
   store.profiles_for_ssid.side_effect = lambda ssid: [profile for profile in profiles if profile.ssid == ssid]
   store.get.side_effect = lambda profile_uuid: next((profile for profile in profiles if profile.uuid == profile_uuid), None)
+  store.can_mutate.return_value = True
   dhcp = MagicMock()
-  controller = WifiController(store=store, dhcp=dhcp, start=False)
+  tethering_store = MagicMock()
+  tethering_store.ensure.return_value = TetheringProfile(UUID_B, "weedle", wifi_controller.DEFAULT_TETHERING_PASSWORD)
+  controller = WifiController(store=store, dhcp=dhcp, tethering_store=tethering_store, start=False)
   controller._owner_ident = threading.get_ident()
   controller._ctrl = MagicMock()
   return controller, store, dhcp
@@ -150,6 +154,17 @@ class TestWifiController(TestCase):
     assert controller._replacement_network_id == "3"
     assert controller._runtime_profiles[UUID_A] == "9"
 
+  def test_readonly_saved_profile_rejects_credential_replacement(self):
+    old = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "old-password")
+    controller, store, _ = make_controller((old,))
+    store.can_mutate.return_value = False
+    controller._request = MagicMock()
+
+    controller._connect(wifi_controller._Connect("Test", "new-password", False, SecurityType.WPA))
+
+    controller._request.assert_not_called()
+    assert controller.get_callback() == ("profile_readonly", "Test")
+
   def test_failed_replacement_restores_old_runtime_mapping(self):
     old = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "old-password")
     controller, _, _ = make_controller((old,))
@@ -242,6 +257,24 @@ class TestWifiController(TestCase):
     controller._tethering.stop.assert_not_called()
     assert controller.tethering_active
     assert controller.state.ssid == "weedle"
+    assert controller.get_callback() == ("tethering_failed", None)
+
+  def test_inactive_tethering_password_is_persisted_before_memory_update(self):
+    controller, _, _ = make_controller()
+    controller._tethering_store.set_password.return_value = TetheringProfile(UUID_B, "weedle", "new-password")
+
+    controller._set_tethering_password("new-password")
+
+    controller._tethering_store.set_password.assert_called_once_with("weedle", "new-password")
+    assert controller.tethering_password == "new-password"
+
+  def test_failed_tethering_password_persistence_keeps_old_password(self):
+    controller, _, _ = make_controller()
+    controller._tethering_store.set_password.return_value = None
+
+    controller._set_tethering_password("new-password")
+
+    assert controller.tethering_password == wifi_controller.DEFAULT_TETHERING_PASSWORD
     assert controller.get_callback() == ("tethering_failed", None)
 
   def test_active_tethering_forwarding_update_is_serialized(self):
