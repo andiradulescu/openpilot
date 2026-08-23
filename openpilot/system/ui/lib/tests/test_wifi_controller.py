@@ -191,3 +191,65 @@ class TestWifiController(TestCase):
     store.set_metered.assert_called_once_with(UUID_A, MeteredType.YES)
     self.write_active.assert_called_once_with(UUID_A, int(MeteredType.YES))
     assert controller.state.metered == MeteredType.YES
+
+  def test_enter_tethering_switches_from_station(self):
+    controller, _, _ = make_controller()
+    controller._close_ctrl = MagicMock()
+    controller._clear_l3 = MagicMock()
+    controller._tethering.start = MagicMock(return_value=True)
+
+    with (
+      patch.object(wifi_controller.wpa_supplicant, "write_ap_config") as write_ap_config,
+      patch.object(wifi_controller.wpa_supplicant, "stop", return_value=True) as stop_wpa,
+      patch.object(wifi_controller.wpa_supplicant, "start", return_value=True) as start_wpa,
+    ):
+      controller._enter_tethering()
+
+    write_ap_config.assert_called_once_with("weedle", wifi_controller.DEFAULT_TETHERING_PASSWORD)
+    stop_wpa.assert_called_once_with(wifi_controller.wpa_supplicant.WPA_SUPPLICANT_CONF)
+    start_wpa.assert_called_once_with(wifi_controller.wpa_supplicant.WPA_AP_CONF)
+    controller._tethering.start.assert_called_once_with(False)
+    assert controller.tethering_active
+    assert controller.state.ssid == "weedle"
+    assert controller.state.status == ConnectStatus.CONNECTED
+
+  def test_failed_ap_start_restores_station(self):
+    controller, _, _ = make_controller()
+    controller._close_ctrl = MagicMock()
+    controller._clear_l3 = MagicMock()
+    controller._restore_station_after_tethering_failure = MagicMock()
+
+    with (
+      patch.object(wifi_controller.wpa_supplicant, "write_ap_config"),
+      patch.object(wifi_controller.wpa_supplicant, "stop", return_value=True),
+      patch.object(wifi_controller.wpa_supplicant, "start", return_value=False),
+    ):
+      controller._enter_tethering()
+
+    controller._restore_station_after_tethering_failure.assert_called_once()
+    assert not controller.tethering_active
+    assert controller.get_callback() == ("tethering_failed", None)
+
+  def test_failed_ap_stop_keeps_tethering_resources(self):
+    controller, _, _ = make_controller()
+    controller._tethering_active = True
+    controller._state = controller.state.__class__(ssid="weedle", status=ConnectStatus.CONNECTED)
+    controller._tethering.stop = MagicMock(return_value=True)
+
+    with patch.object(wifi_controller.wpa_supplicant, "stop", return_value=False):
+      controller._leave_tethering()
+
+    controller._tethering.stop.assert_not_called()
+    assert controller.tethering_active
+    assert controller.state.ssid == "weedle"
+    assert controller.get_callback() == ("tethering_failed", None)
+
+  def test_active_tethering_forwarding_update_is_serialized(self):
+    controller, _, _ = make_controller()
+    controller._tethering_active = True
+
+    with patch.object(wifi_controller.wifi_tethering, "set_ipv4_forward") as set_forward:
+      controller._set_ipv4_forward(True)
+
+    set_forward.assert_called_once_with(True)
+    assert controller._ipv4_forward
