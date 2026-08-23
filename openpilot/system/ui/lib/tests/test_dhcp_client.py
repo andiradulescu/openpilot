@@ -1,4 +1,6 @@
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import call, patch
@@ -58,3 +60,32 @@ class TestDhcpClient(TestCase):
     route = subprocess.CompletedProcess([], 0, "default via 10.0.0.1 dev wlan0 metric 600\n", "")
     with patch.object(dhcp_client.subprocess, "run", side_effect=[address, route]):
       assert client.ready()
+
+  def test_script_uses_installed_classless_default_gateway(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      root = Path(tmp)
+      default_script = root / "default.script"
+      default_script.write_text("#!/bin/sh\nexit 0\n")
+      default_script.chmod(0o755)
+
+      log = root / "ip.log"
+      ip = root / "ip"
+      ip.write_text(f"""#!/bin/sh
+if [ \"$*\" = \"-4 route show default dev wlan0\" ]; then
+  echo 'default via 10.0.0.1 dev wlan0 metric 100'
+  exit 0
+fi
+echo \"$*\" >> {log}
+""")
+      ip.chmod(0o755)
+
+      env = os.environ.copy()
+      env.update({
+        "UDHCPC_DEFAULT_SCRIPT": str(default_script),
+        "PATH": f"{root}:{env['PATH']}",
+        "interface": "wlan0",
+        "router": "",
+      })
+      subprocess.run([dhcp_client.DHCP_SCRIPT, "bound"], env=env, check=True)
+
+      assert "-4 route replace default via 10.0.0.1 dev wlan0 metric 600" in log.read_text().splitlines()
