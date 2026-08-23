@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import tempfile
+import unicodedata
 import uuid
 from dataclasses import dataclass, replace
 from enum import IntEnum
@@ -99,6 +100,8 @@ def _getbool(cp: configparser.ConfigParser, section: str, option: str, fallback:
 
 def _valid_psk(psk: str) -> bool:
   try:
+    if any(unicodedata.category(char) == "Cc" for char in psk):
+      return False
     size = len(psk.encode("utf-8"))
   except UnicodeEncodeError:
     return False
@@ -310,17 +313,20 @@ class NetworkStore:
   def write(self, profile: NetworkProfile) -> NetworkProfile:
     existing = self.get(profile.uuid)
     if existing is not None and not self.can_mutate(profile.uuid):
-      raise OSError(f"profile {profile.uuid} has a runtime shadow")
+      raise OSError(f"profile {profile.uuid} is read-only")
 
-    path = self._path(profile)
+    path = existing.path if existing is not None else self._path(profile)
     subprocess.run(["sudo", "install", "-d", "-m", "700", self._directory], check=True)
     with tempfile.NamedTemporaryFile("w", delete=False) as f:
       f.write(render_profile(profile))
       temp_path = f.name
+    stage_path = f"{path}.openpilot-update-{uuid.uuid4().hex}"
     try:
-      subprocess.run(["sudo", "install", "-m", "600", temp_path, path], check=True)
+      subprocess.run(["sudo", "install", "-m", "600", temp_path, stage_path], check=True)
+      subprocess.run(["sudo", "mv", "-f", stage_path, path], check=True)
     finally:
       os.unlink(temp_path)
+      subprocess.run(["sudo", "rm", "-f", stage_path], check=False)
     stored = replace(profile, path=path, persistent=True)
     self._profiles[stored.uuid] = stored
     return stored
