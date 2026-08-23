@@ -12,12 +12,13 @@ from openpilot.system.ui.lib.wifi_network_store import MeteredType, NetworkProfi
 from openpilot.system.ui.lib.wpa_ctrl import (SecurityType, WpaCtrl, WpaCtrlMonitor, dbm_to_percent,
                                                flags_to_security_type, is_valid_ssid, parse_event_network_id,
                                                parse_event_ssid, parse_scan_results, parse_status)
-from openpilot.system.ui.lib import wpa_supplicant
+from openpilot.system.ui.lib import wifi_tethering, wpa_supplicant
 
 
 SCAN_PERIOD_SECONDS = 5.0
 RECONCILE_PERIOD_SECONDS = 0.5
 CONNECT_TIMEOUT_SECONDS = 20.0
+DEFAULT_TETHERING_PASSWORD = "swagswagcomma"
 
 
 class ConnectStatus(IntEnum):
@@ -70,12 +71,28 @@ class _Forget:
   ssid: str
 
 
+@dataclass(frozen=True)
+class _SetTetheringActive:
+  active: bool
+
+
+@dataclass(frozen=True)
+class _SetTetheringPassword:
+  password: str
+
+
+@dataclass(frozen=True)
+class _SetIpv4Forward:
+  enabled: bool
+
+
 class _Stop:
   pass
 
 
 class WifiController:
-  def __init__(self, store: NetworkStore | None = None, dhcp: DhcpClient | None = None, start: bool = True):
+  def __init__(self, store: NetworkStore | None = None, dhcp: DhcpClient | None = None,
+               tethering_ssid: str = "weedle", tethering_password: str = DEFAULT_TETHERING_PASSWORD, start: bool = True):
     self._store = store or NetworkStore()
     self._dhcp = dhcp or DhcpClient()
     self._commands: queue.Queue[object] = queue.Queue()
@@ -93,6 +110,11 @@ class WifiController:
     self._connecting_since = 0.0
     self._last_scan = 0.0
     self._last_reconcile = 0.0
+    self._tethering = wifi_tethering.TetheringSession()
+    self._tethering_ssid = tethering_ssid
+    self._tethering_password = tethering_password
+    self._tethering_active = False
+    self._ipv4_forward = False
     self._owner_ident: int | None = None
     self._thread: threading.Thread | None = None
     self._exit = False
@@ -112,6 +134,14 @@ class WifiController:
       -network.strength,
       network.ssid.lower(),
     )))
+
+  @property
+  def tethering_active(self) -> bool:
+    return self._tethering_active
+
+  @property
+  def tethering_password(self) -> str:
+    return self._tethering_password
 
   def is_connection_saved(self, ssid: str) -> bool:
     return bool(self._store.profiles_for_ssid(ssid))
@@ -144,6 +174,15 @@ class WifiController:
   def forget(self, ssid: str):
     self._commands.put(_Forget(ssid))
 
+  def set_tethering_active(self, active: bool):
+    self._commands.put(_SetTetheringActive(active))
+
+  def set_tethering_password(self, password: str):
+    self._commands.put(_SetTetheringPassword(password))
+
+  def set_ipv4_forward(self, enabled: bool):
+    self._commands.put(_SetIpv4Forward(enabled))
+
   def get_callback(self) -> tuple[str, object | None] | None:
     try:
       return self._callbacks.get_nowait()
@@ -165,32 +204,30 @@ class WifiController:
   def _run(self):
     self._owner_ident = threading.get_ident()
     try:
+      wifi_tethering.TetheringSession.cleanup_stale()
       self._initialize_station()
       while not self._exit:
         self._drain_commands()
         if self._exit:
           break
 
-        if self._monitor is not None:
+        if not self._tethering_active and self._monitor is not None:
           event = self._monitor.recv(timeout=0.05)
           if event is not None:
             self._handle_wpa_event(event)
 
         now = time.monotonic()
-        if self._active and now - self._last_scan >= SCAN_PERIOD_SECONDS:
+        if not self._tethering_active and self._active and now - self._last_scan >= SCAN_PERIOD_SECONDS:
           self._scan()
           self._last_scan = now
-        if now - self._last_reconcile >= RECONCILE_PERIOD_SECONDS:
+        if not self._tethering_active and now - self._last_reconcile >= RECONCILE_PERIOD_SECONDS:
           self._reconcile()
           self._last_reconcile = now
     except Exception:
       cloudlog.exception("Wi-Fi controller failed")
     finally:
       clear_active_profile()
-      if self._monitor is not None:
-        self._monitor.close()
-      if self._ctrl is not None:
-        self._ctrl.close()
+      self._close_ctrl()
       self._owner_ident = None
 
   def _drain_commands(self):
@@ -206,24 +243,39 @@ class WifiController:
         return
       if isinstance(command, _SetActive):
         self._active = command.active
-        if command.active:
+        if command.active and not self._tethering_active:
           self._scan()
           self._last_scan = time.monotonic()
       elif isinstance(command, _Connect):
-        self._connect(command)
+        if not self._tethering_active:
+          self._connect(command)
       elif isinstance(command, _Activate):
-        self._activate(command.ssid)
+        if not self._tethering_active:
+          self._activate(command.ssid)
       elif isinstance(command, _SetMetered):
-        self._set_metered(command.metered)
+        if not self._tethering_active:
+          self._set_metered(command.metered)
       elif isinstance(command, _Forget):
-        self._forget(command.ssid)
+        if not self._tethering_active:
+          self._forget(command.ssid)
+      elif isinstance(command, _SetTetheringActive):
+        self._set_tethering_active(command.active)
+      elif isinstance(command, _SetTetheringPassword):
+        self._set_tethering_password(command.password)
+      elif isinstance(command, _SetIpv4Forward):
+        self._set_ipv4_forward(command.enabled)
 
-  def _initialize_station(self):
+  def _close_ctrl(self):
     self._assert_owner()
-    wpa_supplicant.write_station_config([profile.as_wpa_network() for profile in self._store.profiles()])
-    if not wpa_supplicant.start(wpa_supplicant.WPA_SUPPLICANT_CONF):
-      raise RuntimeError("failed to start station wpa_supplicant")
+    if self._monitor is not None:
+      self._monitor.close()
+      self._monitor = None
+    if self._ctrl is not None:
+      self._ctrl.close()
+      self._ctrl = None
 
+  def _open_station_ctrl(self):
+    self._assert_owner()
     self._ctrl = WpaCtrl()
     self._ctrl.open()
     self._request("RECONFIGURE")
@@ -231,6 +283,23 @@ class WifiController:
     self._monitor.open()
     self._sync_runtime_profiles()
     self._adopt_status(parse_status(self._request("STATUS")))
+
+  def _start_station(self) -> bool:
+    self._assert_owner()
+    wpa_supplicant.write_station_config([profile.as_wpa_network() for profile in self._store.profiles()])
+    if not wpa_supplicant.start(wpa_supplicant.WPA_SUPPLICANT_CONF):
+      return False
+    try:
+      self._open_station_ctrl()
+    except (OSError, RuntimeError):
+      self._close_ctrl()
+      return False
+    return True
+
+  def _initialize_station(self):
+    self._assert_owner()
+    if not self._start_station():
+      raise RuntimeError("failed to start station wpa_supplicant")
 
   def _sync_runtime_profiles(self):
     self._assert_owner()
@@ -275,6 +344,14 @@ class WifiController:
     if len(password) == 64 and all(char in "0123456789abcdefABCDEF" for char in password):
       return password
     return '"' + password.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+  @staticmethod
+  def _valid_tethering_password(password: str) -> bool:
+    try:
+      size = len(password.encode("utf-8"))
+    except UnicodeEncodeError:
+      return False
+    return 8 <= size <= 63 or len(password) == 64 and all(char in "0123456789abcdefABCDEF" for char in password)
 
   def _connect(self, command: _Connect):
     self._assert_owner()
@@ -428,6 +505,113 @@ class WifiController:
     except (OSError, RuntimeError):
       pass
     self._callbacks.put(("forgotten", ssid))
+
+  def _set_tethering_active(self, active: bool):
+    self._assert_owner()
+    if active == self._tethering_active:
+      return
+    if active:
+      self._enter_tethering()
+    else:
+      self._leave_tethering()
+
+  def _enter_tethering(self):
+    self._assert_owner()
+    if not self._valid_tethering_password(self._tethering_password):
+      self._callbacks.put(("tethering_failed", None))
+      return
+
+    wpa_supplicant.write_ap_config(self._tethering_ssid, self._tethering_password)
+    self._clear_l3()
+    self._close_ctrl()
+    if not wpa_supplicant.stop(wpa_supplicant.WPA_SUPPLICANT_CONF):
+      try:
+        self._open_station_ctrl()
+      except (OSError, RuntimeError):
+        pass
+      self._callbacks.put(("tethering_failed", None))
+      return
+
+    if not wpa_supplicant.start(wpa_supplicant.WPA_AP_CONF):
+      self._restore_station_after_tethering_failure()
+      self._callbacks.put(("tethering_failed", None))
+      return
+    if not self._tethering.start(self._ipv4_forward):
+      wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF)
+      self._restore_station_after_tethering_failure()
+      self._callbacks.put(("tethering_failed", None))
+      return
+
+    self._runtime_profiles = {}
+    self._pending_profile = None
+    self._temporary_network_id = None
+    self._replacement_network_id = None
+    self._requested_ssid = None
+    self._connecting_since = 0.0
+    self._tethering_active = True
+    self._state = WifiState(ssid=self._tethering_ssid, status=ConnectStatus.CONNECTED, ipv4_address=wifi_tethering.TETHERING_ADDRESS)
+    self._callbacks.put(("activated", None))
+
+  def _restore_station_after_tethering_failure(self):
+    self._assert_owner()
+    self._state = WifiState()
+    if not self._start_station():
+      cloudlog.error("Failed to restore station Wi-Fi after tethering transition")
+
+  def _leave_tethering(self):
+    self._assert_owner()
+    if not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
+      self._callbacks.put(("tethering_failed", None))
+      return
+    if not self._tethering.stop():
+      wpa_supplicant.start(wpa_supplicant.WPA_AP_CONF)
+      self._callbacks.put(("tethering_failed", None))
+      return
+
+    self._tethering_active = False
+    self._state = WifiState()
+    if self._start_station():
+      self._callbacks.put(("disconnected", None))
+      return
+
+    if wpa_supplicant.start(wpa_supplicant.WPA_AP_CONF) and self._tethering.start(self._ipv4_forward):
+      self._tethering_active = True
+      self._state = WifiState(ssid=self._tethering_ssid, status=ConnectStatus.CONNECTED, ipv4_address=wifi_tethering.TETHERING_ADDRESS)
+    self._callbacks.put(("tethering_failed", None))
+
+  def _set_tethering_password(self, password: str):
+    self._assert_owner()
+    if not self._valid_tethering_password(password) or password == self._tethering_password:
+      return
+    if not self._tethering_active:
+      self._tethering_password = password
+      return
+
+    old_password = self._tethering_password
+    if not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
+      self._callbacks.put(("tethering_failed", None))
+      return
+    wpa_supplicant.write_ap_config(self._tethering_ssid, password)
+    if wpa_supplicant.start(wpa_supplicant.WPA_AP_CONF):
+      self._tethering_password = password
+      return
+
+    wpa_supplicant.write_ap_config(self._tethering_ssid, old_password)
+    if not wpa_supplicant.start(wpa_supplicant.WPA_AP_CONF):
+      cloudlog.error("Failed to restore tethering after password update")
+    self._callbacks.put(("tethering_failed", None))
+
+  def _set_ipv4_forward(self, enabled: bool):
+    self._assert_owner()
+    if enabled == self._ipv4_forward:
+      return
+    if self._tethering_active:
+      try:
+        wifi_tethering.set_ipv4_forward(enabled)
+      except (OSError, RuntimeError):
+        self._callbacks.put(("tethering_failed", None))
+        return
+    self._ipv4_forward = enabled
 
   def _begin_selection(self, ssid: str):
     self._assert_owner()
