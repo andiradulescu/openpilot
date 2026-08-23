@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 from openpilot.common.swaglog import cloudlog
-from openpilot.system.ui.lib.wifi_controller import ConnectStatus as ControllerConnectStatus
 from openpilot.system.ui.lib.wifi_controller import WifiController
 from openpilot.system.ui.lib.wifi_network_store import MeteredType as StoreMeteredType
 from openpilot.system.ui.lib.wpa_ctrl import SecurityType as ControllerSecurityType
@@ -72,6 +71,7 @@ class WifiManager:
     self._forgotten: list[Callable[[str | None], None]] = []
     self._networks_updated: list[Callable[[list[Network]], None]] = []
     self._disconnected: list[Callable[[], None]] = []
+    self._ipv4_forward: bool | None = None
     self._last_snapshot = self._snapshot()
     atexit.register(self.stop)
 
@@ -147,6 +147,9 @@ class WifiManager:
     self._controller.set_tethering_password(password)
 
   def set_ipv4_forward(self, enabled: bool):
+    if enabled == self._ipv4_forward:
+      return
+    self._ipv4_forward = enabled
     self._controller.set_ipv4_forward(enabled)
 
   def set_tethering_active(self, active: bool):
@@ -188,12 +191,16 @@ class WifiManager:
         cloudlog.warning(f"Failed to forget Wi-Fi network {value!r}")
         for callback in self._forgotten:
           callback(value if isinstance(value, str) else None)
+        self._emit_networks_updated()
+        emitted_network_update = True
       elif name == "profile_readonly":
         cloudlog.warning(f"Wi-Fi profile is read-only: {value!r}")
         for callback in self._disconnected:
           callback()
       elif name == "tethering_failed":
         cloudlog.warning("Tethering operation failed")
+        self._emit_networks_updated()
+        emitted_network_update = True
 
     snapshot = self._snapshot()
     if snapshot != self._last_snapshot and not emitted_network_update:
