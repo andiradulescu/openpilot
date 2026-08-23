@@ -82,14 +82,17 @@ def clear_interface() -> None:
   subprocess.run(["sudo", "ip", "route", "flush", "dev", "wlan0"], capture_output=True, check=False)
 
 
+def get_ipv4_forward() -> bool:
+  try:
+    return Path("/proc/sys/net/ipv4/ip_forward").read_text().strip() == "1"
+  except OSError:
+    return False
+
+
 def set_ipv4_forward(enabled: bool) -> None:
   value = "1" if enabled else "0"
-  path = Path("/proc/sys/net/ipv4/ip_forward")
-  try:
-    if path.read_text().strip() == value:
-      return
-  except OSError:
-    pass
+  if get_ipv4_forward() == enabled:
+    return
   subprocess.run(["sudo", "sysctl", f"net.ipv4.ip_forward={value}"], check=True)
 
 
@@ -150,3 +153,61 @@ def firewall_ready() -> bool:
   _, _, rules, jumps = _commands()
   checks = [_replace_operation(command, "-C") for command in (*rules, *jumps)]
   return all(subprocess.run(command, capture_output=True, check=False).returncode == 0 for command in checks)
+
+
+class TetheringSession:
+  def __init__(self):
+    self._previous_ipv4_forward: bool | None = None
+
+  def start(self, ipv4_forward: bool) -> bool:
+    if self._previous_ipv4_forward is not None:
+      return dnsmasq_running() and firewall_ready()
+
+    self._previous_ipv4_forward = get_ipv4_forward()
+    try:
+      configure_interface()
+      install_firewall()
+      set_ipv4_forward(ipv4_forward)
+      if not start_dnsmasq():
+        raise RuntimeError("failed to start tethering dnsmasq")
+      return True
+    except (OSError, subprocess.SubprocessError, RuntimeError):
+      self._rollback_start()
+      return False
+
+  def _rollback_start(self) -> None:
+    if dnsmasq_running() and not stop_dnsmasq():
+      return
+    remove_firewall()
+    clear_interface()
+    if self._previous_ipv4_forward is not None:
+      try:
+        set_ipv4_forward(self._previous_ipv4_forward)
+      except (OSError, subprocess.SubprocessError):
+        pass
+    self._previous_ipv4_forward = None
+
+  def stop(self) -> bool:
+    if not stop_dnsmasq():
+      return False
+    remove_firewall()
+    clear_interface()
+    if self._previous_ipv4_forward is not None:
+      try:
+        set_ipv4_forward(self._previous_ipv4_forward)
+      except (OSError, subprocess.SubprocessError):
+        return False
+    self._previous_ipv4_forward = None
+    return True
+
+  @staticmethod
+  def cleanup_stale() -> bool:
+    if not stop_dnsmasq():
+      return False
+    remove_firewall()
+    clear_interface()
+    try:
+      set_ipv4_forward(False)
+    except (OSError, subprocess.SubprocessError):
+      return False
+    return True
