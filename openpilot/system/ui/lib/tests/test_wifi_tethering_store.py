@@ -1,3 +1,4 @@
+import os
 import tempfile
 from pathlib import Path
 from unittest import TestCase
@@ -56,6 +57,9 @@ class TestTetheringProfile(TestCase):
     assert parsed.ssid == profile.ssid
     assert parsed.password == profile.password
 
+  def test_rejects_control_characters_in_password(self):
+    assert parse_tethering_profile(master_profile("password\\n123")) is None
+
 
 class TestTetheringStore(TestCase):
   def test_runtime_shadow_makes_persistent_profile_read_only(self):
@@ -91,12 +95,16 @@ class TestTetheringStore(TestCase):
 
   def test_ensure_creates_rollback_profile_when_missing(self):
     with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
-      installed = []
+      commands = []
 
       def run(command, **kwargs):
+        commands.append(command)
         if command[:2] == ["sudo", "install"] and "-d" not in command:
           Path(command[-1]).write_bytes(Path(command[-2]).read_bytes())
-          installed.append(command[-1])
+        elif command[:3] == ["sudo", "mv", "-f"]:
+          os.replace(command[3], command[4])
+        elif command[:3] == ["sudo", "rm", "-f"]:
+          Path(command[3]).unlink(missing_ok=True)
         return type("Result", (), {"returncode": 0})()
 
       with patch("openpilot.system.ui.lib.wifi_tethering_store.subprocess.run", side_effect=run):
@@ -105,5 +113,10 @@ class TestTetheringStore(TestCase):
 
       assert profile is not None
       assert profile.persistent
-      assert len(installed) == 1
-      assert parse_tethering_profile(Path(installed[0]).read_text()) is not None
+      path = Path(profile.path)
+      assert path.exists()
+      assert parse_tethering_profile(path.read_text()) is not None
+      install = next(command for command in commands if command[:2] == ["sudo", "install"] and "-d" not in command)
+      move = next(command for command in commands if command[:3] == ["sudo", "mv", "-f"])
+      assert install[-1] != str(path)
+      assert move[-1] == str(path)
