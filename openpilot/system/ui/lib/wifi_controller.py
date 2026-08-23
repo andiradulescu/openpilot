@@ -102,6 +102,7 @@ class WifiController:
     self._callbacks: queue.Queue[tuple[str, object | None]] = queue.Queue()
     self._state = WifiState()
     self._networks: tuple[Network, ...] = ()
+    self._saved_ssids: frozenset[str] = frozenset()
     self._active = False
     self._ctrl: WpaCtrl | None = None
     self._monitor: WpaCtrlMonitor | None = None
@@ -130,10 +131,9 @@ class WifiController:
 
   @property
   def networks(self) -> tuple[Network, ...]:
-    saved = {profile.ssid for profile in self._store.profiles()}
     return tuple(sorted(self._networks, key=lambda network: (
       network.ssid != self._state.ssid,
-      network.ssid not in saved,
+      network.ssid not in self._saved_ssids,
       -network.strength,
       network.ssid.lower(),
     )))
@@ -147,7 +147,7 @@ class WifiController:
     return self._tethering_password
 
   def is_connection_saved(self, ssid: str) -> bool:
-    return bool(self._store.profiles_for_ssid(ssid))
+    return ssid in self._saved_ssids
 
   def start(self):
     if self._thread is not None:
@@ -207,6 +207,9 @@ class WifiController:
   def _run(self):
     self._owner_ident = threading.get_ident()
     try:
+      self._store.recover()
+      self._tethering_store.recover()
+      self._refresh_saved_ssids()
       if wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF) and not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
         raise RuntimeError("failed to stop stale tethering wpa_supplicant")
       if not wifi_tethering.TetheringSession.cleanup_stale():
@@ -271,6 +274,10 @@ class WifiController:
         self._set_tethering_password(command.password)
       elif isinstance(command, _SetIpv4Forward):
         self._set_ipv4_forward(command.enabled)
+
+  def _refresh_saved_ssids(self):
+    self._assert_owner()
+    self._saved_ssids = frozenset(profile.ssid for profile in self._store.profiles())
 
   def _initialize_tethering_profile(self):
     self._assert_owner()
@@ -460,6 +467,7 @@ class WifiController:
       return
     profile = self._store.set_metered(profile_uuid, metered)
     if profile is None:
+      self._callbacks.put(("settings_failed", self._state.ssid))
       return
     self._state = WifiState(
       ssid=self._state.ssid,
@@ -496,6 +504,7 @@ class WifiController:
       self._callbacks.put(("forget_failed", ssid))
       return
 
+    self._refresh_saved_ssids()
     if self._state.ssid == ssid or self._requested_ssid == ssid:
       self._clear_l3()
       self._state = WifiState()
@@ -750,6 +759,7 @@ class WifiController:
     if self._pending_profile is not None and profile_uuid == self._pending_profile.uuid:
       try:
         stored = self._store.write(self._pending_profile)
+        self._refresh_saved_ssids()
         new_network_id = self._temporary_network_id
         if self._replacement_network_id is not None and self._replacement_network_id != new_network_id:
           try:
