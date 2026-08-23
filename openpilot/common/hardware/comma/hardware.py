@@ -1,4 +1,3 @@
-import configparser
 import json
 import os
 import socket
@@ -9,6 +8,7 @@ from pathlib import Path
 
 from openpilot.cereal import log
 from openpilot.common.utils import sudo_read, sudo_write
+from openpilot.common.wifi import WPA_CTRL_PATH, read_active_profile
 from openpilot.common.gpio import gpio_set, gpio_init, get_irqs_for_action
 from openpilot.common.esim.base import LPABase
 from openpilot.common.hardware.base import HardwareBase, ThermalConfig, ThermalZone
@@ -16,6 +16,7 @@ from openpilot.common.hardware.comma.pins import GPIO
 from openpilot.common.hardware.comma.amplifier import Amplifier
 
 MODEM_STATE_PATH = "/dev/shm/modem"
+LEGACY_WPA_CTRL_PATH = "/run/wpa_supplicant/wlan0"
 
 NetworkType = log.DeviceState.NetworkType
 NetworkStrength = log.DeviceState.NetworkStrength
@@ -38,19 +39,24 @@ def get_device_type():
   return model.split('comma ')[-1]
 
 def wpa_supplicant_cmd(cmd: str, timeout: float = 0.2) -> dict[str, str]:
-  with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
-    sock.settimeout(timeout)
-    sock.bind(f"\0openpilot-wpa-{os.getpid()}-{time.monotonic_ns()}")
-    sock.connect("/run/wpa_supplicant/wlan0")
-    sock.send(cmd.encode())
+  for ctrl_path in (WPA_CTRL_PATH, LEGACY_WPA_CTRL_PATH):
+    try:
+      with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(timeout)
+        sock.bind(f"\0openpilot-wpa-{os.getpid()}-{time.monotonic_ns()}")
+        sock.connect(ctrl_path)
+        sock.send(cmd.encode())
 
-    while True:
-      out = sock.recv(8192).decode("utf-8", "replace")
-      if out.startswith("<"):
-        continue
-      if out.startswith("FAIL"):
-        return {}
-      return dict(l.split("=", 1) for l in out.splitlines() if "=" in l)
+        while True:
+          out = sock.recv(8192).decode("utf-8", "replace")
+          if out.startswith("<"):
+            continue
+          if out.startswith("FAIL"):
+            return {}
+          return dict(l.split("=", 1) for l in out.splitlines() if "=" in l)
+    except OSError:
+      continue
+  return {}
 
 def get_default_route_iface():
   with open("/proc/net/route") as f:
@@ -211,31 +217,13 @@ class HardwareComma(HardwareBase):
       return Params().get_bool("GsmMetered")
     try:
       if network_type == NetworkType.wifi:
-        ssid = wpa_supplicant_cmd("STATUS").get("ssid", "")
-        if ssid:
-          # wpa_supplicant escapes non-printable bytes as \xNN; NM keyfile stores ASCII SSIDs as a literal and others as a byte;byte; list
-          ssid_bytes = ssid.encode().decode('unicode_escape').encode('latin-1')
-          ssid_keyfile_list = ';'.join(str(b) for b in ssid_bytes) + ';'
-
-          nm_dirs = ("/run/NetworkManager/system-connections", "/data/etc/NetworkManager/system-connections")
-          for fpath in (p for d in nm_dirs for p in Path(d).glob("*.nmconnection")):
-            raw = sudo_read(str(fpath))
-            if not raw:
-              continue
-            cp = configparser.ConfigParser(interpolation=None)
-            try:
-              cp.read_string(raw)
-              keyfile_ssid = cp.get("wifi", "ssid", fallback="")
-              if keyfile_ssid != ssid and keyfile_ssid != ssid_keyfile_list:
-                continue
-              metered = cp.getint("connection", "metered", fallback=0)
-            except (configparser.Error, ValueError):
-              continue
-            if metered == 1:  # NM_METERED_YES
-              return True
-            if metered == 2:  # NM_METERED_NO
-              return False
-            break
+        profile_uuid = wpa_supplicant_cmd("STATUS").get("id_str", "").strip('"')
+        active_profile = read_active_profile()
+        if active_profile is not None and active_profile[0] == profile_uuid:
+          if active_profile[1] == 1:
+            return True
+          if active_profile[1] == 2:
+            return False
     except Exception:
       pass
 
