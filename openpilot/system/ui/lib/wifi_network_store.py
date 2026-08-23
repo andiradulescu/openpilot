@@ -224,6 +224,7 @@ class NetworkStore:
     self._directory = directory
     self._runtime_directory = RUNTIME_CONNECTIONS_DIR if runtime_directory is None and directory == NM_CONNECTIONS_DIR else runtime_directory
     self._profiles: dict[str, NetworkProfile] = {}
+    self._runtime_uuids: set[str] = set()
     self._recover_forgets()
     self.reload()
 
@@ -256,6 +257,7 @@ class NetworkStore:
 
   def reload(self) -> None:
     profiles: dict[str, NetworkProfile] = {}
+    runtime_uuids: set[str] = set()
     for directory, persistent in ((self._directory, True), (self._runtime_directory, False)):
       if directory is None:
         continue
@@ -269,9 +271,14 @@ class NetworkStore:
         path = os.path.join(directory, filename)
         raw = sudo_read(path)
         profile = parse_profile(raw, path, persistent) if raw else None
-        if profile is not None and (profile.uuid not in profiles or persistent):
+        if profile is None:
+          continue
+        if not persistent:
+          runtime_uuids.add(profile.uuid)
+        if profile.uuid not in profiles or persistent:
           profiles[profile.uuid] = profile
     self._profiles = profiles
+    self._runtime_uuids = runtime_uuids
 
   def profiles(self) -> list[NetworkProfile]:
     return list(self._profiles.values())
@@ -287,11 +294,24 @@ class NetworkStore:
     profile = self.get(profile_uuid)
     return profile.metered if profile is not None else MeteredType.UNKNOWN
 
+  def can_mutate(self, profile_uuid: str) -> bool:
+    profile = self.get(profile_uuid)
+    return (
+      profile is not None
+      and profile.persistent
+      and profile.uuid not in self._runtime_uuids
+      and profile.path.startswith(self._directory + os.sep)
+    )
+
   def _path(self, profile: NetworkProfile) -> str:
     safe_ssid = profile.ssid.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace").replace("/", "_")
     return os.path.join(self._directory, f"{profile.uuid}-{safe_ssid}.nmconnection")
 
   def write(self, profile: NetworkProfile) -> NetworkProfile:
+    existing = self.get(profile.uuid)
+    if existing is not None and not self.can_mutate(profile.uuid):
+      raise OSError(f"profile {profile.uuid} has a runtime shadow")
+
     path = self._path(profile)
     subprocess.run(["sudo", "install", "-d", "-m", "700", self._directory], check=True)
     with tempfile.NamedTemporaryFile("w", delete=False) as f:
@@ -307,7 +327,7 @@ class NetworkStore:
 
   def set_metered(self, profile_uuid: str, metered: MeteredType) -> NetworkProfile | None:
     profile = self.get(profile_uuid)
-    if profile is None or not profile.persistent:
+    if profile is None or not self.can_mutate(profile_uuid):
       return None
     return self.write(replace(profile, metered=metered))
 
@@ -315,7 +335,7 @@ class NetworkStore:
     profiles = self.profiles_for_ssid(ssid)
     if not profiles:
       return True
-    if any(not profile.persistent or not profile.path.startswith(self._directory + os.sep) for profile in profiles):
+    if any(not self.can_mutate(profile.uuid) for profile in profiles):
       return False
 
     token = uuid.uuid4().hex
