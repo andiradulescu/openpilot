@@ -225,6 +225,18 @@ class TestNetworkStore(TestCase):
       assert commands[install_idx][-1] != str(existing_path)
       assert commands[move_idx][-1] == str(existing_path)
 
+  def test_constructor_does_not_recover(self):
+    with tempfile.TemporaryDirectory() as persistent:
+      staged = Path(persistent) / f"test.nmconnection.openpilot-forget-{'a' * 32}"
+      staged.write_text(profile_text())
+
+      with patch("openpilot.system.ui.lib.wifi_network_store.subprocess.run") as run:
+        store = NetworkStore(persistent, None)
+
+      run.assert_not_called()
+      assert store.profiles() == []
+      assert staged.exists()
+
   def test_uncommitted_forget_is_restored(self):
     with tempfile.TemporaryDirectory() as persistent:
       original = Path(persistent) / "test.nmconnection"
@@ -240,10 +252,12 @@ class TestNetworkStore(TestCase):
         patch("openpilot.system.ui.lib.wifi_network_store.subprocess.run", side_effect=run),
         patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=lambda path: Path(path).read_text()),
       ):
-        NetworkStore(persistent, None)
+        store = NetworkStore(persistent, None)
+        store.recover()
 
       assert original.exists()
       assert not staged.exists()
+      assert store.get(PROFILE_UUID) is not None
 
   def test_committed_forget_is_not_restored_when_cleanup_fails(self):
     with tempfile.TemporaryDirectory() as persistent:
@@ -260,6 +274,7 @@ class TestNetworkStore(TestCase):
 
       with patch("openpilot.system.ui.lib.wifi_network_store.subprocess.run", side_effect=run):
         store = NetworkStore(persistent, None)
+        store.recover()
 
       assert store.profiles() == []
       assert not original.exists()
