@@ -155,6 +155,16 @@ def firewall_ready() -> bool:
   return all(subprocess.run(command, capture_output=True, check=False).returncode == 0 for command in checks)
 
 
+def firewall_present() -> bool:
+  nat, filt, _, _ = _commands()
+  checks = (
+    [*nat, "-S", NAT_CHAIN],
+    [*filt, "-S", INPUT_CHAIN],
+    [*filt, "-S", FORWARD_CHAIN],
+  )
+  return any(subprocess.run(command, capture_output=True, check=False).returncode == 0 for command in checks)
+
+
 class TetheringSession:
   def __init__(self):
     self._previous_ipv4_forward: bool | None = None
@@ -202,6 +212,8 @@ class TetheringSession:
 
   @staticmethod
   def cleanup_stale() -> bool:
+    if not dnsmasq_running() and not firewall_present():
+      return True
     if not stop_dnsmasq():
       return False
     remove_firewall()
