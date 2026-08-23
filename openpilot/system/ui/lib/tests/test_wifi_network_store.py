@@ -143,6 +143,21 @@ class TestNetworkStore(TestCase):
 
       assert store.metered(PROFILE_UUID) == MeteredType.YES
       assert store.get(PROFILE_UUID).persistent
+      assert not store.can_mutate(PROFILE_UUID)
+      assert store.set_metered(PROFILE_UUID, MeteredType.NO) is None
+      assert not store.remove_ssid("TestNet")
+      assert persistent_path.exists()
+      assert runtime_path.exists()
+
+  def test_persistent_profile_without_runtime_shadow_can_be_mutated(self):
+    with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
+      persistent_path = Path(persistent) / "persistent.nmconnection"
+      persistent_path.write_text(profile_text())
+
+      with patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=lambda path: Path(path).read_text()):
+        store = NetworkStore(persistent, runtime)
+
+      assert store.can_mutate(PROFILE_UUID)
 
   def test_runtime_only_profile_cannot_be_mutated(self):
     with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
