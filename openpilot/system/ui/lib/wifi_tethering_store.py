@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import tempfile
+import unicodedata
 import uuid
 from dataclasses import dataclass, replace
 
@@ -55,6 +56,8 @@ def _encode_ssid(value: str) -> str:
 
 def _valid_password(password: str) -> bool:
   try:
+    if any(unicodedata.category(char) == "Cc" for char in password):
+      return False
     size = len(password.encode("utf-8"))
   except UnicodeEncodeError:
     return False
@@ -171,7 +174,7 @@ class TetheringStore:
     profile = self.get(ssid)
     if profile is not None:
       return profile
-    if any(item.ssid == ssid for item in self._profiles.values()):
+    if any(item.ssid == ssid for item in self._profiles.values()) or not _valid_password(password):
       return None
     profile = TetheringProfile(str(uuid.uuid4()), ssid, password)
     return self._write(profile, render_tethering_profile(profile))
@@ -204,10 +207,13 @@ class TetheringStore:
     with tempfile.NamedTemporaryFile("w", delete=False) as f:
       f.write(raw)
       temp_path = f.name
+    stage_path = f"{path}.openpilot-update-{uuid.uuid4().hex}"
     try:
-      subprocess.run(["sudo", "install", "-m", "600", temp_path, path], check=True)
+      subprocess.run(["sudo", "install", "-m", "600", temp_path, stage_path], check=True)
+      subprocess.run(["sudo", "mv", "-f", stage_path, path], check=True)
     finally:
       os.unlink(temp_path)
+      subprocess.run(["sudo", "rm", "-f", stage_path], check=False)
     stored = replace(profile, path=path, persistent=True, raw=raw)
     self._profiles[stored.uuid] = stored
     return stored
