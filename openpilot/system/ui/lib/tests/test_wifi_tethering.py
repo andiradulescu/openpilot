@@ -97,3 +97,15 @@ class TestTethering(TestCase):
 
     remove_firewall.assert_called_once()
     clear_interface.assert_called_once()
+
+  def test_clean_startup_does_not_touch_global_forwarding(self):
+    with (
+      patch.object(wifi_tethering, "dnsmasq_running", return_value=False),
+      patch.object(wifi_tethering, "firewall_present", return_value=False),
+      patch.object(wifi_tethering, "set_ipv4_forward") as set_forward,
+      patch.object(wifi_tethering, "clear_interface") as clear_interface,
+    ):
+      assert wifi_tethering.TetheringSession.cleanup_stale()
+
+    set_forward.assert_not_called()
+    clear_interface.assert_not_called()
