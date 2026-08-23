@@ -50,3 +50,50 @@ class TestTethering(TestCase):
       assert not wifi_tethering.stop_dnsmasq(timeout=2.0)
 
     assert run.call_args_list == [call(["sudo", "kill", "123"], check=False)]
+
+  def test_session_restores_previous_forwarding_state(self):
+    session = wifi_tethering.TetheringSession()
+    with (
+      patch.object(wifi_tethering, "get_ipv4_forward", return_value=True),
+      patch.object(wifi_tethering, "configure_interface"),
+      patch.object(wifi_tethering, "install_firewall"),
+      patch.object(wifi_tethering, "set_ipv4_forward") as set_forward,
+      patch.object(wifi_tethering, "start_dnsmasq", return_value=True),
+      patch.object(wifi_tethering, "stop_dnsmasq", return_value=True),
+      patch.object(wifi_tethering, "remove_firewall"),
+      patch.object(wifi_tethering, "clear_interface"),
+    ):
+      assert session.start(False)
+      assert session.stop()
+
+    assert set_forward.call_args_list == [call(False), call(True)]
+
+  def test_session_keeps_resources_when_dnsmasq_will_not_stop(self):
+    session = wifi_tethering.TetheringSession()
+    session._previous_ipv4_forward = False
+    with (
+      patch.object(wifi_tethering, "stop_dnsmasq", return_value=False),
+      patch.object(wifi_tethering, "remove_firewall") as remove_firewall,
+      patch.object(wifi_tethering, "clear_interface") as clear_interface,
+    ):
+      assert not session.stop()
+
+    remove_firewall.assert_not_called()
+    clear_interface.assert_not_called()
+
+  def test_failed_start_rolls_back_resources(self):
+    session = wifi_tethering.TetheringSession()
+    with (
+      patch.object(wifi_tethering, "get_ipv4_forward", return_value=False),
+      patch.object(wifi_tethering, "configure_interface"),
+      patch.object(wifi_tethering, "install_firewall"),
+      patch.object(wifi_tethering, "set_ipv4_forward"),
+      patch.object(wifi_tethering, "start_dnsmasq", return_value=False),
+      patch.object(wifi_tethering, "dnsmasq_running", return_value=False),
+      patch.object(wifi_tethering, "remove_firewall") as remove_firewall,
+      patch.object(wifi_tethering, "clear_interface") as clear_interface,
+    ):
+      assert not session.start(True)
+
+    remove_firewall.assert_called_once()
+    clear_interface.assert_called_once()
