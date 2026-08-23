@@ -25,6 +25,7 @@ def make_controller(profiles=()):
   controller = WifiController(store=store, dhcp=dhcp, tethering_store=tethering_store, start=False)
   controller._owner_ident = threading.get_ident()
   controller._ctrl = MagicMock()
+  controller._saved_ssids = frozenset(profile.ssid for profile in profiles)
   return controller, store, dhcp
 
 
@@ -47,6 +48,41 @@ class TestWifiController(TestCase):
     thread.start()
     thread.join()
     assert errors == [True]
+
+  def test_public_saved_network_reads_do_not_touch_store(self):
+    profile = NetworkProfile(UUID_A, "Saved", SecurityType.WPA, "password123")
+    controller, store, _ = make_controller((profile,))
+    controller._networks = (wifi_controller.Network("Saved", 50, SecurityType.WPA),)
+    store.reset_mock()
+
+    assert controller.is_connection_saved("Saved")
+    assert controller.networks[0].ssid == "Saved"
+    store.profiles.assert_not_called()
+    store.profiles_for_ssid.assert_not_called()
+
+  def test_owner_recovers_stores_before_initialization(self):
+    controller, store, _ = make_controller()
+    events = []
+    controller._ctrl = None
+    controller._monitor = None
+    store.recover.side_effect = lambda: events.append("store")
+    controller._tethering_store.recover.side_effect = lambda: events.append("tethering_store")
+    controller._refresh_saved_ssids = MagicMock(side_effect=lambda: events.append("snapshot"))
+    controller._initialize_tethering_profile = MagicMock(side_effect=lambda: events.append("tethering_profile"))
+    controller._initialize_station = MagicMock(side_effect=lambda: events.append("station"))
+
+    def drain():
+      controller._exit = True
+
+    controller._drain_commands = MagicMock(side_effect=drain)
+    controller._close_ctrl = MagicMock()
+    with (
+      patch.object(wifi_controller.wpa_supplicant, "is_running", return_value=False),
+      patch.object(wifi_controller.wifi_tethering.TetheringSession, "cleanup_stale", return_value=True),
+    ):
+      controller._run()
+
+    assert events == ["store", "tethering_store", "snapshot", "tethering_profile", "station"]
 
   def test_activate_enables_all_profiles_for_same_ssid(self):
     profiles = (
@@ -187,11 +223,13 @@ class TestWifiController(TestCase):
     events = []
     controller._request = MagicMock(side_effect=lambda command: events.append(command) or "OK")
     store.remove_ssid.side_effect = lambda ssid: events.append(f"remove:{ssid}") or True
+    store.profiles.return_value = []
 
     with patch.object(wifi_controller.wpa_supplicant, "write_station_config"):
       controller._forget("Test")
 
     assert events[0:2] == ["DISABLE_NETWORK 3", "remove:Test"]
+    assert not controller.is_connection_saved("Test")
     assert controller.get_callback() == ("forgotten", "Test")
 
   def test_set_metered_updates_exact_active_profile(self):
@@ -206,6 +244,16 @@ class TestWifiController(TestCase):
     store.set_metered.assert_called_once_with(UUID_A, MeteredType.YES)
     self.write_active.assert_called_once_with(UUID_A, int(MeteredType.YES))
     assert controller.state.metered == MeteredType.YES
+
+  def test_failed_metered_update_emits_settings_failure(self):
+    profile = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "password123")
+    controller, store, _ = make_controller((profile,))
+    controller._state = controller.state.__class__(ssid="Test", status=ConnectStatus.CONNECTED, profile_uuid=UUID_A)
+    store.set_metered.return_value = None
+
+    controller._set_metered(MeteredType.YES)
+
+    assert controller.get_callback() == ("settings_failed", "Test")
 
   def test_enter_tethering_switches_from_station(self):
     controller, _, _ = make_controller()
