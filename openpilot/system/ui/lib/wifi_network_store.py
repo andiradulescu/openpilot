@@ -17,6 +17,7 @@ NM_CONNECTIONS_DIR = "/data/etc/NetworkManager/system-connections"
 RUNTIME_CONNECTIONS_DIR = "/run/NetworkManager/system-connections"
 _FORGET_RE = re.compile(r"^(?P<name>.+\.nmconnection)\.openpilot-forget-(?P<token>[0-9a-f]{32})$")
 _FORGET_MARKER_RE = re.compile(r"^\.openpilot-forget-committed-(?P<token>[0-9a-f]{32})$")
+_UPDATE_RE = re.compile(r"^.+\.nmconnection\.openpilot-update-[0-9a-f]{32}$")
 
 
 class MeteredType(IntEnum):
@@ -228,7 +229,17 @@ class NetworkStore:
     self._runtime_directory = RUNTIME_CONNECTIONS_DIR if runtime_directory is None and directory == NM_CONNECTIONS_DIR else runtime_directory
     self._profiles: dict[str, NetworkProfile] = {}
     self._runtime_uuids: set[str] = set()
+    self.reload()
+
+  def recover(self) -> None:
     self._recover_forgets()
+    try:
+      filenames = sorted(os.listdir(self._directory))
+    except OSError:
+      filenames = []
+    for filename in filenames:
+      if _UPDATE_RE.fullmatch(filename):
+        subprocess.run(["sudo", "rm", "-f", os.path.join(self._directory, filename)], check=False)
     self.reload()
 
   def _recover_forgets(self) -> None:
