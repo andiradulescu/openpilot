@@ -1,6 +1,7 @@
 import queue
 import threading
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from enum import IntEnum
@@ -9,6 +10,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.wifi import clear_active_profile, write_active_profile
 from openpilot.system.ui.lib.dhcp_client import DhcpClient
 from openpilot.system.ui.lib.wifi_network_store import MeteredType, NetworkProfile, NetworkStore
+from openpilot.system.ui.lib.wifi_tethering_store import TetheringStore
 from openpilot.system.ui.lib.wpa_ctrl import (SecurityType, WpaCtrl, WpaCtrlMonitor, dbm_to_percent,
                                                flags_to_security_type, is_valid_ssid, parse_event_network_id,
                                                parse_event_ssid, parse_scan_results, parse_status)
@@ -91,10 +93,11 @@ class _Stop:
 
 
 class WifiController:
-  def __init__(self, store: NetworkStore | None = None, dhcp: DhcpClient | None = None,
+  def __init__(self, store: NetworkStore | None = None, dhcp: DhcpClient | None = None, tethering_store: TetheringStore | None = None,
                tethering_ssid: str = "weedle", tethering_password: str = DEFAULT_TETHERING_PASSWORD, start: bool = True):
     self._store = store or NetworkStore()
     self._dhcp = dhcp or DhcpClient()
+    self._tethering_store = tethering_store or TetheringStore()
     self._commands: queue.Queue[object] = queue.Queue()
     self._callbacks: queue.Queue[tuple[str, object | None]] = queue.Queue()
     self._state = WifiState()
@@ -204,7 +207,11 @@ class WifiController:
   def _run(self):
     self._owner_ident = threading.get_ident()
     try:
-      wifi_tethering.TetheringSession.cleanup_stale()
+      if wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF) and not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
+        raise RuntimeError("failed to stop stale tethering wpa_supplicant")
+      if not wifi_tethering.TetheringSession.cleanup_stale():
+        raise RuntimeError("failed to clean up stale tethering resources")
+      self._initialize_tethering_profile()
       self._initialize_station()
       while not self._exit:
         self._drain_commands()
@@ -264,6 +271,16 @@ class WifiController:
         self._set_tethering_password(command.password)
       elif isinstance(command, _SetIpv4Forward):
         self._set_ipv4_forward(command.enabled)
+
+  def _initialize_tethering_profile(self):
+    self._assert_owner()
+    try:
+      profile = self._tethering_store.ensure(self._tethering_ssid, self._tethering_password)
+    except OSError:
+      cloudlog.exception("Failed to initialize tethering profile")
+      return
+    if profile is not None:
+      self._tethering_password = profile.password
 
   def _close_ctrl(self):
     self._assert_owner()
@@ -340,36 +357,35 @@ class WifiController:
     self._callbacks.put(("networks_updated", None))
 
   @staticmethod
-  def _psk_value(password: str) -> str:
-    if len(password) == 64 and all(char in "0123456789abcdefABCDEF" for char in password):
-      return password
-    return '"' + password.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-  @staticmethod
-  def _valid_tethering_password(password: str) -> bool:
+  def _valid_psk(password: str) -> bool:
     try:
+      if any(unicodedata.category(char) == "Cc" for char in password):
+        return False
       size = len(password.encode("utf-8"))
     except UnicodeEncodeError:
       return False
     return 8 <= size <= 63 or len(password) == 64 and all(char in "0123456789abcdefABCDEF" for char in password)
+
+  @staticmethod
+  def _psk_value(password: str) -> str:
+    if len(password) == 64 and all(char in "0123456789abcdefABCDEF" for char in password):
+      return password
+    return '"' + password.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
   def _connect(self, command: _Connect):
     self._assert_owner()
     if not is_valid_ssid(command.ssid):
       self._callbacks.put(("need_auth", command.ssid))
       return
-    if command.security == SecurityType.WPA:
-      try:
-        password_size = len(command.password.encode("utf-8"))
-      except UnicodeEncodeError:
-        password_size = 0
-      raw_psk = len(command.password) == 64 and all(char in "0123456789abcdefABCDEF" for char in command.password)
-      if not raw_psk and not 8 <= password_size <= 63:
-        self._callbacks.put(("need_auth", command.ssid))
-        return
+    if command.security == SecurityType.WPA and not self._valid_psk(command.password):
+      self._callbacks.put(("need_auth", command.ssid))
+      return
 
     existing = self._store.profiles_for_ssid(command.ssid)
-    if len(existing) == 1 and existing[0].persistent:
+    if existing:
+      if len(existing) != 1 or not self._store.can_mutate(existing[0].uuid):
+        self._callbacks.put(("profile_readonly", command.ssid))
+        return
       old = existing[0]
       profile = NetworkProfile(
         uuid=old.uuid,
@@ -517,7 +533,7 @@ class WifiController:
 
   def _enter_tethering(self):
     self._assert_owner()
-    if not self._valid_tethering_password(self._tethering_password):
+    if not self._valid_psk(self._tethering_password):
       self._callbacks.put(("tethering_failed", None))
       return
 
@@ -581,10 +597,18 @@ class WifiController:
 
   def _set_tethering_password(self, password: str):
     self._assert_owner()
-    if not self._valid_tethering_password(password) or password == self._tethering_password:
+    if not self._valid_psk(password) or password == self._tethering_password:
       return
+
     if not self._tethering_active:
-      self._tethering_password = password
+      try:
+        profile = self._tethering_store.set_password(self._tethering_ssid, password)
+      except OSError:
+        profile = None
+      if profile is None:
+        self._callbacks.put(("tethering_failed", None))
+        return
+      self._tethering_password = profile.password
       return
 
     old_password = self._tethering_password
@@ -592,14 +616,27 @@ class WifiController:
       self._callbacks.put(("tethering_failed", None))
       return
     wpa_supplicant.write_ap_config(self._tethering_ssid, password)
-    if wpa_supplicant.start(wpa_supplicant.WPA_AP_CONF):
-      self._tethering_password = password
+    if not wpa_supplicant.start(wpa_supplicant.WPA_AP_CONF):
+      self._restore_tethering_password(old_password)
+      self._callbacks.put(("tethering_failed", None))
       return
 
-    wpa_supplicant.write_ap_config(self._tethering_ssid, old_password)
+    try:
+      profile = self._tethering_store.set_password(self._tethering_ssid, password)
+    except OSError:
+      profile = None
+    if profile is None:
+      wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF)
+      self._restore_tethering_password(old_password)
+      self._callbacks.put(("tethering_failed", None))
+      return
+    self._tethering_password = profile.password
+
+  def _restore_tethering_password(self, password: str):
+    self._assert_owner()
+    wpa_supplicant.write_ap_config(self._tethering_ssid, password)
     if not wpa_supplicant.start(wpa_supplicant.WPA_AP_CONF):
       cloudlog.error("Failed to restore tethering after password update")
-    self._callbacks.put(("tethering_failed", None))
 
   def _set_ipv4_forward(self, enabled: bool):
     self._assert_owner()
