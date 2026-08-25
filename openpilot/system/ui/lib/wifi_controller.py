@@ -339,12 +339,19 @@ class WifiController:
   def _start_station(self) -> bool:
     self._assert_owner()
     wpa_supplicant.write_station_config([profile.as_wpa_network() for profile in self._store.profiles()])
+    was_running = wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF)
     if not wpa_supplicant.start(wpa_supplicant.WPA_SUPPLICANT_CONF):
       return False
     try:
       self._open_station_ctrl()
     except (OSError, RuntimeError):
       self._close_ctrl()
+      if not was_running:
+        if wpa_supplicant.stop(wpa_supplicant.WPA_SUPPLICANT_CONF):
+          if not wpa_supplicant.restore_networkmanager():
+            cloudlog.error("Failed to return wlan0 to NetworkManager after station startup failure")
+        else:
+          cloudlog.error("Failed to stop wpa_supplicant after station startup failure")
       return False
     return True
 
