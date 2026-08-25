@@ -774,7 +774,9 @@ class WifiController:
       failed_id = parse_event_network_id(event)
       failed_ssid = parse_event_ssid(event)
       pending_id = self._runtime_profiles.get(self._pending_profile.uuid) if self._pending_profile is not None else None
-      if self._requested_ssid is not None and (failed_ssid in (None, self._requested_ssid)) and (failed_id is None or pending_id is None or failed_id == pending_id):
+      matches_ssid = failed_ssid in (None, self._requested_ssid)
+      matches_network_id = failed_id is None or pending_id is None or failed_id == pending_id
+      if self._requested_ssid is not None and matches_ssid and matches_network_id:
         ssid = self._requested_ssid
         self._cancel_selection()
         self._callbacks.put(("need_auth", ssid))
