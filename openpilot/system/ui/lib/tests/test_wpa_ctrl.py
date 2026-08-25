@@ -18,7 +18,7 @@ from openpilot.system.ui.lib.wpa_ctrl import (
 
 class TestWpaCtrlParsing(TestCase):
   def test_status(self):
-    assert parse_status("wpa_state=COMPLETED\nssid=caf\\xc3\\xa9\nip_address=10.0.0.5\n") == {
+    assert parse_status("wpa_state=COMPLETED\nssid=caf\\xc3\\xa9\nip_address=10.0.0.5\n") == {  # codespell:ignore caf
       "wpa_state": "COMPLETED",
       "ssid": "café",
       "ip_address": "10.0.0.5",
@@ -55,7 +55,7 @@ class TestDecodeSsid(TestCase):
     cases = (
       ("MyNetwork", "MyNetwork"),
       ("\\x41\\x42", "AB"),
-      ("caf\\xc3\\xa9", "café"),
+      ("caf\\xc3\\xa9", "café"),  # codespell:ignore caf
       ("\\101", "A"),
       ("\\\\", "\\"),
       ('\\"', '"'),
