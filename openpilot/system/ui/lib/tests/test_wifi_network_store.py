@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
-from openpilot.system.ui.lib.wifi_network_store import MeteredType, NetworkStore, parse_profile, render_profile
+from openpilot.system.ui.lib.wifi_network_store import MeteredType, NetworkProfile, NetworkStore, parse_profile, render_profile
 from openpilot.system.ui.lib.wpa_ctrl import SecurityType
 
 
@@ -149,6 +149,16 @@ method=ignore
     reparsed = parse_profile(render_profile(profile))
     assert reparsed is not None
     assert reparsed == profile
+
+  def test_render_preserves_non_utf8_ssid_bytes(self):
+    ssid = b"\xffTest".decode("utf-8", errors="surrogateescape")
+    raw = render_profile(NetworkProfile(PROFILE_UUID, ssid, SecurityType.OPEN))
+
+    assert "id=�Test" in raw
+    assert "ssid=255;84;101;115;116;" in raw
+    profile = parse_profile(raw)
+    assert profile is not None
+    assert profile.ssid.encode("utf-8", errors="surrogateescape") == b"\xffTest"
 
 
 class TestNetworkStore(TestCase):

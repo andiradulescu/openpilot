@@ -77,6 +77,10 @@ def _encode_ssid(value: str) -> str:
   return ";".join(str(byte) for byte in value.encode("utf-8", errors="surrogateescape")) + ";"
 
 
+def _display_ssid(value: str) -> str:
+  return value.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+
+
 def _encode_keyfile_string(value: str) -> str:
   return "".join({"\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t"}.get(char, char) for char in value)
 
@@ -201,7 +205,7 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
 def render_profile(profile: NetworkProfile) -> str:
   lines = [
     "[connection]",
-    f"id={_encode_keyfile_string(profile.ssid)}",
+    f"id={_encode_keyfile_string(_display_ssid(profile.ssid))}",
     f"uuid={profile.uuid}",
     "type=wifi",
     "autoconnect=true",
