@@ -7,6 +7,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.system.ui.lib.wifi_controller import WifiController
 from openpilot.system.ui.lib.wifi_network_store import MeteredType as StoreMeteredType
 from openpilot.system.ui.lib.wpa_ctrl import SecurityType as ControllerSecurityType
+from openpilot.system.ui.lib.wpa_ctrl import normalize_ssid as normalize_ssid
 
 try:
   from openpilot.common.params import Params
