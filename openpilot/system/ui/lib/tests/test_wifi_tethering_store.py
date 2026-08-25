@@ -57,6 +57,15 @@ class TestTetheringProfile(TestCase):
     assert parsed.ssid == profile.ssid
     assert parsed.password == profile.password
 
+  def test_round_trip_preserves_password_boundary_spaces(self):
+    password = "  password  "
+    raw = render_tethering_profile(TetheringProfile(PROFILE_UUID, "weedle", password))
+
+    assert "psk=\\s\\spassword\\s\\s" in raw
+    profile = parse_tethering_profile(raw)
+    assert profile is not None
+    assert profile.password == password
+
   def test_rejects_control_characters_in_password(self):
     assert parse_tethering_profile(master_profile("password\\n123")) is None
 

@@ -40,7 +40,13 @@ def _decode_string(value: str) -> str:
 
 
 def _encode_string(value: str) -> str:
-  return "".join({"\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t"}.get(char, char) for char in value)
+  leading_spaces = len(value) - len(value.lstrip(" "))
+  trailing_start = len(value.rstrip(" "))
+  escapes = {"\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+  return "".join(
+    "\\s" if char == " " and (index < leading_spaces or index >= trailing_start) else escapes.get(char, char)
+    for index, char in enumerate(value)
+  )
 
 
 def _decode_ssid(value: str) -> str:
