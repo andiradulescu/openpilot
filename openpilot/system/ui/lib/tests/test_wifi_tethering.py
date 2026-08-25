@@ -81,6 +81,23 @@ class TestTethering(TestCase):
     remove_firewall.assert_not_called()
     clear_interface.assert_not_called()
 
+  def test_forwarding_restore_failure_does_not_resurrect_stopped_hotspot(self):
+    session = wifi_tethering.TetheringSession()
+    session._previous_ipv4_forward = False
+    with (
+      patch.object(wifi_tethering, "stop_dnsmasq", return_value=True),
+      patch.object(wifi_tethering, "remove_firewall") as remove_firewall,
+      patch.object(wifi_tethering, "clear_interface") as clear_interface,
+      patch.object(wifi_tethering, "set_ipv4_forward", side_effect=OSError),
+      patch.object(wifi_tethering.cloudlog, "exception") as log_exception,
+    ):
+      assert session.stop()
+
+    remove_firewall.assert_called_once_with()
+    clear_interface.assert_called_once_with()
+    log_exception.assert_called_once_with("Failed to restore IPv4 forwarding after tethering")
+    assert session._previous_ipv4_forward is None
+
   def test_failed_start_rolls_back_resources(self):
     session = wifi_tethering.TetheringSession()
     with (
