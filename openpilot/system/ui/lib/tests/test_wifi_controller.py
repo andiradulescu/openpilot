@@ -84,6 +84,45 @@ class TestWifiController(TestCase):
 
     assert events == ["store", "tethering_store", "snapshot", "tethering_profile", "station"]
 
+  def test_controller_failure_with_owned_station_falls_back(self):
+    controller, _, _ = make_controller()
+    controller._initialize_station = MagicMock(side_effect=RuntimeError)
+    controller._shutdown = MagicMock()
+    controller._close_ctrl = MagicMock()
+    with (
+      patch.object(wifi_controller.wpa_supplicant, "is_running", side_effect=[False, True]),
+      patch.object(wifi_controller.wifi_tethering.TetheringSession, "cleanup_stale", return_value=True),
+    ):
+      controller._run()
+
+    controller._shutdown.assert_called_once_with()
+
+  def test_controller_failure_before_acquisition_does_not_touch_networkmanager(self):
+    controller, _, _ = make_controller()
+    controller._initialize_station = MagicMock(side_effect=RuntimeError)
+    controller._shutdown = MagicMock()
+    controller._close_ctrl = MagicMock()
+    with (
+      patch.object(wifi_controller.wpa_supplicant, "is_running", side_effect=[False, False, False]),
+      patch.object(wifi_controller.wifi_tethering.TetheringSession, "cleanup_stale", return_value=True),
+    ):
+      controller._run()
+
+    controller._shutdown.assert_not_called()
+
+  def test_shutdown_does_not_restore_networkmanager_with_live_dhcp(self):
+    controller, _, dhcp = make_controller()
+    controller._close_ctrl = MagicMock()
+    dhcp.stop.return_value = False
+    with (
+      patch.object(wifi_controller.wpa_supplicant, "is_running", return_value=False),
+      patch.object(wifi_controller.wpa_supplicant, "stop", return_value=True),
+      patch.object(wifi_controller.wpa_supplicant, "restore_networkmanager") as restore_networkmanager,
+    ):
+      controller._shutdown()
+
+    restore_networkmanager.assert_not_called()
+
   def test_new_station_attach_failure_restores_networkmanager(self):
     controller, _, _ = make_controller()
     controller._open_station_ctrl = MagicMock(side_effect=OSError)

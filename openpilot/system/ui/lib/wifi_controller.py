@@ -239,6 +239,12 @@ class WifiController:
           self._last_reconcile = now
     except Exception:
       cloudlog.exception("Wi-Fi controller failed")
+      try:
+        if (wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF)
+            or wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)):
+          self._shutdown()
+      except Exception:
+        cloudlog.exception("Failed to return Wi-Fi ownership after controller failure")
     finally:
       clear_active_profile()
       self._close_ctrl()
@@ -283,7 +289,7 @@ class WifiController:
   def _shutdown(self):
     self._assert_owner()
     self._close_ctrl()
-    if self._tethering_active:
+    if self._tethering_active or wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF):
       if not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
         cloudlog.error("Failed to stop tethering wpa_supplicant during shutdown")
         return
@@ -296,7 +302,10 @@ class WifiController:
       if not wpa_supplicant.stop(wpa_supplicant.WPA_SUPPLICANT_CONF):
         cloudlog.error("Failed to stop station wpa_supplicant during shutdown")
         return
-      self._clear_l3()
+      if not self._dhcp.stop():
+        cloudlog.error("Failed to stop Wi-Fi DHCP during shutdown")
+        return
+      self._dhcp.clear_ipv6()
 
     clear_active_profile()
     self._state = WifiState()
