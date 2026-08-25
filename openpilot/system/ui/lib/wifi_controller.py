@@ -240,7 +240,8 @@ class WifiController:
     except Exception:
       cloudlog.exception("Wi-Fi controller failed")
       try:
-        if (wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF)
+        if (self._tethering_active
+            or wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF)
             or wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)):
           self._shutdown()
       except Exception:
