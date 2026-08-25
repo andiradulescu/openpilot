@@ -123,7 +123,7 @@ def flags_to_security_type(flags: str) -> SecurityType:
     return SecurityType.UNSUPPORTED
   if any(re.search(r"(?:^|\+)(?:(?:WPA2|RSN|WPA)-)?PSK(?!-SHA256)(?:[-+]|$)", group) for group in groups):
     return SecurityType.WPA
-  if any(mode in flags_upper for mode in ("EAP", "802.1X", "SAE", "OWE", "DPP", "OSEN", "FILS")):
+  if any(mode in flags_upper for mode in ("EAP", "802.1X", "SAE", "OWE", "DPP", "OSEN", "FILS")):  # codespell:ignore fils
     return SecurityType.UNSUPPORTED
   if "WPA" not in flags_upper and "RSN" not in flags_upper:
     return SecurityType.OPEN
