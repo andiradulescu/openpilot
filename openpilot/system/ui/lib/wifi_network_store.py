@@ -127,7 +127,7 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
   priority = _getint(cp, "connection", "autoconnect-priority", 0)
   hidden = _getbool(cp, wifi, "hidden", False)
   metered_value = _getint(cp, "connection", "metered", 0)
-  if None in (autoconnect, retries, priority, hidden, metered_value):
+  if autoconnect is None or retries is None or priority is None or hidden is None or metered_value is None:
     return None
 
   if profile_uuid is None or not is_valid_ssid(ssid):
