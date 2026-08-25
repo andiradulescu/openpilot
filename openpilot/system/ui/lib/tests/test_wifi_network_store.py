@@ -160,6 +160,16 @@ method=ignore
     assert profile is not None
     assert profile.ssid.encode("utf-8", errors="surrogateescape") == b"\xffTest"
 
+  def test_round_trip_preserves_password_boundary_spaces(self):
+    password = "  password  "
+    profile = NetworkProfile(PROFILE_UUID, "TestNet", SecurityType.WPA, password)
+    raw = render_profile(profile)
+
+    assert "psk=\\s\\spassword\\s\\s" in raw
+    reparsed = parse_profile(raw)
+    assert reparsed is not None
+    assert reparsed.psk == password
+
 
 class TestNetworkStore(TestCase):
   def test_persistent_profile_wins_same_uuid_runtime_copy(self):
