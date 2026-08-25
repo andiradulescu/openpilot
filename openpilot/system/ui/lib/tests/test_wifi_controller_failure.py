@@ -14,7 +14,7 @@ class TestWifiControllerFailure(TestCase):
     controller._close_ctrl = MagicMock()
 
     with (
-      patch.object(wifi_controller.clear_active_profile, "__call__"),
+      patch.object(wifi_controller, "clear_active_profile"),
       patch.object(wifi_controller.wpa_supplicant, "is_running", return_value=False),
       patch.object(wifi_controller.wifi_tethering.TetheringSession, "cleanup_stale", return_value=True),
     ):
