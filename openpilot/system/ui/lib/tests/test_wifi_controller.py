@@ -167,9 +167,12 @@ class TestWifiController(TestCase):
     controller, _, _ = make_controller()
     controller._request = MagicMock(side_effect=[
       "OK\n",
-      "bssid / frequency / signal level / flags / ssid\n"
-      "00:11:22:33:44:55\t2412\t-40\t[ESS]\tSame\n"
-      "00:11:22:33:44:66\t2412\t-50\t[WPA2-PSK-CCMP][ESS]\tSame\n",
+      "\n".join((
+        "bssid / frequency / signal level / flags / ssid",
+        "00:11:22:33:44:55\t2412\t-40\t[ESS]\tSame",
+        "00:11:22:33:44:66\t2412\t-50\t[WPA2-PSK-CCMP][ESS]\tSame",
+        "",
+      )),
     ])
 
     controller._scan()
