@@ -84,6 +84,40 @@ class TestWifiController(TestCase):
 
     assert events == ["store", "tethering_store", "snapshot", "tethering_profile", "station"]
 
+  def test_new_station_attach_failure_restores_networkmanager(self):
+    controller, _, _ = make_controller()
+    controller._open_station_ctrl = MagicMock(side_effect=OSError)
+    controller._close_ctrl = MagicMock()
+    with (
+      patch.object(wifi_controller.wpa_supplicant, "write_station_config"),
+      patch.object(wifi_controller.wpa_supplicant, "is_running", return_value=False),
+      patch.object(wifi_controller.wpa_supplicant, "start", return_value=True),
+      patch.object(wifi_controller.wpa_supplicant, "stop", return_value=True) as stop,
+      patch.object(wifi_controller.wpa_supplicant, "restore_networkmanager", return_value=True) as restore_networkmanager,
+    ):
+      assert not controller._start_station()
+
+    controller._close_ctrl.assert_called_once_with()
+    stop.assert_called_once_with(wifi_controller.wpa_supplicant.WPA_SUPPLICANT_CONF)
+    restore_networkmanager.assert_called_once_with()
+
+  def test_adopted_station_attach_failure_keeps_existing_owner(self):
+    controller, _, _ = make_controller()
+    controller._open_station_ctrl = MagicMock(side_effect=OSError)
+    controller._close_ctrl = MagicMock()
+    with (
+      patch.object(wifi_controller.wpa_supplicant, "write_station_config"),
+      patch.object(wifi_controller.wpa_supplicant, "is_running", return_value=True),
+      patch.object(wifi_controller.wpa_supplicant, "start", return_value=True),
+      patch.object(wifi_controller.wpa_supplicant, "stop") as stop,
+      patch.object(wifi_controller.wpa_supplicant, "restore_networkmanager") as restore_networkmanager,
+    ):
+      assert not controller._start_station()
+
+    controller._close_ctrl.assert_called_once_with()
+    stop.assert_not_called()
+    restore_networkmanager.assert_not_called()
+
   def test_activate_enables_all_profiles_for_same_ssid(self):
     profiles = (
       NetworkProfile(UUID_A, "Test", SecurityType.WPA, "password123", priority=10),
