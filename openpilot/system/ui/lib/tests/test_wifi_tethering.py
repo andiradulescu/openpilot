@@ -1,6 +1,6 @@
 from pathlib import Path
 from unittest import TestCase
-from unittest.mock import call, patch
+from unittest.mock import MagicMock, call, patch
 
 from openpilot.system.ui.lib import wifi_tethering
 
@@ -50,6 +50,14 @@ class TestTethering(TestCase):
       assert not wifi_tethering.stop_dnsmasq(timeout=2.0)
 
     assert run.call_args_list == [call(["sudo", "kill", "123"], check=False)]
+
+  def test_forwarding_command_failure_is_reported(self):
+    with (
+      patch.object(wifi_tethering, "get_ipv4_forward", return_value=False),
+      patch.object(wifi_tethering.subprocess, "run", return_value=MagicMock(returncode=1)),
+      self.assertRaisesRegex(RuntimeError, "failed to update IPv4 forwarding"),
+    ):
+      wifi_tethering.set_ipv4_forward(True)
 
   def test_session_restores_previous_forwarding_state(self):
     session = wifi_tethering.TetheringSession()

@@ -95,7 +95,9 @@ def set_ipv4_forward(enabled: bool) -> None:
   value = "1" if enabled else "0"
   if get_ipv4_forward() == enabled:
     return
-  subprocess.run(["sudo", "sysctl", f"net.ipv4.ip_forward={value}"], check=True)
+  result = subprocess.run(["sudo", "sysctl", f"net.ipv4.ip_forward={value}"], capture_output=True, check=False)
+  if result.returncode != 0:
+    raise RuntimeError("failed to update IPv4 forwarding")
 
 
 def _replace_operation(command: list[str], operation: str) -> list[str]:
@@ -195,7 +197,7 @@ class TetheringSession:
     if self._previous_ipv4_forward is not None:
       try:
         set_ipv4_forward(self._previous_ipv4_forward)
-      except (OSError, subprocess.SubprocessError):
+      except (OSError, subprocess.SubprocessError, RuntimeError):
         pass
     self._previous_ipv4_forward = None
 
@@ -209,7 +211,7 @@ class TetheringSession:
     if previous_ipv4_forward is not None:
       try:
         set_ipv4_forward(previous_ipv4_forward)
-      except (OSError, subprocess.SubprocessError):
+      except (OSError, subprocess.SubprocessError, RuntimeError):
         cloudlog.exception("Failed to restore IPv4 forwarding after tethering")
     return True
 
@@ -223,6 +225,6 @@ class TetheringSession:
     clear_interface()
     try:
       set_ipv4_forward(False)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, RuntimeError):
       return False
     return True
