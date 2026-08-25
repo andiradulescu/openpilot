@@ -4,6 +4,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from openpilot.common.swaglog import cloudlog
+
 
 TETHERING_ADDRESS = "192.168.43.1"
 TETHERING_CIDR = f"{TETHERING_ADDRESS}/24"
@@ -202,12 +204,13 @@ class TetheringSession:
       return False
     remove_firewall()
     clear_interface()
-    if self._previous_ipv4_forward is not None:
-      try:
-        set_ipv4_forward(self._previous_ipv4_forward)
-      except (OSError, subprocess.SubprocessError):
-        return False
+    previous_ipv4_forward = self._previous_ipv4_forward
     self._previous_ipv4_forward = None
+    if previous_ipv4_forward is not None:
+      try:
+        set_ipv4_forward(previous_ipv4_forward)
+      except (OSError, subprocess.SubprocessError):
+        cloudlog.exception("Failed to restore IPv4 forwarding after tethering")
     return True
 
   @staticmethod
