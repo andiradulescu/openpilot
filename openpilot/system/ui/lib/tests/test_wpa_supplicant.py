@@ -1,6 +1,6 @@
 from pathlib import Path
 from unittest import TestCase
-from unittest.mock import call, patch
+from unittest.mock import MagicMock, call, patch
 
 from openpilot.system.ui.lib import wpa_supplicant
 from openpilot.system.ui.lib.wpa_ctrl import SecurityType
@@ -76,6 +76,32 @@ class TestWpaProcess(TestCase):
       assert not wpa_supplicant.start(wpa_supplicant.WPA_SUPPLICANT_CONF)
 
     run.assert_not_called()
+
+  def test_start_restores_networkmanager_after_spawn_failure(self):
+    with (
+      patch.object(wpa_supplicant, "is_running", return_value=False),
+      patch.object(wpa_supplicant, "_owned_pid", side_effect=[None, None]),
+      patch.object(wpa_supplicant, "prepare_runtime"),
+      patch.object(wpa_supplicant, "release_networkmanager", return_value=True),
+      patch.object(wpa_supplicant, "restore_networkmanager") as restore_networkmanager,
+      patch.object(wpa_supplicant.subprocess, "run", side_effect=[MagicMock(returncode=0), MagicMock(returncode=1)]),
+    ):
+      assert not wpa_supplicant.start(wpa_supplicant.WPA_SUPPLICANT_CONF)
+
+    restore_networkmanager.assert_called_once_with()
+
+  def test_start_does_not_restore_networkmanager_with_owned_process(self):
+    with (
+      patch.object(wpa_supplicant, "is_running", return_value=False),
+      patch.object(wpa_supplicant, "_owned_pid", side_effect=[None, 123]),
+      patch.object(wpa_supplicant, "prepare_runtime"),
+      patch.object(wpa_supplicant, "release_networkmanager", return_value=True),
+      patch.object(wpa_supplicant, "restore_networkmanager") as restore_networkmanager,
+      patch.object(wpa_supplicant.subprocess, "run", side_effect=[MagicMock(returncode=0), MagicMock(returncode=1)]),
+    ):
+      assert not wpa_supplicant.start(wpa_supplicant.WPA_SUPPLICANT_CONF)
+
+    restore_networkmanager.assert_not_called()
 
   def test_owned_pid_checks_command_line(self):
     command = "\0".join((

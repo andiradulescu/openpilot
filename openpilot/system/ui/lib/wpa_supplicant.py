@@ -113,7 +113,10 @@ def _set_networkmanager_managed(managed: bool) -> bool:
   if nmcli is None:
     return True
   value = "yes" if managed else "no"
-  result = subprocess.run(["sudo", nmcli, "dev", "set", "wlan0", "managed", value], capture_output=True)
+  try:
+    result = subprocess.run(["sudo", nmcli, "dev", "set", "wlan0", "managed", value], capture_output=True)
+  except OSError:
+    return False
   return result.returncode == 0
 
 
@@ -132,18 +135,31 @@ def prepare_runtime() -> None:
 def start(conf: str) -> bool:
   if is_running(conf):
     return True
-  if not release_networkmanager():
-    return False
-
-  prepare_runtime()
   if _owned_pid() is not None:
     return False
 
-  subprocess.run(["sudo", "rm", "-f", WPA_PID_FILE, WPA_CTRL_PATH], check=True)
-  result = subprocess.run([
-    "sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", conf, "-P", WPA_PID_FILE,
-  ], capture_output=True)
-  return result.returncode == 0 and is_running(conf)
+  try:
+    prepare_runtime()
+    subprocess.run(["sudo", "rm", "-f", WPA_PID_FILE, WPA_CTRL_PATH], check=True)
+  except (OSError, subprocess.SubprocessError):
+    return False
+
+  if not release_networkmanager():
+    return False
+
+  try:
+    result = subprocess.run([
+      "sudo", "wpa_supplicant", "-B", "-i", "wlan0", "-c", conf, "-P", WPA_PID_FILE,
+    ], capture_output=True)
+  except OSError:
+    restore_networkmanager()
+    return False
+
+  if result.returncode == 0 and is_running(conf):
+    return True
+  if _owned_pid() is None:
+    restore_networkmanager()
+  return False
 
 
 def stop(conf: str, timeout: float = 2.0) -> bool:
