@@ -39,7 +39,7 @@ class TestDhcpClient(TestCase):
   def test_stop_flushes_lease_after_exit(self):
     client = DhcpClient()
     with (
-      patch.object(client, "_owned_pid", side_effect=[123, None, None]),
+      patch.object(client, "_owned_pid", side_effect=[123, None, None, None]),
       patch.object(dhcp_client.os, "getpgid", return_value=456),
       patch.object(dhcp_client.os, "getpgrp", return_value=1),
       patch.object(dhcp_client.subprocess, "run") as run,
