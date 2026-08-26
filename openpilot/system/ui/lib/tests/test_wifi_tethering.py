@@ -6,6 +6,16 @@ from openpilot.system.ui.lib import wifi_tethering
 
 
 class TestTethering(TestCase):
+  def test_dnsmasq_does_not_require_persistent_leasefile(self):
+    with (
+      patch.object(wifi_tethering, "dnsmasq_running", side_effect=[False, True]),
+      patch.object(wifi_tethering.subprocess, "run", return_value=MagicMock(returncode=0)) as run,
+    ):
+      assert wifi_tethering.start_dnsmasq()
+
+    dnsmasq_command = run.call_args_list[2].args[0]
+    assert "--leasefile-ro" in dnsmasq_command
+
   def test_dnsmasq_ownership_checks_arguments(self):
     command = "\0".join((
       "/usr/sbin/dnsmasq",
