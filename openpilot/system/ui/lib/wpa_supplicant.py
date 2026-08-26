@@ -1,9 +1,11 @@
 import os
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 from openpilot.common.utils import atomic_write
 from openpilot.system.ui.lib.wpa_ctrl import SecurityType
@@ -15,6 +17,44 @@ WPA_PID_FILE = os.path.join(WPA_CTRL_DIR, "wpa_supplicant.pid")
 WPA_SUPPLICANT_CONF = "/tmp/wpa_supplicant.conf"
 WPA_AP_CONF = "/tmp/wpa_supplicant_ap.conf"
 WPA_CTRL_INTERFACE = f"ctrl_interface=DIR={WPA_CTRL_DIR} GROUP=netdev"
+_ACQUISITION_READY = "READY\n"
+_ACQUISITION_COMMIT = "COMMIT\n"
+
+
+class _StationAcquisition:
+  def __init__(self, proc: subprocess.Popen[str]):
+    self._proc = proc
+    self._finished = False
+
+  def _finish(self, commit: bool) -> bool:
+    if self._finished:
+      return False
+    self._finished = True
+
+    if self._proc.stdin is None:
+      return False
+    sent = True
+    try:
+      if commit:
+        self._proc.stdin.write(_ACQUISITION_COMMIT)
+        self._proc.stdin.flush()
+    except OSError:
+      sent = False
+    try:
+      self._proc.stdin.close()
+    except OSError:
+      sent = False
+    try:
+      returncode = self._proc.wait()
+    except (OSError, subprocess.SubprocessError):
+      return False
+    return sent and returncode == 0
+
+  def commit(self) -> bool:
+    return self._finish(True)
+
+  def rollback(self) -> bool:
+    return self._finish(False)
 
 
 @dataclass(frozen=True)
@@ -162,6 +202,57 @@ def start(conf: str) -> bool:
   return False
 
 
+def begin_station() -> _StationAcquisition | None:
+  try:
+    proc = subprocess.Popen(
+      [sys.executable, "-m", __name__, "--station-acquisition"],
+      stdin=subprocess.PIPE,
+      stdout=subprocess.PIPE,
+      text=True,
+      start_new_session=True,
+    )
+  except OSError:
+    return None
+
+  assert proc.stdin is not None and proc.stdout is not None
+  try:
+    ready = proc.stdout.readline()
+  except OSError:
+    ready = ""
+  if ready != _ACQUISITION_READY:
+    proc.stdin.close()
+    proc.wait()
+    return None
+  proc.stdout.close()
+  return _StationAcquisition(proc)
+
+
+def _rollback_station() -> bool:
+  if not stop(WPA_SUPPLICANT_CONF):
+    return False
+  return restore_networkmanager()
+
+
+def _run_station_acquisition(input_stream: TextIO, output_stream: TextIO) -> int:
+  was_running = is_running(WPA_SUPPLICANT_CONF)
+  if not start(WPA_SUPPLICANT_CONF):
+    if not was_running and is_running(WPA_SUPPLICANT_CONF):
+      _rollback_station()
+    return 1
+
+  try:
+    output_stream.write(_ACQUISITION_READY)
+    output_stream.flush()
+    if input_stream.readline() == _ACQUISITION_COMMIT:
+      return 0
+  except OSError:
+    pass
+
+  if was_running:
+    return 0
+  return 0 if _rollback_station() else 1
+
+
 def stop(conf: str, timeout: float = 2.0) -> bool:
   pid = _owned_pid(conf)
   if pid is None:
@@ -178,3 +269,9 @@ def stop(conf: str, timeout: float = 2.0) -> bool:
     time.sleep(0.05)
 
   return False
+
+
+if __name__ == "__main__":
+  if sys.argv[1:] != ["--station-acquisition"]:
+    sys.exit(2)
+  sys.exit(_run_station_acquisition(sys.stdin, sys.stdout))
