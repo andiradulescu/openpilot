@@ -49,6 +49,16 @@ class TestWifiController(TestCase):
     thread.join()
     assert errors == [True]
 
+  def test_stop_waits_for_controller_shutdown(self):
+    controller, _, _ = make_controller()
+    thread = MagicMock()
+    controller._thread = thread
+
+    controller.stop()
+
+    thread.join.assert_called_once_with()
+    assert controller._thread is None
+
   def test_public_saved_network_reads_do_not_touch_store(self):
     profile = NetworkProfile(UUID_A, "Saved", SecurityType.WPA, "password123")
     controller, store, _ = make_controller((profile,))
@@ -236,6 +246,45 @@ class TestWifiController(TestCase):
     self.write_active.assert_called_once_with(UUID_A, int(MeteredType.YES))
     assert controller.get_callback() == ("activated", None)
 
+  def test_connected_station_restarts_dhcp_when_l3_is_lost(self):
+    profile = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "password123", metered=MeteredType.YES)
+    controller, _, dhcp = make_controller((profile,))
+    controller._state = controller.state.__class__(
+      ssid="Test",
+      status=ConnectStatus.CONNECTED,
+      profile_uuid=UUID_A,
+      ipv4_address="10.0.0.2",
+      metered=MeteredType.YES,
+    )
+    controller._request = MagicMock(return_value=f"wpa_state=COMPLETED\nssid=Test\nid_str={UUID_A}\n")
+    dhcp.running = False
+    dhcp.ready.return_value = False
+
+    controller._reconcile()
+
+    assert controller.state.status == ConnectStatus.CONNECTING
+    assert controller.state.profile_uuid == UUID_A
+    assert controller.state.ipv4_address == ""
+    dhcp.stop.assert_called_once_with()
+    dhcp.start.assert_called_once_with()
+    self.clear_active.assert_called_once_with()
+
+  def test_dhcp_timeout_cancels_connection(self):
+    profile = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "password123")
+    controller, _, dhcp = make_controller((profile,))
+    controller._state = controller.state.__class__(ssid="Test", status=ConnectStatus.CONNECTING, profile_uuid=UUID_A)
+    controller._connecting_since = 1.0
+    controller._request = MagicMock(return_value=f"wpa_state=COMPLETED\nssid=Test\nid_str={UUID_A}\n")
+    dhcp.running = True
+    dhcp.ready.return_value = False
+
+    with patch.object(wifi_controller.time, "monotonic", return_value=1.0 + wifi_controller.CONNECT_TIMEOUT_SECONDS):
+      controller._reconcile()
+
+    assert controller.state.status == ConnectStatus.DISCONNECTED
+    dhcp.stop.assert_called_once_with()
+    assert controller.get_callback() == ("disconnected", None)
+
   def test_auto_fallback_adopts_different_saved_ssid(self):
     old = NetworkProfile(UUID_A, "Old", SecurityType.WPA, "password123")
     fallback = NetworkProfile(UUID_B, "Fallback", SecurityType.WPA, "password456")
@@ -331,6 +380,53 @@ class TestWifiController(TestCase):
 
     assert controller.get_callback() == ("settings_failed", "Test")
 
+  def test_tethering_loop_waits(self):
+    controller, _, _ = make_controller()
+    controller._ctrl = None
+    controller._monitor = None
+    controller._tethering_active = True
+    controller._initialize_tethering_profile = MagicMock()
+    controller._initialize_station = MagicMock()
+    controller._drain_commands = MagicMock()
+    controller._close_ctrl = MagicMock()
+
+    def stop_after_sleep(_):
+      controller._exit = True
+
+    with (
+      patch.object(wifi_controller.wpa_supplicant, "is_running", return_value=False),
+      patch.object(wifi_controller.wifi_tethering.TetheringSession, "cleanup_stale", return_value=True),
+      patch.object(wifi_controller.time, "monotonic", return_value=0.0),
+      patch.object(wifi_controller.time, "sleep", side_effect=stop_after_sleep) as sleep,
+    ):
+      controller._run()
+
+    sleep.assert_called_once_with(0.05)
+
+  def test_tethering_health_failure_returns_to_station(self):
+    controller, _, _ = make_controller()
+    controller._tethering_active = True
+    controller._leave_tethering = MagicMock()
+
+    with patch.object(wifi_controller.wpa_supplicant, "is_running", return_value=False):
+      controller._reconcile_tethering()
+
+    controller._leave_tethering.assert_called_once_with(failed=True)
+
+  def test_healthy_tethering_is_left_running(self):
+    controller, _, _ = make_controller()
+    controller._tethering_active = True
+    controller._leave_tethering = MagicMock()
+
+    with (
+      patch.object(wifi_controller.wpa_supplicant, "is_running", return_value=True),
+      patch.object(wifi_controller.wifi_tethering, "dnsmasq_running", return_value=True),
+      patch.object(wifi_controller.wifi_tethering, "firewall_ready", return_value=True),
+    ):
+      controller._reconcile_tethering()
+
+    controller._leave_tethering.assert_not_called()
+
   def test_enter_tethering_switches_from_station(self):
     controller, _, _ = make_controller()
     controller._close_ctrl = MagicMock()
@@ -391,6 +487,14 @@ class TestWifiController(TestCase):
 
     controller._tethering_store.set_password.assert_called_once_with("weedle", "new-password")
     assert controller.tethering_password == "new-password"
+
+  def test_unchanged_tethering_password_emits_update(self):
+    controller, _, _ = make_controller()
+
+    controller._set_tethering_password(wifi_controller.DEFAULT_TETHERING_PASSWORD)
+
+    controller._tethering_store.set_password.assert_not_called()
+    assert controller.get_callback() == ("networks_updated", None)
 
   def test_failed_tethering_password_persistence_keeps_old_password(self):
     controller, _, _ = make_controller()
