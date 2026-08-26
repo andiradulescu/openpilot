@@ -160,10 +160,7 @@ class WifiController:
       return
     thread = self._thread
     self._commands.put(_Stop())
-    thread.join(timeout=5)
-    if thread.is_alive():
-      cloudlog.warning("Wi-Fi controller did not stop")
-      return
+    thread.join()
     self._thread = None
 
   def set_active(self, active: bool):
@@ -225,7 +222,9 @@ class WifiController:
         if self._exit:
           break
 
-        if not self._tethering_active and self._monitor is not None:
+        if self._tethering_active:
+          time.sleep(0.05)
+        elif self._monitor is not None:
           event = self._monitor.recv(timeout=0.05)
           if event is not None:
             self._handle_wpa_event(event)
@@ -234,8 +233,11 @@ class WifiController:
         if not self._tethering_active and self._active and now - self._last_scan >= SCAN_PERIOD_SECONDS:
           self._scan()
           self._last_scan = now
-        if not self._tethering_active and now - self._last_reconcile >= RECONCILE_PERIOD_SECONDS:
-          self._reconcile()
+        if now - self._last_reconcile >= RECONCILE_PERIOD_SECONDS:
+          if self._tethering_active:
+            self._reconcile_tethering()
+          else:
+            self._reconcile()
           self._last_reconcile = now
     except Exception:
       cloudlog.exception("Wi-Fi controller failed")
@@ -628,7 +630,7 @@ class WifiController:
     if not self._start_station():
       cloudlog.error("Failed to restore station Wi-Fi after tethering transition")
 
-  def _leave_tethering(self):
+  def _leave_tethering(self, failed: bool = False):
     self._assert_owner()
     if not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
       self._callbacks.put(("tethering_failed", None))
@@ -641,7 +643,7 @@ class WifiController:
     self._tethering_active = False
     self._state = WifiState()
     if self._start_station():
-      self._callbacks.put(("disconnected", None))
+      self._callbacks.put(("tethering_failed" if failed else "disconnected", None))
       return
 
     if wpa_supplicant.start(wpa_supplicant.WPA_AP_CONF) and self._tethering.start(self._ipv4_forward):
@@ -649,9 +651,20 @@ class WifiController:
       self._state = WifiState(ssid=self._tethering_ssid, status=ConnectStatus.CONNECTED, ipv4_address=wifi_tethering.TETHERING_ADDRESS)
     self._callbacks.put(("tethering_failed", None))
 
+  def _reconcile_tethering(self):
+    self._assert_owner()
+    if (wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)
+        and wifi_tethering.dnsmasq_running()
+        and wifi_tethering.firewall_ready()):
+      return
+    self._leave_tethering(failed=True)
+
   def _set_tethering_password(self, password: str):
     self._assert_owner()
-    if not self._valid_psk(password) or password == self._tethering_password:
+    if not self._valid_psk(password):
+      return
+    if password == self._tethering_password:
+      self._callbacks.put(("networks_updated", None))
       return
 
     if not self._tethering_active:
@@ -859,6 +872,11 @@ class WifiController:
       if self._state.profile_uuid != profile_uuid or self._state.ssid != ssid:
         self._adopt_status(status)
 
+      if (self._state.profile_uuid == profile_uuid
+          and self._state.status == ConnectStatus.CONNECTED
+          and (not self._dhcp.running or not self._dhcp.ready())):
+        self._link_lost()
+
       if self._state.profile_uuid == profile_uuid and self._state.status == ConnectStatus.CONNECTING:
         if not self._dhcp.running:
           self._dhcp.start()
@@ -876,8 +894,9 @@ class WifiController:
           self._publish_active_profile(profile)
           self._connecting_since = 0.0
           self._callbacks.put(("activated", None))
+        elif self._connecting_since and time.monotonic() - self._connecting_since >= CONNECT_TIMEOUT_SECONDS:
+          self._cancel_selection()
       return
-
     if self._state.status == ConnectStatus.CONNECTED:
       self._link_lost()
       return
