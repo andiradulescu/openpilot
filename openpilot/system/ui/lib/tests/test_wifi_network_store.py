@@ -119,6 +119,13 @@ method=auto
 """
     assert parse_profile(raw) is None
 
+  def test_unrendered_settings_make_profile_read_only(self):
+    ipv6 = parse_profile(profile_text() + "addr-gen-mode=stable-privacy\n")
+    proxy = parse_profile(profile_text() + "[proxy]\nmethod=auto\n")
+
+    assert ipv6 is not None and ipv6.read_only
+    assert proxy is not None and proxy.read_only
+
   def test_round_trip_keeps_networkmanager_semantics(self):
     raw = f"""\
 [connection]
@@ -199,6 +206,19 @@ class TestNetworkStore(TestCase):
         store = NetworkStore(persistent, runtime)
 
       assert store.can_mutate(PROFILE_UUID)
+
+  def test_profile_with_unrendered_settings_cannot_be_mutated(self):
+    with tempfile.TemporaryDirectory() as persistent:
+      path = Path(persistent) / "saved.nmconnection"
+      path.write_text(profile_text() + "[proxy]\nmethod=auto\n")
+
+      with patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=lambda path: Path(path).read_text()):
+        store = NetworkStore(persistent, None)
+
+      assert store.get(PROFILE_UUID) is not None
+      assert not store.can_mutate(PROFILE_UUID)
+      assert store.set_metered(PROFILE_UUID, MeteredType.YES) is None
+      assert path.exists()
 
   def test_runtime_only_profile_cannot_be_mutated(self):
     with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:

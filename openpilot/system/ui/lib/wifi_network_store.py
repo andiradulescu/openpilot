@@ -39,6 +39,7 @@ class NetworkProfile:
   ipv6_enabled: bool = True
   path: str = ""
   persistent: bool = True
+  read_only: bool = False
 
   def as_wpa_network(self) -> WpaNetwork:
     return WpaNetwork(self.ssid, self.security, self.psk, self.hidden, self.uuid, self.priority, self.bssid)
@@ -192,6 +193,14 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
   if ipv6.get("method", "auto") not in ("auto", "ignore") or {key for key, value in ipv6.items() if value} - {"method", "addr-gen-mode"}:
     return None
 
+  represented_sections = {"connection", wifi, "ipv4", "ipv6"}
+  if security_section is not None:
+    represented_sections.add(security_section)
+  read_only = bool(ipv6.get("addr-gen-mode")) or any(
+    section not in represented_sections and any(value for _, value in cp.items(section))
+    for section in cp.sections()
+  )
+
   metered = MeteredType.YES if metered_value == 1 else MeteredType.NO if metered_value == 2 else MeteredType.UNKNOWN
   return NetworkProfile(
     uuid=profile_uuid,
@@ -205,6 +214,7 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
     ipv6_enabled=ipv6.get("method", "auto") != "ignore",
     path=path,
     persistent=persistent,
+    read_only=read_only,
   )
 
 
@@ -322,6 +332,7 @@ class NetworkStore:
     profile = self.get(profile_uuid)
     return (
       profile is not None
+      and not profile.read_only
       and profile.persistent
       and profile.uuid not in self._runtime_uuids
       and profile.path.startswith(self._directory + os.sep)
