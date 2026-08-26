@@ -1,3 +1,4 @@
+from io import StringIO
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import MagicMock, call, patch
@@ -33,6 +34,74 @@ class TestWpaConfig(TestCase):
 
 
 class TestWpaProcess(TestCase):
+  def test_uncommitted_new_station_restores_networkmanager(self):
+    output = StringIO()
+    with (
+      patch.object(wpa_supplicant, "is_running", return_value=False),
+      patch.object(wpa_supplicant, "start", return_value=True),
+      patch.object(wpa_supplicant, "stop", return_value=True) as stop,
+      patch.object(wpa_supplicant, "restore_networkmanager", return_value=True) as restore_networkmanager,
+    ):
+      assert wpa_supplicant._run_station_acquisition(StringIO(), output) == 0
+
+    assert output.getvalue() == "READY\n"
+    stop.assert_called_once_with(wpa_supplicant.WPA_SUPPLICANT_CONF)
+    restore_networkmanager.assert_called_once_with()
+
+  def test_committed_new_station_keeps_direct_owner(self):
+    output = StringIO()
+    with (
+      patch.object(wpa_supplicant, "is_running", return_value=False),
+      patch.object(wpa_supplicant, "start", return_value=True),
+      patch.object(wpa_supplicant, "stop") as stop,
+      patch.object(wpa_supplicant, "restore_networkmanager") as restore_networkmanager,
+    ):
+      assert wpa_supplicant._run_station_acquisition(StringIO("COMMIT\n"), output) == 0
+
+    assert output.getvalue() == "READY\n"
+    stop.assert_not_called()
+    restore_networkmanager.assert_not_called()
+
+  def test_uncommitted_adopted_station_keeps_direct_owner(self):
+    output = StringIO()
+    with (
+      patch.object(wpa_supplicant, "is_running", return_value=True),
+      patch.object(wpa_supplicant, "start", return_value=True),
+      patch.object(wpa_supplicant, "stop") as stop,
+      patch.object(wpa_supplicant, "restore_networkmanager") as restore_networkmanager,
+    ):
+      assert wpa_supplicant._run_station_acquisition(StringIO(), output) == 0
+
+    assert output.getvalue() == "READY\n"
+    stop.assert_not_called()
+    restore_networkmanager.assert_not_called()
+
+  def test_uncommitted_station_does_not_restore_while_owner_is_live(self):
+    output = StringIO()
+    with (
+      patch.object(wpa_supplicant, "is_running", return_value=False),
+      patch.object(wpa_supplicant, "start", return_value=True),
+      patch.object(wpa_supplicant, "stop", return_value=False),
+      patch.object(wpa_supplicant, "restore_networkmanager") as restore_networkmanager,
+    ):
+      assert wpa_supplicant._run_station_acquisition(StringIO(), output) == 1
+
+    restore_networkmanager.assert_not_called()
+
+  def test_failed_start_rolls_back_new_direct_owner(self):
+    output = StringIO()
+    with (
+      patch.object(wpa_supplicant, "is_running", side_effect=[False, True]),
+      patch.object(wpa_supplicant, "start", return_value=False),
+      patch.object(wpa_supplicant, "stop", return_value=True) as stop,
+      patch.object(wpa_supplicant, "restore_networkmanager", return_value=True) as restore_networkmanager,
+    ):
+      assert wpa_supplicant._run_station_acquisition(StringIO(), output) == 1
+
+    assert output.getvalue() == ""
+    stop.assert_called_once_with(wpa_supplicant.WPA_SUPPLICANT_CONF)
+    restore_networkmanager.assert_called_once_with()
+
   def test_stop_keeps_ownership_until_process_exits(self):
     run_results = []
 
