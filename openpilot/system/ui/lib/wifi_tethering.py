@@ -50,6 +50,7 @@ def start_dnsmasq() -> bool:
     "sudo", "dnsmasq",
     "--interface=wlan0",
     "--bind-interfaces",
+    "--leasefile-ro",
     "--dhcp-range=192.168.43.2,192.168.43.254,255.255.255.0,1h",
     f"--dhcp-option=3,{TETHERING_ADDRESS}",
     f"--dhcp-option=6,{TETHERING_ADDRESS}",
