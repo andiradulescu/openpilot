@@ -1,0 +1,30 @@
+name: apply wifi review fixes
+
+on:
+  push:
+    branches:
+      - wifi-review-fixes-20260827
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: wifi-review-fixes-20260827
+          path: transport
+          fetch-depth: 1
+      - uses: actions/checkout@v7
+        with:
+          ref: wifi-no-networkmanager-refactor
+          path: target
+          fetch-depth: 0
+      - name: Apply fixes
+        working-directory: target
+        run: |
+          git config user.name "Andrei Radulescu"
+          git config user.email "andi.radulescu@gmail.com"
+          python3 ../transport/.tmp/apply_wifi_review_fixes.py
