@@ -865,6 +865,19 @@ class WifiController:
     try:
       status = parse_status(self._request("STATUS"))
     except (OSError, RuntimeError):
+      if wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF):
+        return
+      self._close_ctrl()
+      self._clear_l3()
+      self._runtime_profiles = {}
+      self._pending_profile = None
+      self._temporary_network_id = None
+      self._replacement_network_id = None
+      self._requested_ssid = None
+      self._connecting_since = 0.0
+      self._state = WifiState()
+      if not self._start_station():
+        raise RuntimeError("failed to recover station wpa_supplicant")
       return
 
     if status.get("wpa_state") == "COMPLETED":

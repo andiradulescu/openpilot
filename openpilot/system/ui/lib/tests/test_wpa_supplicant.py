@@ -172,6 +172,33 @@ class TestWpaProcess(TestCase):
 
     restore_networkmanager.assert_not_called()
 
+  def test_failed_ap_start_stops_partial_owner(self):
+    with (
+      patch.object(wpa_supplicant, "is_running", side_effect=[False, True]),
+      patch.object(wpa_supplicant, "_owned_pid", side_effect=[None, None]),
+      patch.object(wpa_supplicant, "prepare_runtime"),
+      patch.object(wpa_supplicant, "release_networkmanager", return_value=True),
+      patch.object(wpa_supplicant, "stop", return_value=True) as stop,
+      patch.object(wpa_supplicant, "restore_networkmanager") as restore_networkmanager,
+      patch.object(wpa_supplicant.subprocess, "run", side_effect=[MagicMock(returncode=0), MagicMock(returncode=1)]),
+    ):
+      assert not wpa_supplicant.start(wpa_supplicant.WPA_AP_CONF)
+
+    stop.assert_called_once_with(wpa_supplicant.WPA_AP_CONF)
+    restore_networkmanager.assert_called_once_with()
+
+  def test_stop_accepts_process_exit_before_signal(self):
+    with (
+      patch.object(wpa_supplicant, "_owned_pid", side_effect=[123, None]),
+      patch.object(wpa_supplicant.subprocess, "run", side_effect=[MagicMock(returncode=1), MagicMock(returncode=0)]) as run,
+    ):
+      assert wpa_supplicant.stop(wpa_supplicant.WPA_SUPPLICANT_CONF)
+
+    assert run.call_args_list == [
+      call(["sudo", "kill", "123"], check=False),
+      call(["sudo", "rm", "-f", wpa_supplicant.WPA_PID_FILE, wpa_supplicant.WPA_CTRL_PATH], check=False),
+    ]
+
   def test_owned_pid_checks_command_line(self):
     command = "\0".join((
       "/usr/sbin/wpa_supplicant", "-B", "-i", "wlan0", "-c",

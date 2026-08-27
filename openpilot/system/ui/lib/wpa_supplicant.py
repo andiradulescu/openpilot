@@ -197,6 +197,9 @@ def start(conf: str) -> bool:
 
   if result.returncode == 0 and is_running(conf):
     return True
+
+  if is_running(conf) and not stop(conf):
+    return False
   if _owned_pid() is None:
     restore_networkmanager()
   return False
@@ -259,7 +262,10 @@ def stop(conf: str, timeout: float = 2.0) -> bool:
     return True
 
   if subprocess.run(["sudo", "kill", str(pid)], check=False).returncode != 0:
-    return False
+    if _owned_pid(conf) is not None:
+      return False
+    subprocess.run(["sudo", "rm", "-f", WPA_PID_FILE, WPA_CTRL_PATH], check=False)
+    return True
 
   deadline = time.monotonic() + timeout
   while time.monotonic() < deadline:

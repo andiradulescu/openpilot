@@ -242,6 +242,40 @@ class TestWifiController(TestCase):
     self.write_active.assert_called_once_with(UUID_A, int(MeteredType.YES))
     assert controller.get_callback() == ("activated", None)
 
+  def test_station_request_failure_keeps_live_supplicant(self):
+    controller, _, _ = make_controller()
+    controller._request = MagicMock(side_effect=OSError)
+    controller._start_station = MagicMock()
+
+    with patch.object(wifi_controller.wpa_supplicant, "is_running", return_value=True):
+      controller._reconcile()
+
+    controller._start_station.assert_not_called()
+
+  def test_dead_station_supplicant_is_restarted(self):
+    profile = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "password123")
+    controller, _, dhcp = make_controller((profile,))
+    controller._state = controller.state.__class__(ssid="Test", status=ConnectStatus.CONNECTED, profile_uuid=UUID_A, ipv4_address="10.0.0.2")
+    controller._request = MagicMock(side_effect=OSError)
+    controller._close_ctrl = MagicMock()
+    controller._start_station = MagicMock(return_value=True)
+    controller._pending_profile = profile
+    controller._temporary_network_id = "9"
+    controller._replacement_network_id = "3"
+    controller._requested_ssid = "Test"
+
+    with patch.object(wifi_controller.wpa_supplicant, "is_running", return_value=False):
+      controller._reconcile()
+
+    controller._close_ctrl.assert_called_once_with()
+    dhcp.stop.assert_called_once_with()
+    controller._start_station.assert_called_once_with()
+    assert controller.state == wifi_controller.WifiState()
+    assert controller._pending_profile is None
+    assert controller._temporary_network_id is None
+    assert controller._replacement_network_id is None
+    assert controller._requested_ssid is None
+
   def test_connected_station_restarts_dhcp_when_l3_is_lost(self):
     profile = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "password123", metered=MeteredType.YES)
     controller, _, dhcp = make_controller((profile,))
