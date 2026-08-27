@@ -315,6 +315,40 @@ class TestWifiController(TestCase):
     dhcp.stop.assert_called_once_with()
     assert controller.get_callback() == ("disconnected", None)
 
+  def test_adopting_different_profile_renews_dhcp(self):
+    old = NetworkProfile(UUID_A, "Old", SecurityType.WPA, "password123")
+    new = NetworkProfile(UUID_B, "New", SecurityType.WPA, "password456")
+    controller, _, dhcp = make_controller((old, new))
+    controller._state = controller.state.__class__(ssid="Old", status=ConnectStatus.CONNECTED, profile_uuid=UUID_A, ipv4_address="10.0.0.2")
+    controller._request = MagicMock(return_value="OK\n")
+    dhcp.running = True
+
+    def stop_dhcp():
+      dhcp.running = False
+      return True
+
+    dhcp.stop.side_effect = stop_dhcp
+    controller._adopt_status({"wpa_state": "COMPLETED", "ssid": "New", "id_str": UUID_B})
+
+    dhcp.stop.assert_called_once_with()
+    dhcp.start.assert_called_once_with()
+    assert controller.state.ssid == "New"
+    assert controller.state.profile_uuid == UUID_B
+    assert controller.state.status == ConnectStatus.CONNECTING
+    assert controller.state.ipv4_address == ""
+
+  def test_crash_adoption_keeps_existing_dhcp(self):
+    profile = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "password123")
+    controller, _, dhcp = make_controller((profile,))
+    controller._request = MagicMock(return_value="OK\n")
+    dhcp.running = True
+
+    controller._adopt_status({"wpa_state": "COMPLETED", "ssid": "Test", "id_str": UUID_A})
+
+    dhcp.stop.assert_not_called()
+    dhcp.start.assert_not_called()
+    assert controller.state.profile_uuid == UUID_A
+
   def test_auto_fallback_adopts_different_saved_ssid(self):
     old = NetworkProfile(UUID_A, "Old", SecurityType.WPA, "password123")
     fallback = NetworkProfile(UUID_B, "Fallback", SecurityType.WPA, "password456")

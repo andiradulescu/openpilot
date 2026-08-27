@@ -841,6 +841,9 @@ class WifiController:
     if profile is None:
       return
 
+    if self._state.profile_uuid is not None and self._state.profile_uuid != profile_uuid:
+      self._clear_l3()
+
     self._requested_ssid = None
     self._connecting_since = time.monotonic()
     if not profile.ipv6_enabled:
