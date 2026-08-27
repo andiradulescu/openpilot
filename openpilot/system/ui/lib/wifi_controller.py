@@ -662,6 +662,7 @@ class WifiController:
   def _set_tethering_password(self, password: str):
     self._assert_owner()
     if not self._valid_psk(password):
+      self._callbacks.put(("tethering_failed", None))
       return
     if password == self._tethering_password:
       self._callbacks.put(("networks_updated", None))

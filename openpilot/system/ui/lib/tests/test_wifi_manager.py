@@ -34,14 +34,14 @@ class TestWifiManager(TestCase):
     assert controller.connect.call_args_list[0].args == ("Open", "", False, ControllerSecurityType.OPEN)
     assert controller.connect.call_args_list[1].args == ("Secure", "password123", True, ControllerSecurityType.WPA)
 
-  def test_forwarding_is_edge_triggered(self):
+  def test_forwarding_retries_are_forwarded(self):
     manager, controller = self.make_manager()
 
     manager.set_ipv4_forward(True)
     manager.set_ipv4_forward(True)
     manager.set_ipv4_forward(False)
 
-    assert [call.args[0] for call in controller.set_ipv4_forward.call_args_list] == [True, False]
+    assert [call.args[0] for call in controller.set_ipv4_forward.call_args_list] == [True, True, False]
 
   def test_network_update_preserves_legacy_shape(self):
     manager, controller = self.make_manager()

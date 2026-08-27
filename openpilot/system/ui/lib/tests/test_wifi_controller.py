@@ -492,6 +492,14 @@ class TestWifiController(TestCase):
     controller._tethering_store.set_password.assert_not_called()
     assert controller.get_callback() == ("networks_updated", None)
 
+  def test_invalid_tethering_password_emits_failure(self):
+    controller, _, _ = make_controller()
+
+    controller._set_tethering_password("x" * 64)
+
+    controller._tethering_store.set_password.assert_not_called()
+    assert controller.get_callback() == ("tethering_failed", None)
+
   def test_failed_tethering_password_persistence_keeps_old_password(self):
     controller, _, _ = make_controller()
     controller._tethering_store.set_password.return_value = None

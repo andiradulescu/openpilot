@@ -71,7 +71,6 @@ class WifiManager:
     self._forgotten: list[Callable[[str | None], None]] = []
     self._networks_updated: list[Callable[[list[Network]], None]] = []
     self._disconnected: list[Callable[[], None]] = []
-    self._ipv4_forward: bool | None = None
     self._last_snapshot = self._snapshot()
     atexit.register(self.stop)
 
@@ -147,9 +146,6 @@ class WifiManager:
     self._controller.set_tethering_password(password)
 
   def set_ipv4_forward(self, enabled: bool):
-    if enabled == self._ipv4_forward:
-      return
-    self._ipv4_forward = enabled
     self._controller.set_ipv4_forward(enabled)
 
   def set_tethering_active(self, active: bool):
