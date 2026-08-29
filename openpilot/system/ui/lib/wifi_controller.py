@@ -1,4 +1,5 @@
 import queue
+import subprocess
 import threading
 import time
 import unicodedata
@@ -855,7 +856,8 @@ class WifiController:
         self._replacement_network_id = None
         wpa_supplicant.write_station_config([profile.as_wpa_network() for profile in self._store.profiles()])
         profile_uuid = stored.uuid
-      except OSError:
+      except (OSError, subprocess.SubprocessError):
+        self._cancel_selection()
         return
 
     profile = self._store.get(profile_uuid)

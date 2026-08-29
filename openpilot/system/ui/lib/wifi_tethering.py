@@ -64,7 +64,10 @@ def stop_dnsmasq(timeout: float = 2.0) -> bool:
   if pid is None:
     return True
   if subprocess.run(["sudo", "kill", str(pid)], check=False).returncode != 0:
-    return False
+    if _owned_dnsmasq_pid() is not None:
+      return False
+    subprocess.run(["sudo", "rm", "-f", DNSMASQ_PID_FILE], check=False)
+    return True
   deadline = time.monotonic() + timeout
   while time.monotonic() < deadline:
     if _owned_dnsmasq_pid() != pid:

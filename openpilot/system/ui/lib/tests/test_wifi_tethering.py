@@ -61,6 +61,18 @@ class TestTethering(TestCase):
 
     assert run.call_args_list == [call(["sudo", "kill", "123"], check=False)]
 
+  def test_stop_accepts_dnsmasq_exit_before_signal(self):
+    with (
+      patch.object(wifi_tethering, "_owned_dnsmasq_pid", side_effect=[123, None]),
+      patch.object(wifi_tethering.subprocess, "run", side_effect=[MagicMock(returncode=1), MagicMock(returncode=0)]) as run,
+    ):
+      assert wifi_tethering.stop_dnsmasq()
+
+    assert run.call_args_list == [
+      call(["sudo", "kill", "123"], check=False),
+      call(["sudo", "rm", "-f", wifi_tethering.DNSMASQ_PID_FILE], check=False),
+    ]
+
   def test_forwarding_command_failure_is_reported(self):
     with (
       patch.object(wifi_tethering, "get_ipv4_forward", return_value=False),

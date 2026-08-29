@@ -1,3 +1,4 @@
+import subprocess
 import threading
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
@@ -193,6 +194,21 @@ class TestWifiController(TestCase):
     ]
     assert controller.state.ssid == "Test"
     assert controller.state.status == ConnectStatus.CONNECTING
+
+  def test_profile_persistence_failure_cancels_selection(self):
+    profile = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "password123")
+    controller, store, dhcp = make_controller()
+    controller._pending_profile = profile
+    controller._temporary_network_id = "9"
+    controller._runtime_profiles = {UUID_A: "9"}
+    controller._request = MagicMock(return_value="OK\n")
+    store.write.side_effect = subprocess.CalledProcessError(1, ["sudo", "install"])
+
+    controller._adopt_status({"wpa_state": "COMPLETED", "ssid": "Test", "id_str": UUID_A})
+
+    assert controller._pending_profile is None
+    dhcp.stop.assert_called_once_with()
+    assert controller.get_callback() == ("disconnected", None)
 
   def test_connected_status_uses_exact_profile_metering(self):
     profiles = (
