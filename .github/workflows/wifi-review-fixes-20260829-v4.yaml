@@ -1,0 +1,23 @@
+name: apply wifi review fixes v4
+on:
+  push:
+    branches: [wifi-review-fixes-20260829]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: wifi-no-networkmanager-refactor
+        fetch-depth: 0
+
+    - name: Apply fixes
+      shell: bash
+      run: |
+        set -euxo pipefail
+        git show origin/wifi-review-fixes-20260829:.tmp/apply_wifi_review_fixes_20260829.py > /tmp/apply_wifi_review_fixes.py
+        python3 /tmp/apply_wifi_review_fixes.py
