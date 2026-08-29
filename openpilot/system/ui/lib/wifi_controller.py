@@ -464,7 +464,8 @@ class WifiController:
       )
       self._replacement_network_id = None
 
-    self._begin_selection(command.ssid)
+    if not self._begin_selection(command.ssid):
+      return
     try:
       network_id = self._request("ADD_NETWORK").strip()
       if not network_id.isdigit():
@@ -498,7 +499,8 @@ class WifiController:
     if not runtime_ids:
       return
 
-    self._begin_selection(ssid)
+    if not self._begin_selection(ssid):
+      return
     try:
       self._request("DISABLE_NETWORK all")
       for network_id in runtime_ids:
@@ -553,7 +555,8 @@ class WifiController:
 
     self._refresh_saved_ssids()
     if self._state.ssid == ssid or self._requested_ssid == ssid:
-      self._clear_l3()
+      if not self._clear_l3():
+        raise RuntimeError("failed to stop Wi-Fi DHCP") from None
       self._state = WifiState()
       self._requested_ssid = None
       self._connecting_since = 0.0
@@ -594,7 +597,9 @@ class WifiController:
       return
 
     wpa_supplicant.write_ap_config(self._tethering_ssid, self._tethering_password)
-    self._clear_l3()
+    if not self._clear_l3():
+      self._callbacks.put(("tethering_failed", None))
+      return
     self._close_ctrl()
     if not wpa_supplicant.stop(wpa_supplicant.WPA_SUPPLICANT_CONF):
       try:
@@ -609,7 +614,16 @@ class WifiController:
       self._callbacks.put(("tethering_failed", None))
       return
     if not self._tethering.start(self._ipv4_forward):
-      wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF)
+      if not self._tethering.stop():
+        self._tethering_active = True
+        self._state = WifiState()
+        self._callbacks.put(("tethering_failed", None))
+        return
+      if not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
+        self._tethering_active = True
+        self._state = WifiState()
+        self._callbacks.put(("tethering_failed", None))
+        return
       self._restore_station_after_tethering_failure()
       self._callbacks.put(("tethering_failed", None))
       return
@@ -718,18 +732,23 @@ class WifiController:
         return
     self._ipv4_forward = enabled
 
-  def _begin_selection(self, ssid: str):
+  def _begin_selection(self, ssid: str) -> bool:
     self._assert_owner()
-    self._clear_l3()
+    if not self._clear_l3():
+      self._callbacks.put(("settings_failed", ssid))
+      return False
     self._requested_ssid = ssid
     self._connecting_since = time.monotonic()
     self._state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTING)
+    return True
 
-  def _clear_l3(self):
+  def _clear_l3(self) -> bool:
     self._assert_owner()
+    if not self._dhcp.stop():
+      return False
     clear_active_profile()
-    self._dhcp.stop()
     self._dhcp.clear_ipv6()
+    return True
 
   def _remove_temporary_network(self):
     self._assert_owner()
@@ -758,14 +777,16 @@ class WifiController:
       self._request("ENABLE_NETWORK all")
     except (OSError, RuntimeError):
       pass
-    self._clear_l3()
+    if not self._clear_l3():
+      raise RuntimeError("failed to stop Wi-Fi DHCP") from None
     self._state = WifiState()
     self._callbacks.put(("disconnected", None))
 
   def _link_lost(self):
     self._assert_owner()
     previous = self._state
-    self._clear_l3()
+    if not self._clear_l3():
+      raise RuntimeError("failed to stop Wi-Fi DHCP") from None
     self._connecting_since = time.monotonic()
     if self._requested_ssid is not None:
       self._state = WifiState(ssid=self._requested_ssid, status=ConnectStatus.CONNECTING)
@@ -842,7 +863,8 @@ class WifiController:
       return
 
     if self._state.profile_uuid is not None and self._state.profile_uuid != profile_uuid:
-      self._clear_l3()
+      if not self._clear_l3():
+        raise RuntimeError("failed to stop Wi-Fi DHCP") from None
 
     self._requested_ssid = None
     self._connecting_since = time.monotonic()
@@ -871,7 +893,8 @@ class WifiController:
       if wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF):
         return
       self._close_ctrl()
-      self._clear_l3()
+      if not self._clear_l3():
+        raise RuntimeError("failed to stop Wi-Fi DHCP") from None
       self._runtime_profiles = {}
       self._pending_profile = None
       self._temporary_network_id = None
@@ -880,7 +903,7 @@ class WifiController:
       self._connecting_since = 0.0
       self._state = WifiState()
       if not self._start_station():
-        raise RuntimeError("failed to recover station wpa_supplicant")
+        raise RuntimeError("failed to recover station wpa_supplicant") from None
       return
 
     if status.get("wpa_state") == "COMPLETED":

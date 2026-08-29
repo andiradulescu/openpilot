@@ -49,6 +49,17 @@ class TestWifiController(TestCase):
     thread.join()
     assert errors == [True]
 
+  def test_selection_aborts_when_dhcp_cannot_stop(self):
+    controller, _, dhcp = make_controller()
+    controller._state = controller.state.__class__(ssid="Old", status=ConnectStatus.CONNECTED, profile_uuid=UUID_A, ipv4_address="10.0.0.2")
+    dhcp.stop.return_value = False
+
+    assert not controller._begin_selection("New")
+
+    assert controller.state.ssid == "Old"
+    assert controller.state.status == ConnectStatus.CONNECTED
+    assert controller.get_callback() == ("settings_failed", "New")
+
   def test_stop_waits_for_controller_shutdown(self):
     controller, _, _ = make_controller()
     thread = MagicMock()
@@ -511,6 +522,25 @@ class TestWifiController(TestCase):
     assert controller.tethering_active
     assert controller.state.ssid == "weedle"
     assert controller.state.status == ConnectStatus.CONNECTED
+
+  def test_failed_tethering_cleanup_does_not_restore_station(self):
+    controller, _, _ = make_controller()
+    controller._close_ctrl = MagicMock()
+    controller._clear_l3 = MagicMock(return_value=True)
+    controller._restore_station_after_tethering_failure = MagicMock()
+    controller._tethering.start = MagicMock(return_value=False)
+    controller._tethering.stop = MagicMock(return_value=False)
+
+    with (
+      patch.object(wifi_controller.wpa_supplicant, "write_ap_config"),
+      patch.object(wifi_controller.wpa_supplicant, "stop", return_value=True),
+      patch.object(wifi_controller.wpa_supplicant, "start", return_value=True),
+    ):
+      controller._enter_tethering()
+
+    controller._restore_station_after_tethering_failure.assert_not_called()
+    assert controller.tethering_active
+    assert controller.get_callback() == ("tethering_failed", None)
 
   def test_failed_ap_start_restores_station(self):
     controller, _, _ = make_controller()
