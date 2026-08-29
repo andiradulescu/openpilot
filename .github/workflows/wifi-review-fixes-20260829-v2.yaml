@@ -1,0 +1,36 @@
+name: apply wifi review fixes v2
+on:
+  push:
+    branches: [wifi-review-fixes-20260829]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: wifi-no-networkmanager-refactor
+        fetch-depth: 0
+
+    - name: Apply fixes
+      shell: bash
+      run: |
+        set -euxo pipefail
+        python3 -m pip install -q pyyaml
+        python3 - <<'PY'
+        import subprocess
+        from pathlib import Path
+        import yaml
+
+        workflow = subprocess.check_output([
+          "git", "show", "origin/wifi-review-fixes-20260829:.github/workflows/wifi-review-fixes-20260829.yaml",
+        ], text=True)
+        data = yaml.safe_load(workflow)
+        script = next(step["run"] for step in data["jobs"]["apply"]["steps"] if step.get("name") == "Apply fixes")
+        script = script.replace("python3 -m pip install -q pytest", "python3 -m pip install -q pytest pyzmq")
+        Path("/tmp/apply-wifi-fixes.sh").write_text(script)
+        PY
+        bash /tmp/apply-wifi-fixes.sh
