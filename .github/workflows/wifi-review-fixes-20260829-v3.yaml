@@ -1,0 +1,105 @@
+name: apply wifi review fixes v3
+on:
+  push:
+    branches: [wifi-review-fixes-20260829]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: wifi-no-networkmanager-refactor
+        fetch-depth: 0
+
+    - name: Apply fixes
+      shell: bash
+      run: |
+        set -euxo pipefail
+        python3 -m pip install -q pyyaml
+        python3 - <<'PYV3'
+        import subprocess
+        from pathlib import Path
+        import yaml
+
+        workflow = subprocess.check_output([
+          "git", "show", "origin/wifi-review-fixes-20260829:.github/workflows/wifi-review-fixes-20260829.yaml",
+        ], text=True)
+        data = yaml.safe_load(workflow)
+        script = next(step["run"] for step in data["jobs"]["apply"]["steps"] if step.get("name") == "Apply fixes")
+
+        extra = r'''python3 - <<'PY'
+from pathlib import Path
+
+path = Path("openpilot/system/ui/lib/wifi_controller.py")
+text = path.read_text()
+old = ''' + "'''" + r'''  def _reconcile_tethering(self):
+    self._assert_owner()
+    if (wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)
+        and wifi_tethering.dnsmasq_running()
+        and wifi_tethering.firewall_ready()):
+      return
+    self._leave_tethering(failed=True)
+''' + "'''" + r'''
+new = ''' + "'''" + r'''  def _reconcile_tethering(self):
+    self._assert_owner()
+    if self._state.status != ConnectStatus.CONNECTED:
+      self._leave_tethering(failed=True)
+      return
+    if (wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)
+        and wifi_tethering.dnsmasq_running()
+        and wifi_tethering.firewall_ready()):
+      return
+    self._leave_tethering(failed=True)
+''' + "'''" + r'''
+if text.count(old) != 1:
+  raise RuntimeError("tethering reconcile anchor mismatch")
+path.write_text(text.replace(old, new, 1))
+
+tests = Path("openpilot/system/ui/lib/tests/test_wifi_controller.py")
+text = tests.read_text()
+anchor = "  def test_healthy_tethering_is_left_running(self):\n"
+addition = ''' + "'''" + r'''  def test_failed_tethering_start_state_retries_cleanup(self):
+    controller, _, _ = make_controller()
+    controller._tethering_active = True
+    controller._state = wifi_controller.WifiState()
+    controller._leave_tethering = MagicMock()
+
+    controller._reconcile_tethering()
+
+    controller._leave_tethering.assert_called_once_with(failed=True)
+
+''' + "'''" + r'''
+if anchor not in text:
+  raise RuntimeError("tethering cleanup test anchor missing")
+tests.write_text(text.replace(anchor, addition + anchor, 1))
+PY
+python3 -m py_compile openpilot/system/ui/lib/wifi_controller.py openpilot/system/ui/lib/tests/test_wifi_controller.py
+git diff --check
+git add openpilot/system/ui/lib/wifi_controller.py openpilot/system/ui/lib/tests/test_wifi_controller.py
+git commit -m "wifi: retry failed tethering cleanup"
+
+python3 -m pip install -q pytest
+mkdir -p /tmp/openpilot-test-stubs
+cat > /tmp/openpilot-test-stubs/sitecustomize.py <<'PY'
+import sys
+import types
+
+class _CloudLog:
+  def __getattr__(self, _):
+    return lambda *args, **kwargs: None
+
+module = types.ModuleType("openpilot.common.swaglog")
+module.cloudlog = _CloudLog()
+sys.modules["openpilot.common.swaglog"] = module
+PY
+export PYTHONPATH="/tmp/openpilot-test-stubs${PYTHONPATH:+:$PYTHONPATH}"
+'''
+        script = script.replace("python3 -m pip install -q pytest", extra)
+        script = script.replace('test "$(git rev-list --count "$expected"..HEAD)" = 3', 'test "$(git rev-list --count "$expected"..HEAD)" = 4')
+        Path("/tmp/apply-wifi-fixes-v3.sh").write_text(script)
+        PYV3
+        bash /tmp/apply-wifi-fixes-v3.sh
