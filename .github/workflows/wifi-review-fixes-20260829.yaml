@@ -1,0 +1,161 @@
+name: apply wifi review fixes
+on:
+  push:
+    branches: [wifi-review-fixes-20260829]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: wifi-no-networkmanager-refactor
+        fetch-depth: 0
+
+    - name: Apply fixes
+      shell: bash
+      run: |
+        set -euxo pipefail
+        expected=b3129a9210aa48fad416d74316455d58341ab5e3
+        test "$(git rev-parse HEAD)" = "$expected"
+        git config user.name "Andrei Radulescu"
+        git config user.email "andi.radulescu@gmail.com"
+
+        python3 - <<'PY'
+        from pathlib import Path
+        import re
+
+        def replace_once(text: str, old: str, new: str) -> str:
+          count = text.count(old)
+          if count != 1:
+            raise RuntimeError(f"expected one match, found {count}: {old[:80]!r}")
+          return text.replace(old, new, 1)
+
+        path = Path("openpilot/system/ui/lib/wifi_controller.py")
+        text = path.read_text()
+
+        text = replace_once(text, '''    wpa_supplicant.write_ap_config(self._tethering_ssid, self._tethering_password)\n    self._clear_l3()\n    self._close_ctrl()\n''', '''    wpa_supplicant.write_ap_config(self._tethering_ssid, self._tethering_password)\n    if not self._clear_l3():\n      self._callbacks.put(("tethering_failed", None))\n      return\n    self._close_ctrl()\n''')
+
+        text = replace_once(text, '''    if not self._tethering.start(self._ipv4_forward):\n      wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF)\n      self._restore_station_after_tethering_failure()\n      self._callbacks.put(("tethering_failed", None))\n      return\n''', '''    if not self._tethering.start(self._ipv4_forward):\n      if not self._tethering.stop():\n        self._tethering_active = True\n        self._state = WifiState()\n        self._callbacks.put(("tethering_failed", None))\n        return\n      if not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):\n        self._tethering_active = True\n        self._state = WifiState()\n        self._callbacks.put(("tethering_failed", None))\n        return\n      self._restore_station_after_tethering_failure()\n      self._callbacks.put(("tethering_failed", None))\n      return\n''')
+
+        text = replace_once(text, '''  def _begin_selection(self, ssid: str):\n    self._assert_owner()\n    self._clear_l3()\n    self._requested_ssid = ssid\n    self._connecting_since = time.monotonic()\n    self._state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTING)\n''', '''  def _begin_selection(self, ssid: str) -> bool:\n    self._assert_owner()\n    if not self._clear_l3():\n      self._callbacks.put(("settings_failed", ssid))\n      return False\n    self._requested_ssid = ssid\n    self._connecting_since = time.monotonic()\n    self._state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTING)\n    return True\n''')
+
+        text = replace_once(text, '''  def _clear_l3(self):\n    self._assert_owner()\n    clear_active_profile()\n    self._dhcp.stop()\n    self._dhcp.clear_ipv6()\n''', '''  def _clear_l3(self) -> bool:\n    self._assert_owner()\n    if not self._dhcp.stop():\n      return False\n    clear_active_profile()\n    self._dhcp.clear_ipv6()\n    return True\n''')
+
+        pattern = re.compile(r'^(    )self\._begin_selection\(([^()\n]+)\)\n', re.MULTILINE)
+        matches = pattern.findall(text)
+        if len(matches) != 2:
+          raise RuntimeError(f"expected two _begin_selection calls, found {len(matches)}")
+        text = pattern.sub(lambda m: f'{m.group(1)}if not self._begin_selection({m.group(2)}):\n{m.group(1)}  return\n', text)
+
+        pattern = re.compile(r'^(\s*)self\._clear_l3\(\)\n', re.MULTILINE)
+        text, count = pattern.subn(lambda m: f'{m.group(1)}if not self._clear_l3():\n{m.group(1)}  raise RuntimeError("failed to stop Wi-Fi DHCP")\n', text)
+        if count < 3:
+          raise RuntimeError(f"expected remaining _clear_l3 callers, found {count}")
+
+        path.write_text(text)
+
+        tests = Path("openpilot/system/ui/lib/tests/test_wifi_controller.py")
+        text = tests.read_text()
+        anchor = '''  def test_stop_waits_for_controller_shutdown(self):\n'''
+        addition = '''  def test_selection_aborts_when_dhcp_cannot_stop(self):\n    controller, _, dhcp = make_controller()\n    controller._state = controller.state.__class__(ssid="Old", status=ConnectStatus.CONNECTED, profile_uuid=UUID_A, ipv4_address="10.0.0.2")\n    dhcp.stop.return_value = False\n\n    assert not controller._begin_selection("New")\n\n    assert controller.state.ssid == "Old"\n    assert controller.state.status == ConnectStatus.CONNECTED\n    assert controller.get_callback() == ("settings_failed", "New")\n\n'''
+        if anchor not in text:
+          raise RuntimeError("selection test anchor missing")
+        text = text.replace(anchor, addition + anchor, 1)
+
+        anchor = '''  def test_failed_ap_start_restores_station(self):\n'''
+        addition = '''  def test_failed_tethering_cleanup_does_not_restore_station(self):\n    controller, _, _ = make_controller()\n    controller._close_ctrl = MagicMock()\n    controller._clear_l3 = MagicMock(return_value=True)\n    controller._restore_station_after_tethering_failure = MagicMock()\n    controller._tethering.start = MagicMock(return_value=False)\n    controller._tethering.stop = MagicMock(return_value=False)\n\n    with (\n      patch.object(wifi_controller.wpa_supplicant, "write_ap_config"),\n      patch.object(wifi_controller.wpa_supplicant, "stop", return_value=True),\n      patch.object(wifi_controller.wpa_supplicant, "start", return_value=True),\n    ):\n      controller._enter_tethering()\n\n    controller._restore_station_after_tethering_failure.assert_not_called()\n    assert controller.tethering_active\n    assert controller.get_callback() == ("tethering_failed", None)\n\n'''
+        if anchor not in text:
+          raise RuntimeError("tethering test anchor missing")
+        tests.write_text(text.replace(anchor, addition + anchor, 1))
+        PY
+
+        python3 -m py_compile openpilot/system/ui/lib/wifi_controller.py openpilot/system/ui/lib/tests/test_wifi_controller.py
+        git diff --check
+        git add openpilot/system/ui/lib/wifi_controller.py openpilot/system/ui/lib/tests/test_wifi_controller.py
+        git commit -m "wifi: abort transitions with live services"
+
+        python3 - <<'PY'
+        from pathlib import Path
+
+        def replace_once(text: str, old: str, new: str) -> str:
+          count = text.count(old)
+          if count != 1:
+            raise RuntimeError(f"expected one match, found {count}: {old[:80]!r}")
+          return text.replace(old, new, 1)
+
+        controller = Path("openpilot/system/ui/lib/wifi_controller.py")
+        text = controller.read_text()
+        text = replace_once(text, "import queue\n", "import queue\nimport subprocess\n")
+        text = replace_once(text, '''        profile_uuid = stored.uuid\n      except OSError:\n        return\n\n    profile = self._store.get(profile_uuid)\n''', '''        profile_uuid = stored.uuid\n      except (OSError, subprocess.SubprocessError):\n        self._cancel_selection()\n        return\n\n    profile = self._store.get(profile_uuid)\n''')
+        controller.write_text(text)
+
+        tethering = Path("openpilot/system/ui/lib/wifi_tethering.py")
+        text = tethering.read_text()
+        text = replace_once(text, '''  if subprocess.run(["sudo", "kill", str(pid)], check=False).returncode != 0:\n    return False\n  deadline = time.monotonic() + timeout\n''', '''  if subprocess.run(["sudo", "kill", str(pid)], check=False).returncode != 0:\n    if _owned_dnsmasq_pid() is not None:\n      return False\n    subprocess.run(["sudo", "rm", "-f", DNSMASQ_PID_FILE], check=False)\n    return True\n  deadline = time.monotonic() + timeout\n''')
+        tethering.write_text(text)
+
+        tests = Path("openpilot/system/ui/lib/tests/test_wifi_controller.py")
+        text = tests.read_text()
+        text = replace_once(text, "import threading\n", "import subprocess\nimport threading\n")
+        anchor = '''  def test_connected_status_uses_exact_profile_metering(self):\n'''
+        addition = '''  def test_profile_persistence_failure_cancels_selection(self):\n    profile = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "password123")\n    controller, store, dhcp = make_controller()\n    controller._pending_profile = profile\n    controller._temporary_network_id = "9"\n    controller._runtime_profiles = {UUID_A: "9"}\n    controller._request = MagicMock(return_value="OK\\n")\n    store.write.side_effect = subprocess.CalledProcessError(1, ["sudo", "install"])\n\n    controller._adopt_status({"wpa_state": "COMPLETED", "ssid": "Test", "id_str": UUID_A})\n\n    assert controller._pending_profile is None\n    dhcp.stop.assert_called_once_with()\n    assert controller.get_callback() == ("disconnected", None)\n\n'''
+        if anchor not in text:
+          raise RuntimeError("persistence test anchor missing")
+        tests.write_text(text.replace(anchor, addition + anchor, 1))
+
+        tests = Path("openpilot/system/ui/lib/tests/test_wifi_tethering.py")
+        text = tests.read_text()
+        anchor = '''  def test_forwarding_command_failure_is_reported(self):\n'''
+        addition = '''  def test_stop_accepts_dnsmasq_exit_before_signal(self):\n    with (\n      patch.object(wifi_tethering, "_owned_dnsmasq_pid", side_effect=[123, None]),\n      patch.object(wifi_tethering.subprocess, "run", side_effect=[MagicMock(returncode=1), MagicMock(returncode=0)]) as run,\n    ):\n      assert wifi_tethering.stop_dnsmasq()\n\n    assert run.call_args_list == [\n      call(["sudo", "kill", "123"], check=False),\n      call(["sudo", "rm", "-f", wifi_tethering.DNSMASQ_PID_FILE], check=False),\n    ]\n\n'''
+        if anchor not in text:
+          raise RuntimeError("dnsmasq test anchor missing")
+        tests.write_text(text.replace(anchor, addition + anchor, 1))
+        PY
+
+        python3 -m py_compile openpilot/system/ui/lib/wifi_controller.py openpilot/system/ui/lib/wifi_tethering.py openpilot/system/ui/lib/tests/test_wifi_controller.py openpilot/system/ui/lib/tests/test_wifi_tethering.py
+        git diff --check
+        git add openpilot/system/ui/lib/wifi_controller.py openpilot/system/ui/lib/wifi_tethering.py openpilot/system/ui/lib/tests/test_wifi_controller.py openpilot/system/ui/lib/tests/test_wifi_tethering.py
+        git commit -m "wifi: handle network service failures"
+
+        python3 - <<'PY'
+        from pathlib import Path
+
+        def replace_once(text: str, old: str, new: str) -> str:
+          count = text.count(old)
+          if count != 1:
+            raise RuntimeError(f"expected one match, found {count}: {old[:80]!r}")
+          return text.replace(old, new, 1)
+
+        controller = Path("openpilot/system/ui/lib/wifi_controller.py")
+        text = controller.read_text()
+        text = replace_once(text, '''    self._ipv4_forward = False\n    self._owner_ident: int | None = None\n''', '''    self._ipv4_forward = False\n    self._published_active_profile: tuple[str, int] | None = None\n    self._owner_ident: int | None = None\n''')
+        text = replace_once(text, '''    clear_active_profile()\n    self._dhcp.clear_ipv6()\n    return True\n''', '''    clear_active_profile()\n    self._published_active_profile = None\n    self._dhcp.clear_ipv6()\n    return True\n''')
+        text = replace_once(text, '''  def _publish_active_profile(self, profile: NetworkProfile):\n    self._assert_owner()\n    try:\n      write_active_profile(profile.uuid, int(profile.metered))\n    except Exception:\n      cloudlog.exception("Failed to publish active Wi-Fi profile")\n''', '''  def _publish_active_profile(self, profile: NetworkProfile) -> bool:\n    self._assert_owner()\n    active_profile = (profile.uuid, int(profile.metered))\n    if self._published_active_profile == active_profile:\n      return True\n    try:\n      write_active_profile(*active_profile)\n    except Exception:\n      cloudlog.exception("Failed to publish active Wi-Fi profile")\n      return False\n    self._published_active_profile = active_profile\n    return True\n''')
+        text = replace_once(text, '''      if self._state.profile_uuid == profile_uuid and self._state.status == ConnectStatus.CONNECTING:\n''', '''      if self._state.profile_uuid == profile_uuid and self._state.status == ConnectStatus.CONNECTED:\n        profile = self._store.get(profile_uuid)\n        if profile is not None:\n          self._publish_active_profile(profile)\n\n      if self._state.profile_uuid == profile_uuid and self._state.status == ConnectStatus.CONNECTING:\n''')
+        controller.write_text(text)
+
+        tests = Path("openpilot/system/ui/lib/tests/test_wifi_controller.py")
+        text = tests.read_text()
+        anchor = '''  def test_station_request_failure_keeps_live_supplicant(self):\n'''
+        addition = '''  def test_active_profile_publication_retries_after_failure(self):\n    profile = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "password123", metered=MeteredType.YES)\n    controller, _, dhcp = make_controller((profile,))\n    controller._state = controller.state.__class__(ssid="Test", status=ConnectStatus.CONNECTING, profile_uuid=UUID_A, metered=MeteredType.YES)\n    controller._request = MagicMock(return_value=f"wpa_state=COMPLETED\\nssid=Test\\nid_str={UUID_A}\\n")\n    dhcp.running = True\n    dhcp.ready.return_value = True\n    dhcp.ipv4_address.return_value = "10.0.0.2"\n    self.write_active.side_effect = [OSError("write failed"), None]\n\n    controller._reconcile()\n    controller._reconcile()\n    controller._reconcile()\n\n    assert controller.state.status == ConnectStatus.CONNECTED\n    assert self.write_active.call_count == 2\n\n'''
+        if anchor not in text:
+          raise RuntimeError("publication test anchor missing")
+        tests.write_text(text.replace(anchor, addition + anchor, 1))
+        PY
+
+        python3 -m py_compile openpilot/system/ui/lib/wifi_controller.py openpilot/system/ui/lib/tests/test_wifi_controller.py
+        git diff --check
+        git add openpilot/system/ui/lib/wifi_controller.py openpilot/system/ui/lib/tests/test_wifi_controller.py
+        git commit -m "wifi: retry active profile publication"
+
+        python3 -m pip install -q pytest
+        python3 -m pytest -q \
+          openpilot/system/ui/lib/tests/test_wifi_controller.py \
+          openpilot/system/ui/lib/tests/test_wifi_tethering.py
+        git diff --check HEAD~3..HEAD
+        test "$(git rev-list --count "$expected"..HEAD)" = 3
+        git push origin HEAD:wifi-no-networkmanager-refactor
