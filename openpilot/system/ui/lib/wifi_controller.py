@@ -304,11 +304,12 @@ class WifiController:
         return
       self._tethering_active = False
     else:
-      if not wpa_supplicant.stop(wpa_supplicant.WPA_SUPPLICANT_CONF):
-        cloudlog.error("Failed to stop station wpa_supplicant during shutdown")
-        return
       if not self._dhcp.stop():
         cloudlog.error("Failed to stop Wi-Fi DHCP during shutdown")
+        return
+      if not wpa_supplicant.stop(wpa_supplicant.WPA_SUPPLICANT_CONF):
+        self._dhcp.start()
+        cloudlog.error("Failed to stop station wpa_supplicant during shutdown")
         return
       self._dhcp.clear_ipv6()
 

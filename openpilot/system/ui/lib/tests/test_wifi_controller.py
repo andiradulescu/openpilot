@@ -138,11 +138,26 @@ class TestWifiController(TestCase):
     dhcp.stop.return_value = False
     with (
       patch.object(wifi_controller.wpa_supplicant, "is_running", return_value=False),
-      patch.object(wifi_controller.wpa_supplicant, "stop", return_value=True),
+      patch.object(wifi_controller.wpa_supplicant, "stop", return_value=True) as wpa_supplicant_stop,
       patch.object(wifi_controller.wpa_supplicant, "restore_networkmanager") as restore_networkmanager,
     ):
       controller._shutdown()
 
+    restore_networkmanager.assert_not_called()
+    wpa_supplicant_stop.assert_not_called()
+
+  def test_shutdown_restores_dhcp_when_station_owner_cannot_stop(self):
+    controller, _, dhcp = make_controller()
+    controller._close_ctrl = MagicMock()
+    dhcp.stop.return_value = True
+    with (
+      patch.object(wifi_controller.wpa_supplicant, "is_running", return_value=False),
+      patch.object(wifi_controller.wpa_supplicant, "stop", return_value=False),
+      patch.object(wifi_controller.wpa_supplicant, "restore_networkmanager") as restore_networkmanager,
+    ):
+      controller._shutdown()
+
+    dhcp.start.assert_called_once_with()
     restore_networkmanager.assert_not_called()
 
   def test_station_attach_failure_rolls_back_acquisition(self):
