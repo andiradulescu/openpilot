@@ -669,6 +669,9 @@ class WifiController:
 
   def _reconcile_tethering(self):
     self._assert_owner()
+    if self._state.status != ConnectStatus.CONNECTED:
+      self._leave_tethering(failed=True)
+      return
     if (wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)
         and wifi_tethering.dnsmasq_running()
         and wifi_tethering.firewall_ready()):

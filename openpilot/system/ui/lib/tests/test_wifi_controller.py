@@ -521,9 +521,20 @@ class TestWifiController(TestCase):
 
     controller._leave_tethering.assert_called_once_with(failed=True)
 
+  def test_failed_tethering_start_state_retries_cleanup(self):
+    controller, _, _ = make_controller()
+    controller._tethering_active = True
+    controller._state = wifi_controller.WifiState()
+    controller._leave_tethering = MagicMock()
+
+    controller._reconcile_tethering()
+
+    controller._leave_tethering.assert_called_once_with(failed=True)
+
   def test_healthy_tethering_is_left_running(self):
     controller, _, _ = make_controller()
     controller._tethering_active = True
+    controller._state = wifi_controller.WifiState(ssid="weedle", status=ConnectStatus.CONNECTED, ipv4_address=wifi_controller.wifi_tethering.TETHERING_ADDRESS)
     controller._leave_tethering = MagicMock()
 
     with (
