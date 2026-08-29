@@ -269,6 +269,23 @@ class TestWifiController(TestCase):
     self.write_active.assert_called_once_with(UUID_A, int(MeteredType.YES))
     assert controller.get_callback() == ("activated", None)
 
+  def test_active_profile_publication_retries_after_failure(self):
+    profile = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "password123", metered=MeteredType.YES)
+    controller, _, dhcp = make_controller((profile,))
+    controller._state = controller.state.__class__(ssid="Test", status=ConnectStatus.CONNECTING, profile_uuid=UUID_A, metered=MeteredType.YES)
+    controller._request = MagicMock(return_value=f"wpa_state=COMPLETED\nssid=Test\nid_str={UUID_A}\n")
+    dhcp.running = True
+    dhcp.ready.return_value = True
+    dhcp.ipv4_address.return_value = "10.0.0.2"
+    self.write_active.side_effect = [OSError("write failed"), None]
+
+    controller._reconcile()
+    controller._reconcile()
+    controller._reconcile()
+
+    assert controller.state.status == ConnectStatus.CONNECTED
+    assert self.write_active.call_count == 2
+
   def test_station_request_failure_keeps_live_supplicant(self):
     controller, _, _ = make_controller()
     controller._request = MagicMock(side_effect=OSError)

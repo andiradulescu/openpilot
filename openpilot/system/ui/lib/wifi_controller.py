@@ -120,6 +120,7 @@ class WifiController:
     self._tethering_password = tethering_password
     self._tethering_active = False
     self._ipv4_forward = False
+    self._published_active_profile: tuple[str, int] | None = None
     self._owner_ident: int | None = None
     self._thread: threading.Thread | None = None
     self._exit = False
@@ -748,6 +749,7 @@ class WifiController:
     if not self._dhcp.stop():
       return False
     clear_active_profile()
+    self._published_active_profile = None
     self._dhcp.clear_ipv6()
     return True
 
@@ -880,12 +882,18 @@ class WifiController:
     except (OSError, RuntimeError):
       pass
 
-  def _publish_active_profile(self, profile: NetworkProfile):
+  def _publish_active_profile(self, profile: NetworkProfile) -> bool:
     self._assert_owner()
+    active_profile = (profile.uuid, int(profile.metered))
+    if self._published_active_profile == active_profile:
+      return True
     try:
-      write_active_profile(profile.uuid, int(profile.metered))
+      write_active_profile(*active_profile)
     except Exception:
       cloudlog.exception("Failed to publish active Wi-Fi profile")
+      return False
+    self._published_active_profile = active_profile
+    return True
 
   def _reconcile(self):
     self._assert_owner()
@@ -918,6 +926,11 @@ class WifiController:
           and self._state.status == ConnectStatus.CONNECTED
           and (not self._dhcp.running or not self._dhcp.ready())):
         self._link_lost()
+
+      if self._state.profile_uuid == profile_uuid and self._state.status == ConnectStatus.CONNECTED:
+        profile = self._store.get(profile_uuid)
+        if profile is not None:
+          self._publish_active_profile(profile)
 
       if self._state.profile_uuid == profile_uuid and self._state.status == ConnectStatus.CONNECTING:
         if not self._dhcp.running:
