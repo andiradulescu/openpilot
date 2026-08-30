@@ -214,7 +214,10 @@ class TetheringStore:
     try:
       with open(temp_path) as f:
         raw = f.read()
-      return self._write(replace(profile, password=password), raw)
+      try:
+        return self._write(replace(profile, password=password), raw)
+      except (OSError, subprocess.SubprocessError):
+        return None
     finally:
       os.unlink(temp_path)
 
