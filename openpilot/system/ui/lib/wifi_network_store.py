@@ -196,9 +196,14 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
   represented_sections = {"connection", wifi, "ipv4", "ipv6"}
   if security_section is not None:
     represented_sections.add(security_section)
-  read_only = not cp.has_option("connection", "autoconnect-retries") or bool(ipv6.get("addr-gen-mode")) or any(
-    section not in represented_sections and any(value for _, value in cp.items(section))
-    for section in cp.sections()
+  read_only = (
+    not cp.has_option("connection", "autoconnect-retries")
+    or not cp.has_option("ipv4", "dns-priority")
+    or bool(ipv6.get("addr-gen-mode"))
+    or any(
+      section not in represented_sections and any(value for _, value in cp.items(section))
+      for section in cp.sections()
+    )
   )
 
   metered = MeteredType.YES if metered_value == 1 else MeteredType.NO if metered_value == 2 else MeteredType.UNKNOWN
