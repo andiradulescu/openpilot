@@ -88,15 +88,17 @@ def clear_interface() -> None:
   subprocess.run(["sudo", "ip", "route", "flush", "dev", "wlan0"], capture_output=True, check=False)
 
 
+def interface_configured() -> bool:
+  result = subprocess.run(["ip", "-4", "-o", "addr", "show", "dev", "wlan0"], capture_output=True, text=True, check=False)
+  return result.returncode == 0 and any(TETHERING_CIDR in line.split() for line in result.stdout.splitlines())
+
+
 def interface_ready() -> bool:
   try:
     flags = int(Path("/sys/class/net/wlan0/flags").read_text().strip(), 16)
   except (OSError, ValueError):
     return False
-  if not flags & 1:  # IFF_UP
-    return False
-  result = subprocess.run(["ip", "-4", "-o", "addr", "show", "dev", "wlan0"], capture_output=True, text=True, check=False)
-  return result.returncode == 0 and any(TETHERING_CIDR in line.split() for line in result.stdout.splitlines())
+  return bool(flags & 1) and interface_configured()  # IFF_UP
 
 
 def get_ipv4_forward() -> bool:
@@ -234,7 +236,7 @@ class TetheringSession:
 
   @staticmethod
   def cleanup_stale() -> bool:
-    if not dnsmasq_running() and not firewall_present():
+    if not dnsmasq_running() and not firewall_present() and not interface_configured():
       return True
     if not stop_dnsmasq():
       return False
