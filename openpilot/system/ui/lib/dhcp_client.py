@@ -42,14 +42,22 @@ class DhcpClient:
   def start(self) -> bool:
     if self.running:
       return True
-    subprocess.run(["sudo", "install", "-d", "-o", "root", "-g", "root", "-m", "755", DHCP_RUNTIME_DIR], check=True)
-    subprocess.run(["sudo", "rm", "-f", self._pid_file], check=False)
-    self._proc = subprocess.Popen(
-      ["sudo", "udhcpc", "-i", self._iface, "-f", "-t", "5", "-T", "3", "-p", self._pid_file, "-s", DHCP_SCRIPT],
-      stdout=subprocess.DEVNULL,
-      stderr=subprocess.DEVNULL,
-      start_new_session=True,
-    )
+    try:
+      subprocess.run(["sudo", "install", "-d", "-o", "root", "-g", "root", "-m", "755", DHCP_RUNTIME_DIR], check=True)
+      subprocess.run(["sudo", "rm", "-f", self._pid_file], check=False)
+      self._proc = subprocess.Popen(
+        ["sudo", "udhcpc", "-i", self._iface, "-f", "-t", "5", "-T", "3", "-p", self._pid_file, "-s", DHCP_SCRIPT],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+      )
+    except (OSError, subprocess.SubprocessError):
+      self._proc = None
+      try:
+        subprocess.run(["sudo", "rm", "-f", self._pid_file], check=False)
+      except OSError:
+        pass
+      return False
     return True
 
   def stop(self, timeout: float = 3.0) -> bool:
