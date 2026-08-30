@@ -396,8 +396,10 @@ class WifiController:
   def _restore_network_enablement(self):
     self._assert_owner()
     self._request("DISABLE_NETWORK all")
-    for network_id in sorted(set(self._runtime_profiles.values()), key=int):
-      self._request(f"ENABLE_NETWORK {network_id}")
+    for profile in self._store.profiles():
+      network_id = self._runtime_profiles.get(profile.uuid)
+      if network_id is not None and (profile.autoconnect or profile.uuid == self._state.profile_uuid):
+        self._request(f"ENABLE_NETWORK {network_id}")
 
   def _scan(self):
     self._assert_owner()
