@@ -79,7 +79,7 @@ def _encode_ssid(value: str) -> str:
 
 
 def _display_ssid(value: str) -> str:
-  return value.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+  return value.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace").replace("\x00", "�")
 
 
 def _encode_keyfile_string(value: str) -> str:
