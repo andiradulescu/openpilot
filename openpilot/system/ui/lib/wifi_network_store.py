@@ -367,7 +367,10 @@ class NetworkStore:
     profile = self.get(profile_uuid)
     if profile is None or not self.can_mutate(profile_uuid):
       return None
-    return self.write(replace(profile, metered=metered))
+    try:
+      return self.write(replace(profile, metered=metered))
+    except (OSError, subprocess.SubprocessError):
+      return None
 
   def remove_ssid(self, ssid: str) -> bool:
     profiles = self.profiles_for_ssid(ssid)
