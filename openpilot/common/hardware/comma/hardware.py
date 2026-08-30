@@ -226,6 +226,7 @@ class HardwareComma(HardwareBase):
             return True
           if active_profile[1] == 2:
             return False
+          return super().get_network_metered(network_type)
 
         ssid = status.get("ssid", "")
         if ssid:
