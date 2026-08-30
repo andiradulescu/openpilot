@@ -463,6 +463,7 @@ class WifiController:
         bssid=old.bssid,
         metered=old.metered,
         ipv6_enabled=old.ipv6_enabled,
+        autoconnect=old.autoconnect,
       )
       self._replacement_network_id = self._runtime_profiles.get(old.uuid)
     else:
