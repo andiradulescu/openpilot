@@ -40,9 +40,10 @@ class NetworkProfile:
   path: str = ""
   persistent: bool = True
   read_only: bool = False
+  autoconnect: bool = True
 
   def as_wpa_network(self) -> WpaNetwork:
-    return WpaNetwork(self.ssid, self.security, self.psk, self.hidden, self.uuid, self.priority, self.bssid)
+    return WpaNetwork(self.ssid, self.security, self.psk, self.hidden, self.uuid, self.priority, self.bssid, disabled=not self.autoconnect)
 
 
 def _parse_uuid(value: str) -> str | None:
@@ -147,7 +148,7 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
     return None
   if cp.get("connection", "interface-name", fallback="") not in ("", "wlan0"):
     return None
-  if not autoconnect or retries != 0 or not 0 <= priority <= 255:
+  if retries != 0 or not 0 <= priority <= 255:
     return None
   if cp.get(wifi, "mode", fallback="infrastructure") != "infrastructure":
     return None
@@ -197,7 +198,8 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
   if security_section is not None:
     represented_sections.add(security_section)
   read_only = (
-    not cp.has_option("connection", "autoconnect-retries")
+    not autoconnect
+    or not cp.has_option("connection", "autoconnect-retries")
     or not cp.has_option("ipv4", "dns-priority")
     or bool(ipv6.get("addr-gen-mode"))
     or any(
@@ -220,6 +222,7 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
     path=path,
     persistent=persistent,
     read_only=read_only,
+    autoconnect=autoconnect,
   )
 
 
@@ -229,7 +232,7 @@ def render_profile(profile: NetworkProfile) -> str:
     f"id={_encode_keyfile_string(_display_ssid(profile.ssid))}",
     f"uuid={profile.uuid}",
     "type=wifi",
-    "autoconnect=true",
+    f"autoconnect={'true' if profile.autoconnect else 'false'}",
     "autoconnect-retries=0",
     f"autoconnect-priority={profile.priority}",
     f"metered={int(profile.metered)}",
