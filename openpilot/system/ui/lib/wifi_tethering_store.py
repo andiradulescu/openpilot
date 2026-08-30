@@ -194,7 +194,10 @@ class TetheringStore:
     if any(item.ssid == ssid for item in self._profiles.values()) or not _valid_password(password):
       return None
     profile = TetheringProfile(str(uuid.uuid4()), ssid, password)
-    return self._write(profile, render_tethering_profile(profile))
+    try:
+      return self._write(profile, render_tethering_profile(profile))
+    except (OSError, subprocess.SubprocessError):
+      return None
 
   def set_password(self, ssid: str, password: str) -> TetheringProfile | None:
     profile = self.get(ssid)
