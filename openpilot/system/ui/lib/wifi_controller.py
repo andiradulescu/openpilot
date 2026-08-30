@@ -393,6 +393,12 @@ class WifiController:
         runtime_profiles[profile_uuid] = network_id
     self._runtime_profiles = runtime_profiles
 
+  def _restore_network_enablement(self):
+    self._assert_owner()
+    self._request("DISABLE_NETWORK all")
+    for network_id in sorted(set(self._runtime_profiles.values()), key=int):
+      self._request(f"ENABLE_NETWORK {network_id}")
+
   def _scan(self):
     self._assert_owner()
     try:
@@ -580,7 +586,7 @@ class WifiController:
     try:
       self._request("RECONFIGURE")
       self._sync_runtime_profiles()
-      self._request("ENABLE_NETWORK all")
+      self._restore_network_enablement()
     except (OSError, RuntimeError):
       pass
     self._callbacks.put(("forgotten", ssid))
@@ -822,7 +828,7 @@ class WifiController:
     self._requested_ssid = None
     self._connecting_since = 0.0
     try:
-      self._request("ENABLE_NETWORK all")
+      self._restore_network_enablement()
     except (OSError, RuntimeError):
       pass
     if not self._clear_l3():
@@ -923,7 +929,7 @@ class WifiController:
       self._dhcp.start()
     self._state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTING, profile_uuid=profile_uuid, metered=profile.metered)
     try:
-      self._request("ENABLE_NETWORK all")
+      self._restore_network_enablement()
     except (OSError, RuntimeError):
       pass
 
