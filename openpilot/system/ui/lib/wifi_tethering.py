@@ -83,9 +83,16 @@ def configure_interface() -> None:
   subprocess.run(["sudo", "ip", "link", "set", "wlan0", "up"], check=True)
 
 
-def clear_interface() -> None:
-  subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], capture_output=True, check=False)
-  subprocess.run(["sudo", "ip", "route", "flush", "dev", "wlan0"], capture_output=True, check=False)
+def interface_cleared() -> bool:
+  addresses = subprocess.run(["ip", "-4", "-o", "addr", "show", "dev", "wlan0"], capture_output=True, text=True, check=False)
+  routes = subprocess.run(["ip", "-4", "route", "show", "dev", "wlan0"], capture_output=True, text=True, check=False)
+  return addresses.returncode == 0 and routes.returncode == 0 and not addresses.stdout.strip() and not routes.stdout.strip()
+
+
+def clear_interface() -> bool:
+  addresses = subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], capture_output=True, check=False)
+  routes = subprocess.run(["sudo", "ip", "route", "flush", "dev", "wlan0"], capture_output=True, check=False)
+  return addresses.returncode == 0 and routes.returncode == 0 and interface_cleared()
 
 
 def interface_configured() -> bool:
@@ -161,13 +168,14 @@ def install_firewall() -> None:
     subprocess.run(jump, check=True)
 
 
-def remove_firewall() -> None:
+def remove_firewall() -> bool:
   nat, filt, _, jumps = _commands()
   for jump in jumps:
     _delete_jump(jump)
   for command, chain in ((nat, NAT_CHAIN), (filt, INPUT_CHAIN), (filt, FORWARD_CHAIN)):
     subprocess.run([*command, "-F", chain], capture_output=True, check=False)
     subprocess.run([*command, "-X", chain], capture_output=True, check=False)
+  return not firewall_present()
 
 
 def firewall_ready() -> bool:
@@ -211,27 +219,32 @@ class TetheringSession:
   def _rollback_start(self) -> None:
     if dnsmasq_running() and not stop_dnsmasq():
       return
-    remove_firewall()
-    clear_interface()
+    if not remove_firewall():
+      return
+    if not clear_interface():
+      return
     if self._previous_ipv4_forward is not None:
       try:
         set_ipv4_forward(self._previous_ipv4_forward)
       except (OSError, subprocess.SubprocessError, RuntimeError):
-        pass
+        return
     self._previous_ipv4_forward = None
 
   def stop(self) -> bool:
     if not stop_dnsmasq():
       return False
-    remove_firewall()
-    clear_interface()
+    if not remove_firewall():
+      return False
+    if not clear_interface():
+      return False
     previous_ipv4_forward = self._previous_ipv4_forward
-    self._previous_ipv4_forward = None
     if previous_ipv4_forward is not None:
       try:
         set_ipv4_forward(previous_ipv4_forward)
       except (OSError, subprocess.SubprocessError, RuntimeError):
         cloudlog.exception("Failed to restore IPv4 forwarding after tethering")
+        return False
+    self._previous_ipv4_forward = None
     return True
 
   @staticmethod
@@ -240,8 +253,10 @@ class TetheringSession:
       return True
     if not stop_dnsmasq():
       return False
-    remove_firewall()
-    clear_interface()
+    if not remove_firewall():
+      return False
+    if not clear_interface():
+      return False
     try:
       set_ipv4_forward(False)
     except (OSError, subprocess.SubprocessError, RuntimeError):
