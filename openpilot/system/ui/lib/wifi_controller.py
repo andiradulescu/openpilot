@@ -21,6 +21,8 @@ from openpilot.system.ui.lib import wifi_tethering, wpa_supplicant
 SCAN_PERIOD_SECONDS = 5.0
 RECONCILE_PERIOD_SECONDS = 0.5
 CONNECT_TIMEOUT_SECONDS = 20.0
+CONTROL_FAILURE_LIMIT = 5
+TETHERING_FIREWALL_CHECK_PERIOD_SECONDS = 5.0
 DEFAULT_TETHERING_PASSWORD = "swagswagcomma"
 
 
@@ -115,11 +117,13 @@ class WifiController:
     self._connecting_since = 0.0
     self._last_scan = 0.0
     self._last_reconcile = 0.0
+    self._control_failures = 0
     self._tethering = wifi_tethering.TetheringSession()
     self._tethering_ssid = tethering_ssid
     self._tethering_password = tethering_password
     self._tethering_password_rollback: str | None = None
     self._tethering_active = False
+    self._last_tethering_firewall_check = 0.0
     self._ipv4_forward = False
     self._published_active_profile: tuple[str, int] | None = None
     self._owner_ident: int | None = None
@@ -354,7 +358,13 @@ class WifiController:
 
   def _start_station(self) -> bool:
     self._assert_owner()
-    wpa_supplicant.write_station_config([profile.as_wpa_network() for profile in self._store.profiles()])
+    try:
+      wpa_supplicant.write_station_config([profile.as_wpa_network() for profile in self._store.profiles()])
+    except OSError:
+      cloudlog.exception("Failed to write station wpa_supplicant configuration")
+      if not wpa_supplicant.restore_networkmanager():
+        cloudlog.error("Failed to return wlan0 to NetworkManager after station configuration failure")
+      return False
     acquisition = wpa_supplicant.begin_station()
     if acquisition is None:
       return False
@@ -549,20 +559,18 @@ class WifiController:
       for network_id in runtime_ids:
         self._request(f"DISABLE_NETWORK {network_id}")
     except (OSError, RuntimeError):
-      for network_id in runtime_ids:
-        try:
-          self._request(f"ENABLE_NETWORK {network_id}")
-        except (OSError, RuntimeError):
-          pass
+      try:
+        self._restore_network_enablement()
+      except (OSError, RuntimeError):
+        pass
       self._callbacks.put(("forget_failed", ssid))
       return
 
     if not self._store.remove_ssid(ssid):
-      for network_id in runtime_ids:
-        try:
-          self._request(f"ENABLE_NETWORK {network_id}")
-        except (OSError, RuntimeError):
-          pass
+      try:
+        self._restore_network_enablement()
+      except (OSError, RuntimeError):
+        pass
       self._callbacks.put(("forget_failed", ssid))
       return
 
@@ -653,6 +661,7 @@ class WifiController:
     self._connecting_since = 0.0
     self._tethering_password_rollback = None
     self._tethering_active = True
+    self._last_tethering_firewall_check = time.monotonic()
     self._state = WifiState(ssid=self._tethering_ssid, status=ConnectStatus.CONNECTED, ipv4_address=wifi_tethering.TETHERING_ADDRESS)
     self._callbacks.put(("activated", None))
 
@@ -674,6 +683,7 @@ class WifiController:
 
     self._tethering_password_rollback = None
     self._tethering_active = False
+    self._last_tethering_firewall_check = 0.0
     self._state = WifiState()
     if self._start_station():
       self._callbacks.put(("tethering_failed" if failed else "disconnected", None))
@@ -681,6 +691,7 @@ class WifiController:
 
     if wpa_supplicant.start(wpa_supplicant.WPA_AP_CONF) and self._tethering.start(self._ipv4_forward):
       self._tethering_active = True
+      self._last_tethering_firewall_check = time.monotonic()
       self._state = WifiState(ssid=self._tethering_ssid, status=ConnectStatus.CONNECTED, ipv4_address=wifi_tethering.TETHERING_ADDRESS)
     self._callbacks.put(("tethering_failed", None))
 
@@ -700,11 +711,18 @@ class WifiController:
     if self._state.status != ConnectStatus.CONNECTED:
       self._leave_tethering(failed=True)
       return
-    if (wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)
-        and wifi_tethering.dnsmasq_running()
-        and wifi_tethering.firewall_ready()):
+    if not (wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)
+            and wifi_tethering.dnsmasq_running()
+            and wifi_tethering.interface_ready()):
+      self._leave_tethering(failed=True)
       return
-    self._leave_tethering(failed=True)
+
+    now = time.monotonic()
+    if now - self._last_tethering_firewall_check < TETHERING_FIREWALL_CHECK_PERIOD_SECONDS:
+      return
+    self._last_tethering_firewall_check = now
+    if not wifi_tethering.firewall_ready():
+      self._leave_tethering(failed=True)
 
   def _set_tethering_password(self, password: str):
     self._assert_owner()
@@ -949,13 +967,36 @@ class WifiController:
     self._published_active_profile = active_profile
     return True
 
+  def _recover_station_control(self):
+    self._assert_owner()
+    self._close_ctrl()
+    if not self._clear_l3():
+      raise RuntimeError("failed to stop Wi-Fi DHCP") from None
+    if not wpa_supplicant.stop(wpa_supplicant.WPA_SUPPLICANT_CONF):
+      raise RuntimeError("failed to stop unresponsive station wpa_supplicant") from None
+    self._runtime_profiles = {}
+    self._pending_profile = None
+    self._temporary_network_id = None
+    self._replacement_network_id = None
+    self._requested_ssid = None
+    self._connecting_since = 0.0
+    self._state = WifiState()
+    self._control_failures = 0
+    if not self._start_station():
+      raise RuntimeError("failed to recover station wpa_supplicant") from None
+
   def _reconcile(self):
     self._assert_owner()
     try:
       status = parse_status(self._request("STATUS"))
     except (OSError, RuntimeError):
       if wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF):
+        self._control_failures += 1
+        if self._control_failures < CONTROL_FAILURE_LIMIT:
+          return
+        self._recover_station_control()
         return
+      self._control_failures = 0
       self._close_ctrl()
       if not self._clear_l3():
         raise RuntimeError("failed to stop Wi-Fi DHCP") from None
@@ -969,6 +1010,7 @@ class WifiController:
       if not self._start_station():
         raise RuntimeError("failed to recover station wpa_supplicant") from None
       return
+    self._control_failures = 0
 
     if status.get("wpa_state") == "COMPLETED":
       ssid = status.get("ssid")
@@ -982,6 +1024,16 @@ class WifiController:
         self._link_lost()
 
       if self._state.profile_uuid == profile_uuid and self._state.status == ConnectStatus.CONNECTED:
+        ipv4_address = self._dhcp.ipv4_address()
+        if ipv4_address != self._state.ipv4_address:
+          self._state = WifiState(
+            ssid=self._state.ssid,
+            status=self._state.status,
+            profile_uuid=self._state.profile_uuid,
+            ipv4_address=ipv4_address,
+            metered=self._state.metered,
+          )
+          self._callbacks.put(("networks_updated", None))
         profile = self._store.get(profile_uuid)
         if profile is not None:
           self._publish_active_profile(profile)
@@ -1012,6 +1064,9 @@ class WifiController:
               self._request("REASSOCIATE")
           except (OSError, RuntimeError):
             pass
+
+      if self._state.status == ConnectStatus.CONNECTING and self._connecting_since and time.monotonic() - self._connecting_since >= CONNECT_TIMEOUT_SECONDS:
+        self._cancel_selection()
       return
     if self._state.status == ConnectStatus.CONNECTED:
       self._link_lost()
