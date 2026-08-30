@@ -593,13 +593,17 @@ class WifiController:
       except (OSError, RuntimeError):
         pass
 
-    wpa_supplicant.write_station_config([profile.as_wpa_network() for profile in self._store.profiles()])
     try:
-      self._request("RECONFIGURE")
-      self._sync_runtime_profiles()
-      self._restore_network_enablement()
-    except (OSError, RuntimeError):
-      pass
+      wpa_supplicant.write_station_config([profile.as_wpa_network() for profile in self._store.profiles()])
+    except OSError:
+      cloudlog.exception("Failed to rewrite station wpa_supplicant configuration after forget")
+    else:
+      try:
+        self._request("RECONFIGURE")
+        self._sync_runtime_profiles()
+        self._restore_network_enablement()
+      except (OSError, RuntimeError):
+        pass
     self._callbacks.put(("forgotten", ssid))
 
   def _set_tethering_active(self, active: bool):
