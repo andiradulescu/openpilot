@@ -88,6 +88,17 @@ def clear_interface() -> None:
   subprocess.run(["sudo", "ip", "route", "flush", "dev", "wlan0"], capture_output=True, check=False)
 
 
+def interface_ready() -> bool:
+  try:
+    flags = int(Path("/sys/class/net/wlan0/flags").read_text().strip(), 16)
+  except (OSError, ValueError):
+    return False
+  if not flags & 1:  # IFF_UP
+    return False
+  result = subprocess.run(["ip", "-4", "-o", "addr", "show", "dev", "wlan0"], capture_output=True, text=True, check=False)
+  return result.returncode == 0 and any(TETHERING_CIDR in line.split() for line in result.stdout.splitlines())
+
+
 def get_ipv4_forward() -> bool:
   try:
     return Path("/proc/sys/net/ipv4/ip_forward").read_text().strip() == "1"
@@ -158,6 +169,8 @@ def remove_firewall() -> None:
 
 
 def firewall_ready() -> bool:
+  if not interface_ready():
+    return False
   _, _, rules, jumps = _commands()
   checks = [_replace_operation(command, "-C") for command in (*rules, *jumps)]
   return all(subprocess.run(command, capture_output=True, check=False).returncode == 0 for command in checks)
