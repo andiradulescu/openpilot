@@ -1,4 +1,5 @@
 import os
+import select
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,8 @@ WPA_AP_CONF = "/tmp/wpa_supplicant_ap.conf"
 WPA_CTRL_INTERFACE = f"ctrl_interface=DIR={WPA_CTRL_DIR} GROUP=netdev"
 _ACQUISITION_READY = "READY\n"
 _ACQUISITION_COMMIT = "COMMIT\n"
+_ACQUISITION_READY_TIMEOUT = 10.0
+_ACQUISITION_STOP_TIMEOUT = 1.0
 
 
 class _StationAcquisition:
@@ -205,7 +208,50 @@ def start(conf: str) -> bool:
   return False
 
 
+def _wait_for_acquisition_ready(proc: subprocess.Popen[str], timeout: float = _ACQUISITION_READY_TIMEOUT) -> bool:
+  assert proc.stdout is not None
+  target = _ACQUISITION_READY.encode()
+  ready = b""
+  deadline = time.monotonic() + timeout
+  fd = proc.stdout.fileno()
+  while len(ready) < len(target):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+      return False
+    try:
+      readable, _, _ = select.select([fd], [], [], remaining)
+      if not readable:
+        return False
+      chunk = os.read(fd, len(target) - len(ready))
+    except (OSError, ValueError):
+      return False
+    if not chunk:
+      return False
+    ready += chunk
+  return ready == target
+
+
+def _terminate_station_acquisition(proc: subprocess.Popen[str], timeout: float = _ACQUISITION_STOP_TIMEOUT) -> None:
+  pgid = proc.pid
+  for signal_name in ("-TERM", "-KILL"):
+    try:
+      subprocess.run(["sudo", "kill", signal_name, "--", f"-{pgid}"], check=False, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+      pass
+    try:
+      proc.wait(timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+      pass
+    try:
+      os.killpg(pgid, 0)
+    except ProcessLookupError:
+      return
+    except PermissionError:
+      pass
+
+
 def begin_station() -> _StationAcquisition | None:
+  was_running = is_running(WPA_SUPPLICANT_CONF)
   try:
     proc = subprocess.Popen(
       [sys.executable, "-m", __name__, "--station-acquisition"],
@@ -218,13 +264,19 @@ def begin_station() -> _StationAcquisition | None:
     return None
 
   assert proc.stdin is not None and proc.stdout is not None
-  try:
-    ready = proc.stdout.readline()
-  except OSError:
-    ready = ""
-  if ready != _ACQUISITION_READY:
-    proc.stdin.close()
-    proc.wait()
+  if not _wait_for_acquisition_ready(proc):
+    if proc.poll() is None:
+      _terminate_station_acquisition(proc)
+      if not was_running:
+        _rollback_station()
+    try:
+      proc.stdin.close()
+    except OSError:
+      pass
+    try:
+      proc.stdout.close()
+    except OSError:
+      pass
     return None
   proc.stdout.close()
   return _StationAcquisition(proc)
