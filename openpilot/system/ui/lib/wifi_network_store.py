@@ -339,7 +339,7 @@ class NetworkStore:
     )
 
   def _path(self, profile: NetworkProfile) -> str:
-    safe_ssid = profile.ssid.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace").replace("/", "_")
+    safe_ssid = profile.ssid.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace").replace("/", "_").replace("\x00", "_")
     return os.path.join(self._directory, f"{profile.uuid}-{safe_ssid}.nmconnection")
 
   def write(self, profile: NetworkProfile) -> NetworkProfile:
