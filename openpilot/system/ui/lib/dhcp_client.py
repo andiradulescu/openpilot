@@ -80,12 +80,25 @@ class DhcpClient:
         if self._owned_pid() == pid:
           return False
     elif self._proc is not None and self._proc.poll() is None:
-      self._proc.terminate()
+      pgid = self._proc.pid
+      try:
+        owned_pgid = os.getpgid(pgid)
+      except OSError:
+        owned_pgid = None
+      if pgid <= 1 or owned_pgid != pgid or pgid == os.getpgrp():
+        return False
+      try:
+        subprocess.run(["sudo", "kill", "-TERM", "--", f"-{pgid}"], check=False)
+      except OSError:
+        return False
       try:
         self._proc.wait(timeout=timeout)
       except subprocess.TimeoutExpired:
-        self._proc.kill()
-        self._proc.wait(timeout=timeout)
+        try:
+          subprocess.run(["sudo", "kill", "-KILL", "--", f"-{pgid}"], check=False)
+          self._proc.wait(timeout=timeout)
+        except (OSError, subprocess.TimeoutExpired):
+          return False
 
     self._proc = None
     subprocess.run(["sudo", "rm", "-f", self._pid_file], check=False)
