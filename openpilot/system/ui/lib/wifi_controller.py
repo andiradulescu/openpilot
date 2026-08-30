@@ -955,6 +955,13 @@ class WifiController:
           self._callbacks.put(("activated", None))
         elif self._connecting_since and time.monotonic() - self._connecting_since >= CONNECT_TIMEOUT_SECONDS:
           self._cancel_selection()
+          try:
+            network_id = self._runtime_profiles.get(profile_uuid)
+            if network_id is not None:
+              self._request(f"DISABLE_NETWORK {network_id}")
+              self._request("REASSOCIATE")
+          except (OSError, RuntimeError):
+            pass
       return
     if self._state.status == ConnectStatus.CONNECTED:
       self._link_lost()
