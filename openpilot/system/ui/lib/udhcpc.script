@@ -7,9 +7,9 @@ wifi_route_metric=600
 
 case "$1" in
   bound|renew)
-    gateway=${router%% *}
+    gateway=$(ip -4 route show default dev "$interface" | awk '$1 == "default" { for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }') || exit $?
     if [ -z "$gateway" ]; then
-      gateway=$(ip -4 route show default dev "$interface" | awk '$1 == "default" { for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }') || exit $?
+      gateway=${router%% *}
     fi
     [ -n "$gateway" ] || exit 1
     ip -4 route flush default dev "$interface" || exit $?
