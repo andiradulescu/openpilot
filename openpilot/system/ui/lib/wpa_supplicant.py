@@ -69,6 +69,7 @@ class WpaNetwork:
   profile_uuid: str = ""
   priority: int = 0
   bssid: str = ""
+  disabled: bool = False
 
 
 def _format_ssid(ssid: str) -> str:
@@ -95,6 +96,8 @@ def write_station_config(networks: list[WpaNetwork], path: str = WPA_SUPPLICANT_
       lines.append(f"  bssid={network.bssid}")
     if network.profile_uuid:
       lines.append(f'  id_str="{network.profile_uuid}"')
+    if network.disabled:
+      lines.append("  disabled=1")
     lines += [f"  priority={network.priority}", "}", ""]
 
   with atomic_write(path, overwrite=True) as f:
