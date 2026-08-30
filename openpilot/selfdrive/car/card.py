@@ -2,6 +2,7 @@
 import os
 import time
 import threading
+from collections import deque
 
 import openpilot.cereal.messaging as messaging
 
@@ -24,6 +25,13 @@ from openpilot.selfdrive.car.cruise import VCruiseHelper
 REPLAY = "REPLAY" in os.environ
 
 EventName = log.OnroadEvent.EventName
+
+VW_EPS_DIAG_TX = 0x712
+VW_EPS_DIAG_RX = 0x77C
+VW_EPS_DIAG_BUS = 1
+VW_EPS_DIAG_DIDS = (0x180B, 0x1823)
+VW_EPS_DIAG_PERIOD_FRAMES = 10  # 10 Hz total, 5 Hz per DID
+VW_EPS_DIAG_LOG = "/data/hca_eps_dids.csv"
 
 # forward
 carlog.addHandler(ForwardingHandler(cloudlog))
@@ -154,14 +162,42 @@ class Car:
     self.is_metric = self.params.get_bool("IsMetric")
     self.experimental_mode = self.params.get_bool("ExperimentalMode")
 
+    self.eps_diag_enabled = (not REPLAY and self.CP.brand == "volkswagen" and
+                             any(c.safetyModel == structs.CarParams.SafetyModel.volkswagen for c in self.CP.safetyConfigs))
+    self.eps_diag_index = 0
+    self.eps_diag_last_did = 0
+    self.eps_diag_samples = deque(maxlen=1000)
+
     # card is driven by can recv, expected at 100Hz
     self.rk = Ratekeeper(100, print_delay_threshold=None)
+
+  def capture_eps_diag(self, can_list) -> None:
+    if not self.eps_diag_enabled:
+      return
+
+    for mono_time, frames in can_list:
+      for addr, dat, src in frames:
+        if addr != VW_EPS_DIAG_RX or src != VW_EPS_DIAG_BUS or len(dat) != 8 or (dat[0] >> 4) != 0:
+          continue
+
+        did = 0
+        if dat[1] == 0x62 and dat[2] == 0x18:
+          did = (dat[2] << 8) | dat[3]
+          if did not in VW_EPS_DIAG_DIDS:
+            continue
+        elif dat[1] == 0x7F and dat[2] == 0x22:
+          did = self.eps_diag_last_did
+        else:
+          continue
+
+        self.eps_diag_samples.append((time.time_ns(), mono_time, did, dat.hex()))
 
   def state_update(self) -> tuple[car.CarState, structs.RadarDataT | None]:
     """carState update loop, driven by can"""
 
     can_strs = messaging.drain_sock_raw(self.can_sock, wait_for_one=True)
     can_list = can_capnp_to_list(can_strs)
+    self.capture_eps_diag(can_list)
 
     # Update carState from CAN
     CS = self.CI.update(can_list)
@@ -235,6 +271,14 @@ class Car:
       # send car controls over can
       now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
       self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos)
+
+      if self.eps_diag_enabled and self.sm.frame % VW_EPS_DIAG_PERIOD_FRAMES == 0:
+        did = VW_EPS_DIAG_DIDS[self.eps_diag_index]
+        self.eps_diag_index = (self.eps_diag_index + 1) % len(VW_EPS_DIAG_DIDS)
+        self.eps_diag_last_did = did
+        request = bytes([0x03, 0x22, did >> 8, did & 0xFF, 0, 0, 0, 0])
+        can_sends.append(CanData(VW_EPS_DIAG_TX, request, VW_EPS_DIAG_BUS))
+
       self.pm.send('sendcan', can_list_to_can_capnp(can_sends, msgtype='sendcan', valid=CS.canValid))
 
       self.CC_prev = CC
@@ -253,10 +297,31 @@ class Car:
     self.CS_prev = CS
 
   def params_thread(self, evt):
-    while not evt.is_set():
-      self.is_metric = self.params.get_bool("IsMetric")
-      self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
-      time.sleep(0.1)
+    eps_log = None
+    if self.eps_diag_enabled:
+      try:
+        eps_log = open(VW_EPS_DIAG_LOG, "a", buffering=1)
+        if eps_log.tell() == 0:
+          eps_log.write("wall_time_ns,mono_time_ns,did,response\n")
+      except OSError:
+        cloudlog.exception(f"Failed to open {VW_EPS_DIAG_LOG}")
+
+    try:
+      while not evt.is_set():
+        self.is_metric = self.params.get_bool("IsMetric")
+        self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
+
+        if eps_log is not None:
+          while self.eps_diag_samples:
+            wall_time, mono_time, did, response = self.eps_diag_samples.popleft()
+            eps_log.write(f"{wall_time},{mono_time},{did:04X},{response}\n")
+        else:
+          self.eps_diag_samples.clear()
+
+        time.sleep(0.1)
+    finally:
+      if eps_log is not None:
+        eps_log.close()
 
   def card_thread(self):
     e = threading.Event()
