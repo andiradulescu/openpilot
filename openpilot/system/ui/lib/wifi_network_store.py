@@ -198,8 +198,7 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
   if security_section is not None:
     represented_sections.add(security_section)
   read_only = (
-    not autoconnect
-    or not cp.has_option("connection", "autoconnect-retries")
+    not cp.has_option("connection", "autoconnect-retries")
     or not cp.has_option("ipv4", "dns-priority")
     or bool(ipv6.get("addr-gen-mode"))
     or any(
