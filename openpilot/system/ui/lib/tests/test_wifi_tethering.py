@@ -149,6 +149,7 @@ class TestTethering(TestCase):
     with (
       patch.object(wifi_tethering, "dnsmasq_running", return_value=False),
       patch.object(wifi_tethering, "firewall_present", return_value=False),
+      patch.object(wifi_tethering, "interface_configured", return_value=False),
       patch.object(wifi_tethering, "set_ipv4_forward") as set_forward,
       patch.object(wifi_tethering, "clear_interface") as clear_interface,
     ):
