@@ -434,10 +434,9 @@ class WifiController:
       if network_id is not None and (profile.autoconnect or profile.uuid == self._state.profile_uuid):
         self._request(f"ENABLE_NETWORK {network_id}")
 
-  def _scan(self):
+  def _update_scan_results(self):
     self._assert_owner()
     try:
-      self._request("SCAN")
       results = parse_scan_results(self._request("SCAN_RESULTS"))
     except (OSError, RuntimeError):
       return
@@ -454,6 +453,14 @@ class WifiController:
       networks.append(Network(ssid, max(dbm_to_percent(ap.signal) for ap in aps), security))
     self._networks = tuple(networks)
     self._callbacks.put(("networks_updated", None))
+
+  def _scan(self):
+    self._assert_owner()
+    try:
+      self._request("SCAN")
+    except (OSError, RuntimeError):
+      return
+    self._update_scan_results()
 
   @staticmethod
   def _valid_psk(password: str) -> bool:
@@ -918,6 +925,10 @@ class WifiController:
 
   def _handle_wpa_event(self, event: str):
     self._assert_owner()
+    if event.startswith("CTRL-EVENT-SCAN-RESULTS"):
+      self._update_scan_results()
+      return
+
     if event.startswith("CTRL-EVENT-CONNECTED"):
       try:
         status = parse_status(self._request("STATUS"))
