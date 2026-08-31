@@ -48,10 +48,12 @@ class TestDhcpClient(TestCase):
       run.return_value.returncode = 0
       assert client.stop()
 
-    assert run.call_args_list[-3:] == [
+    assert run.call_args_list[-5:] == [
       call(["sudo", "rm", "-f", client._pid_file], check=False),
       call(["sudo", "ip", "-4", "route", "flush", "dev", "wlan0"], capture_output=True, check=False),
       call(["sudo", "ip", "-4", "addr", "flush", "dev", "wlan0"], capture_output=True, check=False),
+      call(["sudo", "ip", "-6", "addr", "flush", "dev", "wlan0", "scope", "global"], capture_output=True, check=False),
+      call(["sudo", "ip", "-6", "route", "flush", "dev", "wlan0"], capture_output=True, check=False),
     ]
 
   def test_ready_requires_address_and_metric_route(self):
