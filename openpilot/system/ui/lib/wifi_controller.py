@@ -219,8 +219,10 @@ class WifiController:
       self._store.recover()
       self._tethering_store.recover()
       self._refresh_saved_ssids()
-      if wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF) and not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
-        raise RuntimeError("failed to stop stale tethering wpa_supplicant")
+      if wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF):
+        self._ownership_touched = True
+        if not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
+          raise RuntimeError("failed to stop stale tethering wpa_supplicant")
       if not wifi_tethering.TetheringSession.cleanup_stale():
         raise RuntimeError("failed to clean up stale tethering resources")
       self._initialize_tethering_profile()
