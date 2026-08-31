@@ -437,7 +437,6 @@ class WifiController:
       return False
     self._adopt_status(status)
     return True
-
   def _initialize_station(self):
     self._assert_owner()
     if not self._start_station():
@@ -657,7 +656,6 @@ class WifiController:
         pass
       self._callbacks.put(("forget_failed", ssid))
       return
-
     if active_forget and not self._clear_l3():
       try:
         self._restore_network_enablement()
@@ -1136,6 +1134,7 @@ class WifiController:
           return
         self._recover_station_control()
         return
+      selection_pending = self._requested_ssid is not None
       self._control_failures = 0
       self._close_ctrl()
       if not self._clear_l3():
@@ -1149,6 +1148,8 @@ class WifiController:
       self._state = WifiState()
       if not self._start_station():
         raise RuntimeError("failed to recover station wpa_supplicant") from None
+      if selection_pending:
+        self._callbacks.put(("disconnected", None))
       return
     self._control_failures = 0
 
