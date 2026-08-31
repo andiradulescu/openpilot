@@ -277,7 +277,8 @@ class WifiController:
         return
 
       if isinstance(command, _Stop):
-        self._shutdown()
+        while not self._shutdown():
+          time.sleep(RECONCILE_PERIOD_SECONDS)
         self._exit = True
         return
       if isinstance(command, _SetActive):
@@ -304,36 +305,37 @@ class WifiController:
       elif isinstance(command, _SetIpv4Forward):
         self._set_ipv4_forward(command.enabled)
 
-  def _shutdown(self):
+  def _shutdown(self) -> bool:
     self._assert_owner()
     self._close_ctrl()
     if self._tethering_active or wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF):
       if not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
         cloudlog.error("Failed to stop tethering wpa_supplicant during shutdown")
-        return
+        return False
       if not self._tethering.stop():
         wpa_supplicant.start(wpa_supplicant.WPA_AP_CONF)
         cloudlog.error("Failed to stop tethering services during shutdown")
-        return
+        return False
       self._tethering_active = False
     else:
       station_running = wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF)
       if station_running or self._dhcp.running:
         if not self._dhcp.stop():
           cloudlog.error("Failed to stop Wi-Fi DHCP during shutdown")
-          return
+          return False
         if station_running and not wpa_supplicant.stop(wpa_supplicant.WPA_SUPPLICANT_CONF):
           self._dhcp.start()
           cloudlog.error("Failed to stop station wpa_supplicant during shutdown")
-          return
+          return False
         self._dhcp.clear_ipv6()
 
     clear_active_profile()
     self._state = WifiState()
     if not wpa_supplicant.restore_networkmanager():
       cloudlog.error("Failed to return wlan0 to NetworkManager")
-    else:
-      self._ownership_touched = False
+      return False
+    self._ownership_touched = False
+    return True
 
   def _refresh_saved_ssids(self):
     self._assert_owner()
