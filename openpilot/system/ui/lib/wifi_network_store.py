@@ -345,6 +345,13 @@ class NetworkStore:
       and profile.path.startswith(self._directory + os.sep)
     )
 
+  def _can_remove(self, profile: NetworkProfile) -> bool:
+    return (
+      profile.persistent
+      and profile.uuid not in self._runtime_uuids
+      and profile.path.startswith(self._directory + os.sep)
+    )
+
   def _path(self, profile: NetworkProfile) -> str:
     safe_ssid = profile.ssid.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace").replace("/", "_").replace("\x00", "_")
     return os.path.join(self._directory, f"{profile.uuid}-{safe_ssid}.nmconnection")
@@ -383,7 +390,7 @@ class NetworkStore:
     profiles = self.profiles_for_ssid(ssid)
     if not profiles:
       return True
-    if any(not self.can_mutate(profile.uuid) for profile in profiles):
+    if any(not self._can_remove(profile) for profile in profiles):
       return False
 
     token = uuid.uuid4().hex
