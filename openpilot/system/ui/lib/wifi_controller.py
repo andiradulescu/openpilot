@@ -355,7 +355,7 @@ class WifiController:
       self._ctrl.close()
       self._ctrl = None
 
-  def _open_station_ctrl(self) -> dict[str, str]:
+  def _open_station_ctrl(self, adopt: bool = True) -> dict[str, str]:
     self._assert_owner()
     self._ctrl = WpaCtrl()
     self._ctrl.open()
@@ -364,7 +364,8 @@ class WifiController:
     self._monitor.open()
     self._sync_runtime_profiles()
     status = parse_status(self._request("STATUS"))
-    self._adopt_status(status)
+    if adopt:
+      self._adopt_status(status)
     return status
 
   def _start_station(self) -> bool:
@@ -401,7 +402,7 @@ class WifiController:
     if acquisition is None:
       return False
     try:
-      status = self._open_station_ctrl()
+      status = self._open_station_ctrl(adopt=False)
     except (OSError, RuntimeError):
       self._close_ctrl()
       if not acquisition.rollback():
@@ -420,6 +421,7 @@ class WifiController:
       self._close_ctrl()
       cloudlog.error("Failed to commit station acquisition")
       return False
+    self._adopt_status(status)
     return True
 
   def _initialize_station(self):
