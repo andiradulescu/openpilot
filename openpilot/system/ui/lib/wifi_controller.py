@@ -351,7 +351,7 @@ class WifiController:
       self._ctrl.close()
       self._ctrl = None
 
-  def _open_station_ctrl(self):
+  def _open_station_ctrl(self) -> dict[str, str]:
     self._assert_owner()
     self._ctrl = WpaCtrl()
     self._ctrl.open()
@@ -359,7 +359,9 @@ class WifiController:
     self._monitor = WpaCtrlMonitor()
     self._monitor.open()
     self._sync_runtime_profiles()
-    self._adopt_status(parse_status(self._request("STATUS")))
+    status = parse_status(self._request("STATUS"))
+    self._adopt_status(status)
+    return status
 
   def _start_station(self) -> bool:
     self._assert_owner()
@@ -370,7 +372,8 @@ class WifiController:
       if not wpa_supplicant.restore_networkmanager():
         cloudlog.error("Failed to return wlan0 to NetworkManager after station configuration failure")
       return False
-    if not wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF) and self._dhcp.running:
+    station_was_running = wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF)
+    if not station_was_running and self._dhcp.running:
       if not self._clear_l3():
         cloudlog.error("Failed to stop stale Wi-Fi DHCP before starting station")
         return False
@@ -379,12 +382,18 @@ class WifiController:
     if acquisition is None:
       return False
     try:
-      self._open_station_ctrl()
+      status = self._open_station_ctrl()
     except (OSError, RuntimeError):
       self._close_ctrl()
       if not acquisition.rollback():
         cloudlog.error("Failed to roll back station acquisition")
       return False
+    if station_was_running and self._dhcp.running and status.get("wpa_state") != "COMPLETED":
+      if not self._clear_l3():
+        self._close_ctrl()
+        if not acquisition.rollback():
+          cloudlog.error("Failed to roll back station acquisition")
+        return False
     if not acquisition.commit():
       self._close_ctrl()
       cloudlog.error("Failed to commit station acquisition")
