@@ -198,10 +198,11 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
   represented_sections = {"connection", wifi, "ipv4", "ipv6"}
   if security_section is not None:
     represented_sections.add(security_section)
+  display_id = _display_ssid(ssid)
   read_only = (
     not cp.has_option("connection", "autoconnect-retries")
     or not cp.has_option("ipv4", "dns-priority")
-    or (cp.has_option("connection", "id") and connection_id != _display_ssid(ssid))
+    or (cp.has_option("connection", "id") and connection_id not in (display_id, f"openpilot connection {display_id}"))
     or bool(cp.get("connection", "timestamp", fallback=""))
     or bool(cp.get("connection", "interface-name", fallback=""))
     or bool(ipv6.get("addr-gen-mode"))
