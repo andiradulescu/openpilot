@@ -205,6 +205,24 @@ class TestNetworkStore(TestCase):
       assert persistent_path.exists()
       assert runtime_path.exists()
 
+  def test_unsupported_runtime_shadow_still_blocks_mutation(self):
+    with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
+      persistent_path = Path(persistent) / "persistent.nmconnection"
+      runtime_path = Path(runtime) / "runtime.nmconnection"
+      persistent_path.write_text(profile_text())
+      runtime_path.write_text(profile_text().replace("type=wifi\n", "type=wifi\npermissions=user:test:;\n"))
+
+      with patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=lambda path: Path(path).read_text()):
+        store = NetworkStore(persistent, runtime)
+
+      assert store.get(PROFILE_UUID) is not None
+      assert store.get(PROFILE_UUID).persistent
+      assert not store.can_mutate(PROFILE_UUID)
+      assert store.set_metered(PROFILE_UUID, MeteredType.YES) is None
+      assert not store.remove_ssid("TestNet")
+      assert persistent_path.exists()
+      assert runtime_path.exists()
+
   def test_persistent_profile_without_runtime_shadow_can_be_mutated(self):
     with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
       persistent_path = Path(persistent) / "persistent.nmconnection"
