@@ -365,6 +365,10 @@ class WifiController:
       if not wpa_supplicant.restore_networkmanager():
         cloudlog.error("Failed to return wlan0 to NetworkManager after station configuration failure")
       return False
+    if not wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF) and self._dhcp.running:
+      if not self._clear_l3():
+        cloudlog.error("Failed to stop stale Wi-Fi DHCP before starting station")
+        return False
     acquisition = wpa_supplicant.begin_station()
     if acquisition is None:
       return False
@@ -555,10 +559,19 @@ class WifiController:
     self._assert_owner()
     profiles = self._store.profiles_for_ssid(ssid)
     runtime_ids = [self._runtime_profiles[profile.uuid] for profile in profiles if profile.uuid in self._runtime_profiles]
+    active_forget = self._state.ssid == ssid or self._requested_ssid == ssid
     try:
       for network_id in runtime_ids:
         self._request(f"DISABLE_NETWORK {network_id}")
     except (OSError, RuntimeError):
+      try:
+        self._restore_network_enablement()
+      except (OSError, RuntimeError):
+        pass
+      self._callbacks.put(("forget_failed", ssid))
+      return
+
+    if active_forget and not self._clear_l3():
       try:
         self._restore_network_enablement()
       except (OSError, RuntimeError):
@@ -575,9 +588,7 @@ class WifiController:
       return
 
     self._refresh_saved_ssids()
-    if self._state.ssid == ssid or self._requested_ssid == ssid:
-      if not self._clear_l3():
-        raise RuntimeError("failed to stop Wi-Fi DHCP") from None
+    if active_forget:
       self._state = WifiState()
       self._requested_ssid = None
       self._connecting_since = 0.0
