@@ -126,6 +126,7 @@ class WifiController:
     self._last_tethering_firewall_check = 0.0
     self._ipv4_forward = False
     self._published_active_profile: tuple[str, int] | None = None
+    self._ownership_touched = False
     self._owner_ident: int | None = None
     self._thread: threading.Thread | None = None
     self._exit = False
@@ -249,14 +250,16 @@ class WifiController:
     except Exception:
       cloudlog.exception("Wi-Fi controller failed")
       try:
-        if (self._tethering_active
+        if (self._ownership_touched
+            or self._tethering_active
             or wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF)
             or wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)):
           self._shutdown()
       except Exception:
         cloudlog.exception("Failed to return Wi-Fi ownership after controller failure")
     finally:
-      clear_active_profile()
+      if not self._ownership_touched:
+        clear_active_profile()
       self._close_ctrl()
       self._owner_ident = None
 
@@ -322,6 +325,8 @@ class WifiController:
     self._state = WifiState()
     if not wpa_supplicant.restore_networkmanager():
       cloudlog.error("Failed to return wlan0 to NetworkManager")
+    else:
+      self._ownership_touched = False
 
   def _refresh_saved_ssids(self):
     self._assert_owner()
@@ -369,6 +374,7 @@ class WifiController:
       if not self._clear_l3():
         cloudlog.error("Failed to stop stale Wi-Fi DHCP before starting station")
         return False
+    self._ownership_touched = True
     acquisition = wpa_supplicant.begin_station()
     if acquisition is None:
       return False
@@ -704,10 +710,13 @@ class WifiController:
       self._callbacks.put(("tethering_failed" if failed else "disconnected", None))
       return
 
-    if wpa_supplicant.start(wpa_supplicant.WPA_AP_CONF) and self._tethering.start(self._ipv4_forward):
-      self._tethering_active = True
-      self._last_tethering_firewall_check = time.monotonic()
-      self._state = WifiState(ssid=self._tethering_ssid, status=ConnectStatus.CONNECTED, ipv4_address=wifi_tethering.TETHERING_ADDRESS)
+    if wpa_supplicant.start(wpa_supplicant.WPA_AP_CONF):
+      if self._tethering.start(self._ipv4_forward):
+        self._tethering_active = True
+        self._last_tethering_firewall_check = time.monotonic()
+        self._state = WifiState(ssid=self._tethering_ssid, status=ConnectStatus.CONNECTED, ipv4_address=wifi_tethering.TETHERING_ADDRESS)
+      elif not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF) or not self._tethering.stop():
+        self._tethering_active = True
     self._callbacks.put(("tethering_failed", None))
 
   def _reconcile_tethering(self):
@@ -863,13 +872,17 @@ class WifiController:
     self._replacement_network_id = None
     self._requested_ssid = None
     self._connecting_since = 0.0
+    if not self._clear_l3():
+      try:
+        self._restore_network_enablement()
+      except (OSError, RuntimeError):
+        pass
+      raise RuntimeError("failed to stop Wi-Fi DHCP") from None
+    self._state = WifiState()
     try:
       self._restore_network_enablement()
     except (OSError, RuntimeError):
       pass
-    if not self._clear_l3():
-      raise RuntimeError("failed to stop Wi-Fi DHCP") from None
-    self._state = WifiState()
     self._callbacks.put(("disconnected", None))
 
   def _link_lost(self):
@@ -908,9 +921,17 @@ class WifiController:
     if "WRONG_KEY" in event or "reason=WRONG_KEY" in event:
       failed_id = parse_event_network_id(event)
       failed_ssid = parse_event_ssid(event)
-      pending_id = self._runtime_profiles.get(self._pending_profile.uuid) if self._pending_profile is not None else None
       matches_ssid = failed_ssid in (None, self._requested_ssid)
-      matches_network_id = failed_id is None or pending_id is None or failed_id == pending_id
+      if self._pending_profile is not None:
+        pending_id = self._runtime_profiles.get(self._pending_profile.uuid)
+        matches_network_id = failed_id is None or failed_id == pending_id
+      else:
+        candidate_ids = [
+          self._runtime_profiles[profile.uuid]
+          for profile in self._store.profiles_for_ssid(self._requested_ssid)
+          if profile.uuid in self._runtime_profiles
+        ] if self._requested_ssid is not None else []
+        matches_network_id = len(candidate_ids) == 1 and (failed_id is None or failed_id == candidate_ids[0])
       if self._requested_ssid is not None and matches_ssid and matches_network_id:
         ssid = self._requested_ssid
         self._cancel_selection()
