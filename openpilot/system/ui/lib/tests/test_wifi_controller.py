@@ -210,20 +210,68 @@ class TestWifiController(TestCase):
     assert controller.state.ssid == "Test"
     assert controller.state.status == ConnectStatus.CONNECTING
 
+  def test_profile_persistence_waits_for_dhcp(self):
+    profile = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "password123")
+    controller, store, dhcp = make_controller()
+    controller._pending_profile = profile
+    controller._temporary_network_id = "9"
+    controller._runtime_profiles = {UUID_A: "9"}
+    controller._requested_ssid = "Test"
+    controller._request = MagicMock(return_value=f"wpa_state=COMPLETED\nssid=Test\nid_str={UUID_A}\n")
+    store.write.return_value = profile
+    dhcp.running = True
+    dhcp.ready.side_effect = [False, True]
+    dhcp.ipv4_address.return_value = "10.0.0.2"
+
+    with patch.object(wifi_controller.wpa_supplicant, "write_station_config"):
+      controller._adopt_status({"wpa_state": "COMPLETED", "ssid": "Test", "id_str": UUID_A})
+      store.write.assert_not_called()
+      controller._reconcile()
+      store.write.assert_not_called()
+      controller._reconcile()
+
+    store.write.assert_called_once_with(profile)
+    assert controller._pending_profile is None
+    assert controller.state.status == ConnectStatus.CONNECTED
+
   def test_profile_persistence_failure_cancels_selection(self):
     profile = NetworkProfile(UUID_A, "Test", SecurityType.WPA, "password123")
     controller, store, dhcp = make_controller()
     controller._pending_profile = profile
     controller._temporary_network_id = "9"
     controller._runtime_profiles = {UUID_A: "9"}
-    controller._request = MagicMock(return_value="OK\n")
+    controller._requested_ssid = "Test"
+    controller._request = MagicMock(return_value=f"wpa_state=COMPLETED\nssid=Test\nid_str={UUID_A}\n")
     store.write.side_effect = subprocess.CalledProcessError(1, ["sudo", "install"])
+    dhcp.running = True
+    dhcp.ready.return_value = True
 
     controller._adopt_status({"wpa_state": "COMPLETED", "ssid": "Test", "id_str": UUID_A})
+    store.write.assert_not_called()
+    controller._reconcile()
 
     assert controller._pending_profile is None
     dhcp.stop.assert_called_once_with()
     assert controller.get_callback() == ("disconnected", None)
+
+  def test_duplicate_profiles_prompt_after_all_wrong_keys(self):
+    profiles = (
+      NetworkProfile(UUID_A, "Test", SecurityType.WPA, "password123"),
+      NetworkProfile(UUID_B, "Test", SecurityType.WPA, "password456"),
+    )
+    controller, _, _ = make_controller(profiles)
+    controller._runtime_profiles = {UUID_A: "3", UUID_B: "7"}
+    controller._request = MagicMock(return_value="network id / ssid / bssid / flags\n3\tTest\tany\t\n7\tTest\tany\t\n")
+    controller._begin_selection("Test")
+
+    controller._handle_wpa_event('CTRL-EVENT-SSID-TEMP-DISABLED id=3 ssid="Test" reason=WRONG_KEY')
+    assert controller.get_callback() is None
+    controller._handle_wpa_event('CTRL-EVENT-SSID-TEMP-DISABLED id=3 ssid="Test" reason=WRONG_KEY')
+    assert controller.get_callback() is None
+    controller._handle_wpa_event('CTRL-EVENT-SSID-TEMP-DISABLED id=7 ssid="Test" reason=WRONG_KEY')
+
+    assert controller.get_callback() == ("disconnected", None)
+    assert controller.get_callback() == ("need_auth", "Test")
 
   def test_connected_status_uses_exact_profile_metering(self):
     profiles = (

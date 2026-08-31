@@ -114,6 +114,7 @@ class WifiController:
     self._temporary_network_id: str | None = None
     self._replacement_network_id: str | None = None
     self._requested_ssid: str | None = None
+    self._failed_candidate_ids: set[str] = set()
     self._connecting_since = 0.0
     self._last_scan = 0.0
     self._last_reconcile = 0.0
@@ -931,6 +932,7 @@ class WifiController:
       self._callbacks.put(("settings_failed", ssid))
       return False
     self._requested_ssid = ssid
+    self._failed_candidate_ids.clear()
     self._connecting_since = time.monotonic()
     self._state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTING)
     return True
@@ -966,6 +968,7 @@ class WifiController:
     self._pending_profile = None
     self._replacement_network_id = None
     self._requested_ssid = None
+    self._failed_candidate_ids.clear()
     self._connecting_since = 0.0
     if not self._clear_l3():
       try:
@@ -1026,16 +1029,52 @@ class WifiController:
         pending_id = self._runtime_profiles.get(self._pending_profile.uuid)
         matches_network_id = failed_id is None or failed_id == pending_id
       else:
-        candidate_ids = [
+        candidate_ids = {
           self._runtime_profiles[profile.uuid]
           for profile in self._store.profiles_for_ssid(self._requested_ssid)
           if profile.uuid in self._runtime_profiles
-        ] if self._requested_ssid is not None else []
-        matches_network_id = len(candidate_ids) == 1 and (failed_id is None or failed_id == candidate_ids[0])
+        } if self._requested_ssid is not None else set()
+        matches_network_id = len(candidate_ids) == 1 and (failed_id is None or failed_id in candidate_ids)
+        if len(candidate_ids) > 1 and matches_ssid and failed_id in candidate_ids:
+          self._failed_candidate_ids.add(failed_id)
+          matches_network_id = candidate_ids <= self._failed_candidate_ids
       if self._requested_ssid is not None and matches_ssid and matches_network_id:
         ssid = self._requested_ssid
         self._cancel_selection()
         self._callbacks.put(("need_auth", ssid))
+
+  def _persist_pending_profile(self) -> NetworkProfile | None:
+    self._assert_owner()
+    if self._pending_profile is None:
+      return None
+    try:
+      stored = self._store.write(self._pending_profile)
+      self._refresh_saved_ssids()
+      new_network_id = self._temporary_network_id
+      if self._replacement_network_id is not None and self._replacement_network_id != new_network_id:
+        try:
+          self._request(f"REMOVE_NETWORK {self._replacement_network_id}")
+        except (OSError, RuntimeError):
+          pass
+      if new_network_id is not None:
+        self._runtime_profiles[stored.uuid] = new_network_id
+      self._pending_profile = None
+      self._temporary_network_id = None
+      self._replacement_network_id = None
+      wpa_supplicant.write_station_config([profile.as_wpa_network() for profile in self._store.profiles()])
+    except (OSError, subprocess.SubprocessError):
+      self._cancel_selection()
+      try:
+        self._sync_runtime_profiles()
+        self._restore_network_enablement()
+      except (OSError, RuntimeError):
+        pass
+      return None
+    try:
+      self._restore_network_enablement()
+    except (OSError, RuntimeError):
+      pass
+    return stored
 
   def _adopt_status(self, status: dict[str, str]):
     self._assert_owner()
@@ -1049,33 +1088,8 @@ class WifiController:
     if self._requested_ssid is not None and ssid != self._requested_ssid:
       return
 
-    if self._pending_profile is not None and profile_uuid == self._pending_profile.uuid:
-      try:
-        stored = self._store.write(self._pending_profile)
-        self._refresh_saved_ssids()
-        new_network_id = self._temporary_network_id
-        if self._replacement_network_id is not None and self._replacement_network_id != new_network_id:
-          try:
-            self._request(f"REMOVE_NETWORK {self._replacement_network_id}")
-          except (OSError, RuntimeError):
-            pass
-        if new_network_id is not None:
-          self._runtime_profiles[stored.uuid] = new_network_id
-        self._pending_profile = None
-        self._temporary_network_id = None
-        self._replacement_network_id = None
-        wpa_supplicant.write_station_config([profile.as_wpa_network() for profile in self._store.profiles()])
-        profile_uuid = stored.uuid
-      except (OSError, subprocess.SubprocessError):
-        self._cancel_selection()
-        try:
-          self._sync_runtime_profiles()
-          self._restore_network_enablement()
-        except (OSError, RuntimeError):
-          pass
-        return
-
-    profile = self._store.get(profile_uuid)
+    pending = self._pending_profile is not None and profile_uuid == self._pending_profile.uuid
+    profile = self._pending_profile if pending else self._store.get(profile_uuid)
     if profile is None:
       return
 
@@ -1090,10 +1104,11 @@ class WifiController:
     if not self._dhcp.running:
       self._dhcp.start()
     self._state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTING, profile_uuid=profile_uuid, metered=profile.metered)
-    try:
-      self._restore_network_enablement()
-    except (OSError, RuntimeError):
-      pass
+    if not pending:
+      try:
+        self._restore_network_enablement()
+      except (OSError, RuntimeError):
+        pass
 
   def _publish_active_profile(self, profile: NetworkProfile) -> bool:
     self._assert_owner()
@@ -1189,7 +1204,10 @@ class WifiController:
         if not self._dhcp.running:
           self._dhcp.start()
         if self._dhcp.ready():
-          profile = self._store.get(profile_uuid)
+          if self._pending_profile is not None and profile_uuid == self._pending_profile.uuid:
+            profile = self._persist_pending_profile()
+          else:
+            profile = self._store.get(profile_uuid)
           if profile is None:
             return
           self._state = WifiState(
