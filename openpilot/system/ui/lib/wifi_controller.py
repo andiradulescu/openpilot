@@ -4,7 +4,7 @@ import threading
 import time
 import unicodedata
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import IntEnum
 
 from openpilot.common.swaglog import cloudlog
@@ -368,8 +368,15 @@ class WifiController:
   def _start_station(self) -> bool:
     self._assert_owner()
     station_was_running = wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF)
+    retained_active_profile = read_active_profile() if station_was_running and self._dhcp.running else None
+    networks = []
+    for profile in self._store.profiles():
+      network = profile.as_wpa_network()
+      if retained_active_profile is not None and profile.uuid == retained_active_profile[0]:
+        network = replace(network, disabled=False)
+      networks.append(network)
     try:
-      wpa_supplicant.write_station_config([profile.as_wpa_network() for profile in self._store.profiles()])
+      wpa_supplicant.write_station_config(networks)
     except OSError:
       cloudlog.exception("Failed to write station wpa_supplicant configuration")
       if not station_was_running and self._dhcp.running:
@@ -383,7 +390,6 @@ class WifiController:
       else:
         self._ownership_touched = False
       return False
-    retained_active_profile = read_active_profile() if station_was_running and self._dhcp.running else None
     if not station_was_running and self._dhcp.running:
       if not self._clear_l3():
         cloudlog.error("Failed to stop stale Wi-Fi DHCP before starting station")
