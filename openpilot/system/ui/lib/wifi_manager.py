@@ -66,6 +66,7 @@ class WifiManager:
         tethering_ssid += "-" + dongle_id[:4]
 
     self._controller = WifiController(tethering_ssid=tethering_ssid)
+    self._controller.set_active(True)
     self._need_auth: list[Callable[[str], None]] = []
     self._activated: list[Callable[[], None]] = []
     self._forgotten: list[Callable[[str | None], None]] = []
