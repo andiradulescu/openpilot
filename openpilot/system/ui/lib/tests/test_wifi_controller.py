@@ -555,6 +555,7 @@ class TestWifiController(TestCase):
     with (
       patch.object(wifi_controller.wpa_supplicant, "is_running", return_value=True),
       patch.object(wifi_controller.wifi_tethering, "dnsmasq_running", return_value=True),
+      patch.object(wifi_controller.wifi_tethering, "interface_ready", return_value=True),
       patch.object(wifi_controller.wifi_tethering, "firewall_ready", return_value=True),
     ):
       controller._reconcile_tethering()
