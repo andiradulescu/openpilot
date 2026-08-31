@@ -438,11 +438,18 @@ class WifiController:
 
   def _restore_network_enablement(self):
     self._assert_owner()
-    self._request("DISABLE_NETWORK all")
+    enable_networks = []
     for profile in self._store.profiles():
       network_id = self._runtime_profiles.get(profile.uuid)
       if network_id is not None and (profile.autoconnect or profile.uuid == self._state.profile_uuid):
-        self._request(f"ENABLE_NETWORK {network_id}")
+        enable_networks.append(network_id)
+    raw = self._request("LIST_NETWORKS")
+    for line in raw.splitlines()[1:]:
+      fields = line.split("\t")
+      if fields and fields[0].isdigit() and fields[0] not in enable_networks:
+        self._request(f"DISABLE_NETWORK {fields[0]}")
+    for network_id in enable_networks:
+      self._request(f"ENABLE_NETWORK {network_id}")
 
   def _update_scan_results(self):
     self._assert_owner()

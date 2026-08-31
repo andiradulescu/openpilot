@@ -240,6 +240,23 @@ class TestWifiController(TestCase):
     assert controller.state.metered == MeteredType.YES
     dhcp.start.assert_called_once()
 
+  def test_adopting_station_preserves_current_network_enablement(self):
+    current = NetworkProfile(UUID_A, "Current", SecurityType.WPA, "password123")
+    manual = NetworkProfile(UUID_B, "Manual", SecurityType.WPA, "password456", autoconnect=False)
+    controller, _, dhcp = make_controller((current, manual))
+    controller._runtime_profiles = {UUID_A: "3", UUID_B: "7"}
+    controller._request = MagicMock(return_value="network id / ssid / bssid / flags\n3\tCurrent\tany\t[CURRENT]\n7\tManual\tany\t\n9\tTemporary\tany\t\n")
+    dhcp.running = False
+
+    controller._adopt_status({"wpa_state": "COMPLETED", "ssid": "Current", "id_str": UUID_A})
+
+    assert [call.args[0] for call in controller._request.call_args_list] == [
+      "LIST_NETWORKS",
+      "DISABLE_NETWORK 7",
+      "DISABLE_NETWORK 9",
+      "ENABLE_NETWORK 3",
+    ]
+
   def test_stale_connected_status_does_not_replace_explicit_selection(self):
     profile = NetworkProfile(UUID_A, "Old", SecurityType.WPA, "password123")
     controller, _, dhcp = make_controller((profile,))
