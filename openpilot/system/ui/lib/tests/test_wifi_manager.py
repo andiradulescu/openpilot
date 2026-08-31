@@ -54,6 +54,31 @@ class TestWifiManager(TestCase):
 
     assert updates == [[wifi_manager.Network("Test", 77, wifi_manager.SecurityType.WPA, False)]]
 
+  def test_selection_settings_failure_completes_connecting_ui(self):
+    manager, controller = self.make_manager()
+    manager.connect_to_network("Test", "password123")
+    controller.get_callback.side_effect = [("settings_failed", "Test"), None]
+    disconnected = MagicMock()
+    updates = []
+    manager.add_callbacks(disconnected=disconnected, networks_updated=updates.append)
+
+    manager.process_callbacks()
+
+    disconnected.assert_called_once_with()
+    assert updates == [[]]
+
+  def test_metered_settings_failure_does_not_complete_active_selection(self):
+    manager, controller = self.make_manager()
+    manager.connect_to_network("Test", "password123")
+    controller.state = ControllerWifiState(ssid="Test", status=ControllerConnectStatus.CONNECTING)
+    controller.get_callback.side_effect = [("settings_failed", "Test"), None]
+    disconnected = MagicMock()
+    manager.add_callbacks(disconnected=disconnected)
+
+    manager.process_callbacks()
+
+    disconnected.assert_not_called()
+
   def test_tethering_failure_refreshes_advanced_state(self):
     manager, controller = self.make_manager()
     controller.get_callback.side_effect = [("tethering_failed", None), None]

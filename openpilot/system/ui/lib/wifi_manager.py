@@ -72,6 +72,7 @@ class WifiManager:
     self._forgotten: list[Callable[[str | None], None]] = []
     self._networks_updated: list[Callable[[list[Network]], None]] = []
     self._disconnected: list[Callable[[], None]] = []
+    self._pending_selection: str | None = None
     self._last_snapshot = self._snapshot()
     atexit.register(self.stop)
 
@@ -135,9 +136,11 @@ class WifiManager:
 
   def connect_to_network(self, ssid: str, password: str, hidden: bool = False):
     security = ControllerSecurityType.WPA if password else ControllerSecurityType.OPEN
+    self._pending_selection = ssid
     self._controller.connect(ssid, password, hidden, security)
 
   def activate_connection(self, ssid: str, block: bool = False):
+    self._pending_selection = ssid
     self._controller.activate(ssid)
 
   def forget_connection(self, ssid: str, block: bool = False):
@@ -170,15 +173,18 @@ class WifiManager:
     while (event := self._controller.get_callback()) is not None:
       name, value = event
       if name == "need_auth":
+        self._pending_selection = None
         for callback in self._need_auth:
           callback(str(value))
       elif name == "activated":
+        self._pending_selection = None
         for callback in self._activated:
           callback()
       elif name == "forgotten":
         for callback in self._forgotten:
           callback(value if isinstance(value, str) else None)
       elif name == "disconnected":
+        self._pending_selection = None
         for callback in self._disconnected:
           callback()
       elif name == "networks_updated":
@@ -191,11 +197,16 @@ class WifiManager:
         self._emit_networks_updated()
         emitted_network_update = True
       elif name == "profile_readonly":
+        self._pending_selection = None
         cloudlog.warning(f"Wi-Fi profile is read-only: {value!r}")
         for callback in self._disconnected:
           callback()
       elif name == "settings_failed":
         cloudlog.warning(f"Failed to update Wi-Fi settings for {value!r}")
+        if self._pending_selection == value and self.connecting_to_ssid != value:
+          self._pending_selection = None
+          for callback in self._disconnected:
+            callback()
         self._emit_networks_updated()
         emitted_network_update = True
       elif name == "tethering_failed":
