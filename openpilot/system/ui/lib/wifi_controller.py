@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 from openpilot.common.swaglog import cloudlog
-from openpilot.common.wifi import clear_active_profile, write_active_profile
+from openpilot.common.wifi import clear_active_profile, read_active_profile, write_active_profile
 from openpilot.system.ui.lib.dhcp_client import DhcpClient
 from openpilot.system.ui.lib.wifi_network_store import MeteredType, NetworkProfile, NetworkStore
 from openpilot.system.ui.lib.wifi_tethering_store import TetheringStore
@@ -373,6 +373,7 @@ class WifiController:
         cloudlog.error("Failed to return wlan0 to NetworkManager after station configuration failure")
       return False
     station_was_running = wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF)
+    retained_active_profile = read_active_profile() if station_was_running and self._dhcp.running else None
     if not station_was_running and self._dhcp.running:
       if not self._clear_l3():
         cloudlog.error("Failed to stop stale Wi-Fi DHCP before starting station")
@@ -388,12 +389,15 @@ class WifiController:
       if not acquisition.rollback():
         cloudlog.error("Failed to roll back station acquisition")
       return False
-    if station_was_running and self._dhcp.running and status.get("wpa_state") != "COMPLETED":
-      if not self._clear_l3():
-        self._close_ctrl()
-        if not acquisition.rollback():
-          cloudlog.error("Failed to roll back station acquisition")
-        return False
+    if station_was_running and self._dhcp.running:
+      profile_uuid = status.get("id_str", "").strip('"')
+      retained_profile_uuid = retained_active_profile[0] if retained_active_profile is not None else None
+      if status.get("wpa_state") != "COMPLETED" or profile_uuid != retained_profile_uuid:
+        if not self._clear_l3():
+          self._close_ctrl()
+          if not acquisition.rollback():
+            cloudlog.error("Failed to roll back station acquisition")
+          return False
     if not acquisition.commit():
       self._close_ctrl()
       cloudlog.error("Failed to commit station acquisition")
