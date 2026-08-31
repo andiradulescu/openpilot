@@ -516,6 +516,8 @@ class WifiController:
     if command.security == SecurityType.WPA and not self._valid_psk(command.password):
       self._callbacks.put(("need_auth", command.ssid))
       return
+    if self._requested_ssid is not None:
+      self._cancel_selection(notify=False)
 
     existing = self._store.profiles_for_ssid(command.ssid)
     if existing:
@@ -577,6 +579,8 @@ class WifiController:
 
   def _activate(self, ssid: str):
     self._assert_owner()
+    if self._requested_ssid is not None:
+      self._cancel_selection(notify=False)
     profiles = self._store.profiles_for_ssid(ssid)
     runtime_ids = [self._runtime_profiles[profile.uuid] for profile in profiles if profile.uuid in self._runtime_profiles]
     if len(runtime_ids) < len(profiles):
@@ -927,7 +931,7 @@ class WifiController:
       pass
     self._temporary_network_id = None
 
-  def _cancel_selection(self):
+  def _cancel_selection(self, notify: bool = True):
     self._assert_owner()
     pending_uuid = self._pending_profile.uuid if self._pending_profile is not None else None
     self._remove_temporary_network()
@@ -951,7 +955,8 @@ class WifiController:
       self._restore_network_enablement()
     except (OSError, RuntimeError):
       pass
-    self._callbacks.put(("disconnected", None))
+    if notify:
+      self._callbacks.put(("disconnected", None))
 
   def _link_lost(self):
     self._assert_owner()
