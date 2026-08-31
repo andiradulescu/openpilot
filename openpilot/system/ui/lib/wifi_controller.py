@@ -1096,6 +1096,7 @@ class WifiController:
 
   def _recover_station_control(self):
     self._assert_owner()
+    selection_pending = self._requested_ssid is not None
     self._close_ctrl()
     if not self._clear_l3():
       raise RuntimeError("failed to stop Wi-Fi DHCP") from None
@@ -1111,6 +1112,8 @@ class WifiController:
     self._control_failures = 0
     if not self._start_station():
       raise RuntimeError("failed to recover station wpa_supplicant") from None
+    if selection_pending:
+      self._callbacks.put(("disconnected", None))
 
   def _reconcile(self):
     self._assert_owner()
