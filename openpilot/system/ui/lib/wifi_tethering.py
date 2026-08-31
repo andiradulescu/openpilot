@@ -1,7 +1,9 @@
 import os
 import shutil
 import subprocess
+import tempfile
 import time
+import uuid
 from pathlib import Path
 
 from openpilot.common.swaglog import cloudlog
@@ -12,6 +14,7 @@ TETHERING_ADDRESS = "192.168.43.1"
 TETHERING_CIDR = f"{TETHERING_ADDRESS}/24"
 TETHERING_SUBNET = "192.168.43.0/24"
 DNSMASQ_PID_FILE = "/run/openpilot-wifi/dnsmasq.pid"
+TETHERING_FORWARD_STATE_FILE = "/run/openpilot-wifi/tethering_ip_forward"
 NAT_CHAIN = "OPENPILOT_TETHERING_NAT"
 INPUT_CHAIN = "OPENPILOT_TETHERING_INPUT"
 FORWARD_CHAIN = "OPENPILOT_TETHERING_FORWARD"
@@ -148,6 +151,36 @@ def set_ipv4_forward(enabled: bool) -> None:
     raise RuntimeError("failed to update IPv4 forwarding")
 
 
+def _read_previous_ipv4_forward() -> bool | None:
+  try:
+    value = Path(TETHERING_FORWARD_STATE_FILE).read_text().strip()
+  except FileNotFoundError:
+    return None
+  except OSError:
+    return False
+  return value == "1" if value in ("0", "1") else False
+
+
+def _write_previous_ipv4_forward(enabled: bool) -> None:
+  value = "1\n" if enabled else "0\n"
+  runtime_dir = os.path.dirname(TETHERING_FORWARD_STATE_FILE)
+  subprocess.run(["sudo", "install", "-d", "-m", "755", runtime_dir], check=True)
+  with tempfile.NamedTemporaryFile("w", delete=False) as f:
+    f.write(value)
+    path = f.name
+  stage_path = f"{TETHERING_FORWARD_STATE_FILE}.{uuid.uuid4().hex}"
+  try:
+    subprocess.run(["sudo", "install", "-m", "644", path, stage_path], check=True)
+    subprocess.run(["sudo", "mv", "-f", stage_path, TETHERING_FORWARD_STATE_FILE], check=True)
+  finally:
+    os.unlink(path)
+    subprocess.run(["sudo", "rm", "-f", stage_path], check=False)
+
+
+def _clear_previous_ipv4_forward() -> bool:
+  return subprocess.run(["sudo", "rm", "-f", TETHERING_FORWARD_STATE_FILE], check=False).returncode == 0
+
+
 def _replace_operation(command: list[str], operation: str) -> list[str]:
   result = command.copy()
   result[result.index("-A")] = operation
@@ -230,7 +263,12 @@ class TetheringSession:
     if self._previous_ipv4_forward is not None:
       return dnsmasq_running() and firewall_ready()
 
-    self._previous_ipv4_forward = get_ipv4_forward()
+    previous_ipv4_forward = get_ipv4_forward()
+    try:
+      _write_previous_ipv4_forward(previous_ipv4_forward)
+    except (OSError, subprocess.SubprocessError):
+      return False
+    self._previous_ipv4_forward = previous_ipv4_forward
     try:
       configure_interface()
       install_firewall()
@@ -254,6 +292,8 @@ class TetheringSession:
         set_ipv4_forward(self._previous_ipv4_forward)
       except (OSError, subprocess.SubprocessError, RuntimeError):
         return
+    if not _clear_previous_ipv4_forward():
+      return
     self._previous_ipv4_forward = None
 
   def stop(self) -> bool:
@@ -270,12 +310,15 @@ class TetheringSession:
       except (OSError, subprocess.SubprocessError, RuntimeError):
         cloudlog.exception("Failed to restore IPv4 forwarding after tethering")
         return False
+    if not _clear_previous_ipv4_forward():
+      return False
     self._previous_ipv4_forward = None
     return True
 
   @staticmethod
   def cleanup_stale() -> bool:
-    if not dnsmasq_running() and not firewall_present() and not interface_configured():
+    previous_ipv4_forward = _read_previous_ipv4_forward()
+    if not dnsmasq_running() and not firewall_present() and not interface_configured() and previous_ipv4_forward is None:
       return True
     if not stop_dnsmasq():
       return False
@@ -284,7 +327,9 @@ class TetheringSession:
     if not clear_interface():
       return False
     try:
-      set_ipv4_forward(False)
+      set_ipv4_forward(False if previous_ipv4_forward is None else previous_ipv4_forward)
     except (OSError, subprocess.SubprocessError, RuntimeError):
+      return False
+    if not _clear_previous_ipv4_forward():
       return False
     return True

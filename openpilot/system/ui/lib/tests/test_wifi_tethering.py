@@ -85,13 +85,15 @@ class TestTethering(TestCase):
     session = wifi_tethering.TetheringSession()
     with (
       patch.object(wifi_tethering, "get_ipv4_forward", return_value=True),
+      patch.object(wifi_tethering, "_write_previous_ipv4_forward"),
+      patch.object(wifi_tethering, "_clear_previous_ipv4_forward", return_value=True),
       patch.object(wifi_tethering, "configure_interface"),
       patch.object(wifi_tethering, "install_firewall"),
       patch.object(wifi_tethering, "set_ipv4_forward") as set_forward,
       patch.object(wifi_tethering, "start_dnsmasq", return_value=True),
       patch.object(wifi_tethering, "stop_dnsmasq", return_value=True),
-      patch.object(wifi_tethering, "remove_firewall"),
-      patch.object(wifi_tethering, "clear_interface"),
+      patch.object(wifi_tethering, "remove_firewall", return_value=True),
+      patch.object(wifi_tethering, "clear_interface", return_value=True),
     ):
       assert session.start(False)
       assert session.stop()
@@ -116,8 +118,8 @@ class TestTethering(TestCase):
     session._previous_ipv4_forward = False
     with (
       patch.object(wifi_tethering, "stop_dnsmasq", return_value=True),
-      patch.object(wifi_tethering, "remove_firewall") as remove_firewall,
-      patch.object(wifi_tethering, "clear_interface") as clear_interface,
+      patch.object(wifi_tethering, "remove_firewall", return_value=True) as remove_firewall,
+      patch.object(wifi_tethering, "clear_interface", return_value=True) as clear_interface,
       patch.object(wifi_tethering, "set_ipv4_forward", side_effect=OSError),
       patch.object(wifi_tethering.cloudlog, "exception") as log_exception,
     ):
@@ -132,21 +134,56 @@ class TestTethering(TestCase):
     session = wifi_tethering.TetheringSession()
     with (
       patch.object(wifi_tethering, "get_ipv4_forward", return_value=False),
+      patch.object(wifi_tethering, "_write_previous_ipv4_forward"),
+      patch.object(wifi_tethering, "_clear_previous_ipv4_forward", return_value=True),
       patch.object(wifi_tethering, "configure_interface"),
       patch.object(wifi_tethering, "install_firewall"),
       patch.object(wifi_tethering, "set_ipv4_forward"),
       patch.object(wifi_tethering, "start_dnsmasq", return_value=False),
       patch.object(wifi_tethering, "dnsmasq_running", return_value=False),
-      patch.object(wifi_tethering, "remove_firewall") as remove_firewall,
-      patch.object(wifi_tethering, "clear_interface") as clear_interface,
+      patch.object(wifi_tethering, "remove_firewall", return_value=True) as remove_firewall,
+      patch.object(wifi_tethering, "clear_interface", return_value=True) as clear_interface,
     ):
       assert not session.start(True)
 
     remove_firewall.assert_called_once()
     clear_interface.assert_called_once()
 
+  def test_start_records_forwarding_before_tethering_resources(self):
+    session = wifi_tethering.TetheringSession()
+    events = []
+    with (
+      patch.object(wifi_tethering, "get_ipv4_forward", return_value=True),
+      patch.object(wifi_tethering, "_write_previous_ipv4_forward", side_effect=lambda value: events.append(("marker", value))),
+      patch.object(wifi_tethering, "configure_interface", side_effect=lambda: events.append(("interface", None))),
+      patch.object(wifi_tethering, "install_firewall"),
+      patch.object(wifi_tethering, "set_ipv4_forward"),
+      patch.object(wifi_tethering, "start_dnsmasq", return_value=True),
+    ):
+      assert session.start(False)
+
+    assert events == [("marker", True), ("interface", None)]
+
+  def test_stale_forwarding_marker_is_restored_without_other_resources(self):
+    with (
+      patch.object(wifi_tethering, "_read_previous_ipv4_forward", return_value=True),
+      patch.object(wifi_tethering, "dnsmasq_running", return_value=False),
+      patch.object(wifi_tethering, "firewall_present", return_value=False),
+      patch.object(wifi_tethering, "interface_configured", return_value=False),
+      patch.object(wifi_tethering, "stop_dnsmasq", return_value=True),
+      patch.object(wifi_tethering, "remove_firewall", return_value=True),
+      patch.object(wifi_tethering, "clear_interface", return_value=True),
+      patch.object(wifi_tethering, "set_ipv4_forward") as set_forward,
+      patch.object(wifi_tethering, "_clear_previous_ipv4_forward", return_value=True) as clear_marker,
+    ):
+      assert wifi_tethering.TetheringSession.cleanup_stale()
+
+    set_forward.assert_called_once_with(True)
+    clear_marker.assert_called_once_with()
+
   def test_clean_startup_does_not_touch_global_forwarding(self):
     with (
+      patch.object(wifi_tethering, "_read_previous_ipv4_forward", return_value=None),
       patch.object(wifi_tethering, "dnsmasq_running", return_value=False),
       patch.object(wifi_tethering, "firewall_present", return_value=False),
       patch.object(wifi_tethering, "interface_configured", return_value=False),
