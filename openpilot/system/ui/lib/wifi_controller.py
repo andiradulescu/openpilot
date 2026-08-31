@@ -365,14 +365,22 @@ class WifiController:
 
   def _start_station(self) -> bool:
     self._assert_owner()
+    station_was_running = wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF)
     try:
       wpa_supplicant.write_station_config([profile.as_wpa_network() for profile in self._store.profiles()])
     except OSError:
       cloudlog.exception("Failed to write station wpa_supplicant configuration")
+      if not station_was_running and self._dhcp.running:
+        self._ownership_touched = True
+        if not self._clear_l3():
+          cloudlog.error("Failed to stop stale Wi-Fi DHCP after station configuration failure")
+          return False
       if not wpa_supplicant.restore_networkmanager():
+        self._ownership_touched = True
         cloudlog.error("Failed to return wlan0 to NetworkManager after station configuration failure")
+      else:
+        self._ownership_touched = False
       return False
-    station_was_running = wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF)
     retained_active_profile = read_active_profile() if station_was_running and self._dhcp.running else None
     if not station_was_running and self._dhcp.running:
       if not self._clear_l3():
