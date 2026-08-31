@@ -252,7 +252,7 @@ def firewall_present() -> bool:
     [*filt, "-S", INPUT_CHAIN],
     [*filt, "-S", FORWARD_CHAIN],
   )
-  return any(subprocess.run(command, capture_output=True, check=False).returncode == 0 for command in checks)
+  return not all(subprocess.run(command, capture_output=True, check=False).returncode == 1 for command in checks)
 
 
 class TetheringSession:
