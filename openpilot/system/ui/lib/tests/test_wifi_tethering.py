@@ -121,12 +121,12 @@ class TestTethering(TestCase):
       patch.object(wifi_tethering, "set_ipv4_forward", side_effect=OSError),
       patch.object(wifi_tethering.cloudlog, "exception") as log_exception,
     ):
-      assert session.stop()
+      assert not session.stop()
 
     remove_firewall.assert_called_once_with()
     clear_interface.assert_called_once_with()
     log_exception.assert_called_once_with("Failed to restore IPv4 forwarding after tethering")
-    assert session._previous_ipv4_forward is None
+    assert session._previous_ipv4_forward is False
 
   def test_failed_start_rolls_back_resources(self):
     session = wifi_tethering.TetheringSession()
