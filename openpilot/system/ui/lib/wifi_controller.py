@@ -576,16 +576,16 @@ class WifiController:
     self._assert_owner()
     profiles = self._store.profiles_for_ssid(ssid)
     runtime_ids = [self._runtime_profiles[profile.uuid] for profile in profiles if profile.uuid in self._runtime_profiles]
-    if not runtime_ids:
+    if len(runtime_ids) < len(profiles):
       try:
         self._sync_runtime_profiles()
       except (OSError, RuntimeError):
         self._callbacks.put(("disconnected", None))
         return
       runtime_ids = [self._runtime_profiles[profile.uuid] for profile in profiles if profile.uuid in self._runtime_profiles]
-      if not runtime_ids:
-        self._callbacks.put(("disconnected", None))
-        return
+    if not runtime_ids or len(runtime_ids) < len(profiles):
+      self._callbacks.put(("disconnected", None))
+      return
 
     if not self._begin_selection(ssid):
       return
