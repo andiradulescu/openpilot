@@ -15,11 +15,13 @@ def profile_text(profile_uuid: str = PROFILE_UUID, ssid: str = "TestNet", metere
   return f"""[connection]
 uuid={profile_uuid}
 type=wifi
+autoconnect-retries=0
 metered={metered}
 [wifi]
 ssid={ssid}
 [ipv4]
 method=auto
+dns-priority=600
 [ipv6]
 method=auto
 """
@@ -125,6 +127,12 @@ method=auto
 
     assert ipv6 is not None and ipv6.read_only
     assert proxy is not None and proxy.read_only
+
+  def test_explicit_interface_binding_makes_profile_read_only(self):
+    profile = parse_profile(profile_text().replace("type=wifi\n", "type=wifi\ninterface-name=wlan0\n"))
+
+    assert profile is not None
+    assert profile.read_only
 
   def test_round_trip_keeps_networkmanager_semantics(self):
     raw = f"""\

@@ -200,6 +200,7 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
   read_only = (
     not cp.has_option("connection", "autoconnect-retries")
     or not cp.has_option("ipv4", "dns-priority")
+    or bool(cp.get("connection", "interface-name", fallback=""))
     or bool(ipv6.get("addr-gen-mode"))
     or any(
       section not in represented_sections and any(value for _, value in cp.items(section))
