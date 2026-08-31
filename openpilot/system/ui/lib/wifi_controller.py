@@ -637,6 +637,14 @@ class WifiController:
   def _forget(self, ssid: str):
     self._assert_owner()
     profiles = self._store.profiles_for_ssid(ssid)
+    if not profiles and self._requested_ssid == ssid:
+      try:
+        self._cancel_selection(notify=False)
+      except RuntimeError:
+        self._callbacks.put(("forget_failed", ssid))
+        return
+      self._callbacks.put(("forgotten", ssid))
+      return
     runtime_ids = [self._runtime_profiles[profile.uuid] for profile in profiles if profile.uuid in self._runtime_profiles]
     active_forget = self._state.ssid == ssid or self._requested_ssid == ssid
     try:
