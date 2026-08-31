@@ -437,6 +437,7 @@ class WifiController:
       return False
     self._adopt_status(status)
     return True
+
   def _initialize_station(self):
     self._assert_owner()
     if not self._start_station():
@@ -656,6 +657,7 @@ class WifiController:
         pass
       self._callbacks.put(("forget_failed", ssid))
       return
+
     if active_forget and not self._clear_l3():
       try:
         self._restore_network_enablement()
