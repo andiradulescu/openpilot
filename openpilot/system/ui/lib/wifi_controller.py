@@ -1040,6 +1040,11 @@ class WifiController:
         profile_uuid = stored.uuid
       except (OSError, subprocess.SubprocessError):
         self._cancel_selection()
+        try:
+          self._sync_runtime_profiles()
+          self._restore_network_enablement()
+        except (OSError, RuntimeError):
+          pass
         return
 
     profile = self._store.get(profile_uuid)
