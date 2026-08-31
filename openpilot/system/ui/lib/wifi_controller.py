@@ -521,14 +521,14 @@ class WifiController:
 
   def _connect(self, command: _Connect):
     self._assert_owner()
+    if self._requested_ssid is not None:
+      self._cancel_selection(notify=False)
     if not is_valid_ssid(command.ssid):
       self._callbacks.put(("need_auth", command.ssid))
       return
     if command.security == SecurityType.WPA and not self._valid_psk(command.password):
       self._callbacks.put(("need_auth", command.ssid))
       return
-    if self._requested_ssid is not None:
-      self._cancel_selection(notify=False)
 
     existing = self._store.profiles_for_ssid(command.ssid)
     if existing:
