@@ -1035,7 +1035,7 @@ class WifiController:
           if profile.uuid in self._runtime_profiles
         } if self._requested_ssid is not None else set()
         matches_network_id = len(candidate_ids) == 1 and (failed_id is None or failed_id in candidate_ids)
-        if len(candidate_ids) > 1 and matches_ssid and failed_id in candidate_ids:
+        if len(candidate_ids) > 1 and matches_ssid and failed_id is not None and failed_id in candidate_ids:
           self._failed_candidate_ids.add(failed_id)
           matches_network_id = candidate_ids <= self._failed_candidate_ids
       if self._requested_ssid is not None and matches_ssid and matches_network_id:
