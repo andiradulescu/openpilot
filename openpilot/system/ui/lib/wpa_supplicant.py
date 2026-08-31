@@ -22,6 +22,8 @@ _ACQUISITION_READY = "READY\n"
 _ACQUISITION_COMMIT = "COMMIT\n"
 _ACQUISITION_READY_TIMEOUT = 10.0
 _ACQUISITION_STOP_TIMEOUT = 1.0
+_NETWORKMANAGER_RESTORE_ATTEMPTS = 3
+_NETWORKMANAGER_RESTORE_RETRY_SECONDS = 0.1
 
 
 class _StationAcquisition:
@@ -171,7 +173,14 @@ def release_networkmanager() -> bool:
 
 
 def restore_networkmanager() -> bool:
-  return _set_networkmanager_managed(True)
+  if _owned_pid() is not None:
+    return False
+  for attempt in range(_NETWORKMANAGER_RESTORE_ATTEMPTS):
+    if _set_networkmanager_managed(True):
+      return True
+    if attempt + 1 < _NETWORKMANAGER_RESTORE_ATTEMPTS:
+      time.sleep(_NETWORKMANAGER_RESTORE_RETRY_SECONDS)
+  return False
 
 
 def prepare_runtime() -> None:
