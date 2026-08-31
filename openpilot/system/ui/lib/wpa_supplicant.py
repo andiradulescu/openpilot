@@ -168,6 +168,17 @@ def _set_networkmanager_managed(managed: bool) -> bool:
   return result.returncode == 0
 
 
+def _reload_networkmanager_connections() -> bool:
+  nmcli = shutil.which("nmcli")
+  if nmcli is None:
+    return True
+  try:
+    result = subprocess.run(["sudo", nmcli, "connection", "reload"], capture_output=True)
+  except OSError:
+    return False
+  return result.returncode == 0
+
+
 def release_networkmanager() -> bool:
   return _set_networkmanager_managed(False)
 
@@ -176,7 +187,7 @@ def restore_networkmanager() -> bool:
   if _owned_pid() is not None:
     return False
   for attempt in range(_NETWORKMANAGER_RESTORE_ATTEMPTS):
-    if _set_networkmanager_managed(True):
+    if _reload_networkmanager_connections() and _set_networkmanager_managed(True):
       return True
     if attempt + 1 < _NETWORKMANAGER_RESTORE_ATTEMPTS:
       time.sleep(_NETWORKMANAGER_RESTORE_RETRY_SECONDS)
