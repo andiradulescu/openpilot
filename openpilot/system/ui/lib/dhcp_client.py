@@ -120,7 +120,8 @@ class DhcpClient:
       routes = subprocess.run(["sudo", "ip", "-6", "route", "flush", "dev", self._iface], capture_output=True, check=False)
     except OSError:
       return False
-    return addresses.returncode == 0 and routes.returncode == 0
+    routes_empty = routes.returncode == 2 and routes.stderr.strip() == b"Failed to send flush request: No such process"
+    return addresses.returncode == 0 and (routes.returncode == 0 or routes_empty)
 
   def ipv4_address(self) -> str:
     result = subprocess.run(["ip", "-4", "-o", "addr", "show", "dev", self._iface, "scope", "global"], capture_output=True, text=True, check=False)

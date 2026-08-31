@@ -56,6 +56,20 @@ class TestDhcpClient(TestCase):
       call(["sudo", "ip", "-6", "route", "flush", "dev", "wlan0"], capture_output=True, check=False),
     ]
 
+  def test_clear_ipv6_accepts_empty_route_table(self):
+    client = DhcpClient()
+    addresses = subprocess.CompletedProcess([], 0, b"", b"")
+    routes = subprocess.CompletedProcess([], 2, b"", b"Failed to send flush request: No such process\n")
+    with patch.object(dhcp_client.subprocess, "run", side_effect=[addresses, routes]):
+      assert client.clear_ipv6()
+
+  def test_clear_ipv6_rejects_other_route_failure(self):
+    client = DhcpClient()
+    addresses = subprocess.CompletedProcess([], 0, b"", b"")
+    routes = subprocess.CompletedProcess([], 2, b"", b"RTNETLINK answers: Operation not permitted\n")
+    with patch.object(dhcp_client.subprocess, "run", side_effect=[addresses, routes]):
+      assert not client.clear_ipv6()
+
   def test_ready_requires_address_and_metric_route(self):
     client = DhcpClient()
     address = subprocess.CompletedProcess([], 0, "1: wlan0 inet 10.0.0.2/24 scope global wlan0\n", "")
