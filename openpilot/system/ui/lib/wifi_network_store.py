@@ -206,6 +206,7 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
     or bool(cp.get("connection", "timestamp", fallback=""))
     or bool(cp.get("connection", "interface-name", fallback=""))
     or bool(ipv6.get("addr-gen-mode"))
+    or metered_value not in (0, 1, 2)
     or any(
       section not in represented_sections and any(value for _, value in cp.items(section))
       for section in cp.sections()
