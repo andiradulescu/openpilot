@@ -374,7 +374,8 @@ class WifiController:
   def _start_station(self) -> bool:
     self._assert_owner()
     station_was_running = wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF)
-    retained_active_profile = read_active_profile() if station_was_running and self._dhcp.running else None
+    dhcp_was_running = self._dhcp.running
+    retained_active_profile = read_active_profile() if station_was_running and dhcp_was_running else None
     networks = []
     for profile in self._store.profiles():
       network = profile.as_wpa_network()
@@ -385,7 +386,7 @@ class WifiController:
       wpa_supplicant.write_station_config(networks)
     except OSError:
       cloudlog.exception("Failed to write station wpa_supplicant configuration")
-      if not station_was_running and self._dhcp.running:
+      if station_was_running or dhcp_was_running:
         self._ownership_touched = True
         if not self._clear_l3():
           cloudlog.error("Failed to stop stale Wi-Fi DHCP after station configuration failure")
@@ -396,15 +397,22 @@ class WifiController:
       else:
         self._ownership_touched = False
       return False
-    if not station_was_running and self._dhcp.running:
+    l3_cleared = False
+    if not station_was_running and dhcp_was_running:
       self._ownership_touched = True
       if not self._clear_l3():
         cloudlog.error("Failed to stop stale Wi-Fi DHCP before starting station")
         return False
+      l3_cleared = True
     self._ownership_touched = True
     acquisition = wpa_supplicant.begin_station()
     if acquisition is None:
       return False
+    if not (station_was_running and dhcp_was_running) and not l3_cleared:
+      if not self._clear_l3():
+        if not acquisition.rollback():
+          cloudlog.error("Failed to roll back station acquisition")
+        return False
     try:
       status = self._open_station_ctrl(adopt=False)
     except (OSError, RuntimeError):
@@ -412,7 +420,7 @@ class WifiController:
       if not acquisition.rollback():
         cloudlog.error("Failed to roll back station acquisition")
       return False
-    if station_was_running and self._dhcp.running:
+    if station_was_running and dhcp_was_running:
       profile_uuid = status.get("id_str", "").strip('"')
       retained_profile_uuid = retained_active_profile[0] if retained_active_profile is not None else None
       if status.get("wpa_state") != "COMPLETED" or profile_uuid != retained_profile_uuid:
