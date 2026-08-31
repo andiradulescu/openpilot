@@ -847,6 +847,16 @@ class WifiController:
       else:
         self._leave_tethering(failed=True)
       return
+    if not wifi_tethering.wait_for_ap_ready():
+      if not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
+        self._tethering_password_rollback = old_password
+        self._callbacks.put(("tethering_failed", None))
+        return
+      if self._restore_tethering_password(old_password):
+        self._callbacks.put(("tethering_failed", None))
+      else:
+        self._leave_tethering(failed=True)
+      return
 
     try:
       profile = self._tethering_store.set_password(self._tethering_ssid, password)
@@ -871,7 +881,7 @@ class WifiController:
     except OSError:
       cloudlog.exception("Failed to restore tethering configuration after password update")
       return False
-    if not wpa_supplicant.start(wpa_supplicant.WPA_AP_CONF):
+    if not wpa_supplicant.start(wpa_supplicant.WPA_AP_CONF) or not wifi_tethering.wait_for_ap_ready():
       cloudlog.error("Failed to restore tethering after password update")
       return False
     return True
