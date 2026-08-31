@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from openpilot.common.swaglog import cloudlog
+from openpilot.system.ui.lib.wpa_ctrl import WpaCtrl, parse_status
 
 
 TETHERING_ADDRESS = "192.168.43.1"
@@ -14,6 +15,8 @@ DNSMASQ_PID_FILE = "/run/openpilot-wifi/dnsmasq.pid"
 NAT_CHAIN = "OPENPILOT_TETHERING_NAT"
 INPUT_CHAIN = "OPENPILOT_TETHERING_INPUT"
 FORWARD_CHAIN = "OPENPILOT_TETHERING_FORWARD"
+AP_READY_TIMEOUT_SECONDS = 5.0
+AP_READY_RETRY_SECONDS = 0.05
 
 
 def _iptables() -> str:
@@ -100,12 +103,33 @@ def interface_configured() -> bool:
   return result.returncode == 0 and any(TETHERING_CIDR in line.split() for line in result.stdout.splitlines())
 
 
+def ap_ready() -> bool:
+  ctrl = WpaCtrl()
+  try:
+    ctrl.open()
+    status = parse_status(ctrl.request("STATUS"))
+  except (OSError, RuntimeError):
+    return False
+  finally:
+    ctrl.close()
+  return status.get("mode") == "AP" and status.get("wpa_state") == "COMPLETED"
+
+
+def wait_for_ap_ready(timeout: float = AP_READY_TIMEOUT_SECONDS) -> bool:
+  deadline = time.monotonic() + timeout
+  while time.monotonic() < deadline:
+    if ap_ready():
+      return True
+    time.sleep(AP_READY_RETRY_SECONDS)
+  return ap_ready()
+
+
 def interface_ready() -> bool:
   try:
     flags = int(Path("/sys/class/net/wlan0/flags").read_text().strip(), 16)
   except (OSError, ValueError):
     return False
-  return bool(flags & 1) and interface_configured()  # IFF_UP
+  return bool(flags & 1) and interface_configured() and ap_ready()  # IFF_UP
 
 
 def get_ipv4_forward() -> bool:
@@ -157,6 +181,8 @@ def _commands():
 
 
 def install_firewall() -> None:
+  if not wait_for_ap_ready():
+    raise RuntimeError("tethering AP failed to activate")
   nat, filt, rules, jumps = _commands()
   for command, chain in ((nat, NAT_CHAIN), (filt, INPUT_CHAIN), (filt, FORWARD_CHAIN)):
     subprocess.run([*command, "-N", chain], capture_output=True, check=False)
