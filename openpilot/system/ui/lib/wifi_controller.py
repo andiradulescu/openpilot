@@ -1020,10 +1020,10 @@ class WifiController:
       if not self._clear_l3():
         raise RuntimeError("failed to stop Wi-Fi DHCP") from None
 
+    if not profile.ipv6_enabled and not self._dhcp.clear_ipv6():
+      return
     self._requested_ssid = None
     self._connecting_since = time.monotonic()
-    if not profile.ipv6_enabled:
-      self._dhcp.clear_ipv6()
     if not self._dhcp.running:
       self._dhcp.start()
     self._state = WifiState(ssid=ssid, status=ConnectStatus.CONNECTING, profile_uuid=profile_uuid, metered=profile.metered)
