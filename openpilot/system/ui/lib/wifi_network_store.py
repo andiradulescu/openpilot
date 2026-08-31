@@ -134,6 +134,7 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
 
   profile_uuid = _parse_uuid(cp.get("connection", "uuid", fallback=""))
   ssid = _decode_ssid(cp.get(wifi, "ssid", fallback=""))
+  connection_id = _decode_keyfile_string(cp.get("connection", "id", fallback=""))
   autoconnect = _getbool(cp, "connection", "autoconnect", True)
   retries = _getint(cp, "connection", "autoconnect-retries", 0)
   priority = _getint(cp, "connection", "autoconnect-priority", 0)
@@ -200,6 +201,7 @@ def parse_profile(raw: str, path: str = "", persistent: bool = True) -> NetworkP
   read_only = (
     not cp.has_option("connection", "autoconnect-retries")
     or not cp.has_option("ipv4", "dns-priority")
+    or (cp.has_option("connection", "id") and connection_id != _display_ssid(ssid))
     or bool(cp.get("connection", "timestamp", fallback=""))
     or bool(cp.get("connection", "interface-name", fallback=""))
     or bool(ipv6.get("addr-gen-mode"))
