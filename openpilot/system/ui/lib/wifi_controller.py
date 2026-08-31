@@ -219,12 +219,14 @@ class WifiController:
       self._store.recover()
       self._tethering_store.recover()
       self._refresh_saved_ssids()
-      if wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF):
-        self._ownership_touched = True
-        if not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
-          raise RuntimeError("failed to stop stale tethering wpa_supplicant")
+      stale_ap_running = wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)
+      self._ownership_touched = True
+      if stale_ap_running and not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
+        raise RuntimeError("failed to stop stale tethering wpa_supplicant")
       if not wifi_tethering.TetheringSession.cleanup_stale():
         raise RuntimeError("failed to clean up stale tethering resources")
+      if not stale_ap_running:
+        self._ownership_touched = False
       self._initialize_tethering_profile()
       self._initialize_station()
       while not self._exit:
@@ -394,6 +396,7 @@ class WifiController:
         self._ownership_touched = False
       return False
     if not station_was_running and self._dhcp.running:
+      self._ownership_touched = True
       if not self._clear_l3():
         cloudlog.error("Failed to stop stale Wi-Fi DHCP before starting station")
         return False
