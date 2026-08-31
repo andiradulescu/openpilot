@@ -102,12 +102,15 @@ class DhcpClient:
 
     self._proc = None
     subprocess.run(["sudo", "rm", "-f", self._pid_file], check=False)
-    self.clear_ipv4()
-    return True
+    return self.clear_ipv4()
 
-  def clear_ipv4(self) -> None:
-    subprocess.run(["sudo", "ip", "-4", "route", "flush", "dev", self._iface], capture_output=True, check=False)
-    subprocess.run(["sudo", "ip", "-4", "addr", "flush", "dev", self._iface], capture_output=True, check=False)
+  def clear_ipv4(self) -> bool:
+    try:
+      routes = subprocess.run(["sudo", "ip", "-4", "route", "flush", "dev", self._iface], capture_output=True, check=False)
+      addresses = subprocess.run(["sudo", "ip", "-4", "addr", "flush", "dev", self._iface], capture_output=True, check=False)
+    except OSError:
+      return False
+    return routes.returncode == 0 and addresses.returncode == 0
 
   def clear_ipv6(self) -> None:
     subprocess.run(["sudo", "ip", "-6", "addr", "flush", "dev", self._iface, "scope", "global"], capture_output=True, check=False)
