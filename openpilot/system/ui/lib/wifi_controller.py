@@ -160,6 +160,7 @@ class WifiController:
   def start(self):
     if self._thread is not None:
       return
+    self._exit = False
     self._thread = threading.Thread(target=self._run, daemon=True)
     self._thread.start()
 
