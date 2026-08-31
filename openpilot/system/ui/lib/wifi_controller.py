@@ -159,7 +159,9 @@ class WifiController:
 
   def start(self):
     if self._thread is not None:
-      return
+      if self._thread.is_alive():
+        return
+      self._thread = None
     self._exit = False
     self._thread = threading.Thread(target=self._run, daemon=True)
     self._thread.start()
@@ -168,8 +170,9 @@ class WifiController:
     if self._thread is None:
       return
     thread = self._thread
-    self._commands.put(_Stop())
-    thread.join()
+    if thread.is_alive():
+      self._commands.put(_Stop())
+      thread.join()
     self._thread = None
 
   def set_active(self, active: bool):
@@ -259,7 +262,8 @@ class WifiController:
             or self._tethering_active
             or wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF)
             or wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)):
-          self._shutdown()
+          while not self._shutdown():
+            time.sleep(RECONCILE_PERIOD_SECONDS)
       except Exception:
         cloudlog.exception("Failed to return Wi-Fi ownership after controller failure")
     finally:
