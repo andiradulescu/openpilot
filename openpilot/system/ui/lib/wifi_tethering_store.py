@@ -204,10 +204,14 @@ class TetheringStore:
   def can_mutate(self, profile: TetheringProfile) -> bool:
     return profile.persistent and profile.path.startswith(self._directory + os.sep)
 
-  def _clear_runtime_shadow(self, profile_uuid: str) -> None:
-    path = self._runtime_paths.pop(profile_uuid, None)
-    if path is not None:
-      subprocess.run(["sudo", "rm", "-f", path], check=False)
+  def _clear_runtime_shadow(self, profile_uuid: str) -> bool:
+    path = self._runtime_paths.get(profile_uuid)
+    if path is None:
+      return True
+    if subprocess.run(["sudo", "rm", "-f", path], check=False).returncode != 0:
+      return False
+    self._runtime_paths.pop(profile_uuid, None)
+    return True
 
   def _persistent_path(self, profile: TetheringProfile) -> str:
     if profile.persistent and profile.path.startswith(self._directory + os.sep):
@@ -264,6 +268,8 @@ class TetheringStore:
       os.unlink(temp_path)
 
   def _write(self, profile: TetheringProfile, raw: str) -> TetheringProfile:
+    if not self._clear_runtime_shadow(profile.uuid):
+      raise OSError(f"failed to clear runtime shadow for tethering profile {profile.uuid}")
     path = self._persistent_path(profile)
     subprocess.run(["sudo", "install", "-d", "-m", "700", self._directory], check=True)
     with tempfile.NamedTemporaryFile("w", delete=False) as f:
@@ -278,5 +284,4 @@ class TetheringStore:
       subprocess.run(["sudo", "rm", "-f", stage_path], check=False)
     stored = replace(profile, path=path, persistent=True, raw=raw)
     self._profiles[stored.uuid] = stored
-    self._clear_runtime_shadow(stored.uuid)
     return stored
