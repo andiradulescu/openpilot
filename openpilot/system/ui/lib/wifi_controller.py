@@ -130,6 +130,7 @@ class WifiController:
     self._ownership_touched = False
     self._owner_ident: int | None = None
     self._thread: threading.Thread | None = None
+    self._stop_requested = threading.Event()
     self._exit = False
     if start:
       self.start()
@@ -164,6 +165,7 @@ class WifiController:
         return
       self._thread = None
     self._exit = False
+    self._stop_requested.clear()
     self._thread = threading.Thread(target=self._run, daemon=True)
     self._thread.start()
 
@@ -172,7 +174,7 @@ class WifiController:
       return
     thread = self._thread
     if thread.is_alive():
-      self._commands.put(_Stop())
+      self._stop_requested.set()
       thread.join()
     self._thread = None
 
@@ -221,7 +223,7 @@ class WifiController:
   def _run(self):
     self._owner_ident = threading.get_ident()
     try:
-      while not self._exit:
+      while not self._exit and not self._stop_requested.is_set():
         try:
           self._store.recover()
           self._tethering_store.recover()
@@ -237,9 +239,9 @@ class WifiController:
             if not stale_ap_running:
               self._ownership_touched = False
             self._initialize_station()
-          while not self._exit:
+          while not self._exit and not self._stop_requested.is_set():
             self._drain_commands()
-            if self._exit:
+            if self._exit or self._stop_requested.is_set():
               break
 
             if self._tethering_active:
@@ -262,7 +264,7 @@ class WifiController:
         except Exception:
           cloudlog.exception("Wi-Fi controller failed")
           self._close_ctrl()
-          if not self._exit:
+          if not self._exit and not self._stop_requested.is_set():
             time.sleep(RECONCILE_PERIOD_SECONDS)
     finally:
       if not self._ownership_touched:
