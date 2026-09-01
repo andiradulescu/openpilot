@@ -170,11 +170,23 @@ class TetheringStore:
           continue
         path = os.path.join(directory, filename)
         raw = sudo_read(path)
+        if raw and not persistent:
+          cp = configparser.ConfigParser(interpolation=None)
+          try:
+            cp.read_string(raw)
+          except configparser.Error:
+            pass
+          else:
+            if cp.has_section("connection"):
+              try:
+                profile_uuid = str(uuid.UUID(cp.get("connection", "uuid", fallback="")))
+              except ValueError:
+                pass
+              else:
+                runtime_uuids.add(profile_uuid)
         profile = parse_tethering_profile(raw, path, persistent) if raw else None
         if profile is None:
           continue
-        if not persistent:
-          runtime_uuids.add(profile.uuid)
         if profile.uuid not in profiles or persistent:
           profiles[profile.uuid] = profile
     self._profiles = profiles
