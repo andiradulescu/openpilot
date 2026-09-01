@@ -142,7 +142,7 @@ class TetheringStore:
     self._directory = directory
     self._runtime_directory = RUNTIME_CONNECTIONS_DIR if runtime_directory is None and directory == NM_CONNECTIONS_DIR else runtime_directory
     self._profiles: dict[str, TetheringProfile] = {}
-    self._runtime_uuids: set[str] = set()
+    self._runtime_paths: dict[str, str] = {}
     self.reload()
 
   def recover(self):
@@ -157,7 +157,7 @@ class TetheringStore:
 
   def reload(self):
     profiles: dict[str, TetheringProfile] = {}
-    runtime_uuids: set[str] = set()
+    runtime_paths: dict[str, str] = {}
     for directory, persistent in ((self._directory, True), (self._runtime_directory, False)):
       if directory is None:
         continue
@@ -183,26 +183,49 @@ class TetheringStore:
               except ValueError:
                 pass
               else:
-                runtime_uuids.add(profile_uuid)
+                runtime_paths[profile_uuid] = path
         profile = parse_tethering_profile(raw, path, persistent) if raw else None
         if profile is None:
           continue
         if profile.uuid not in profiles or persistent:
           profiles[profile.uuid] = profile
     self._profiles = profiles
-    self._runtime_uuids = runtime_uuids
+    self._runtime_paths = runtime_paths
 
   def get(self, ssid: str) -> TetheringProfile | None:
     matches = [profile for profile in self._profiles.values() if profile.ssid == ssid]
+    persistent = [profile for profile in matches if profile.persistent]
+    if len(persistent) == 1:
+      return persistent[0]
+    if len(persistent) > 1:
+      return None
     return matches[0] if len(matches) == 1 else None
 
   def can_mutate(self, profile: TetheringProfile) -> bool:
-    return profile.persistent and profile.uuid not in self._runtime_uuids and profile.path.startswith(self._directory + os.sep)
+    return profile.persistent and profile.path.startswith(self._directory + os.sep)
+
+  def _clear_runtime_shadow(self, profile_uuid: str) -> None:
+    path = self._runtime_paths.pop(profile_uuid, None)
+    if path is not None:
+      subprocess.run(["sudo", "rm", "-f", path], check=False)
+
+  def _persistent_path(self, profile: TetheringProfile) -> str:
+    if profile.persistent and profile.path.startswith(self._directory + os.sep):
+      return profile.path
+    return os.path.join(self._directory, f"{profile.uuid}-Hotspot.nmconnection")
 
   def ensure(self, ssid: str, password: str) -> TetheringProfile | None:
     profile = self.get(ssid)
     if profile is not None:
-      return profile
+      if profile.persistent:
+        return profile
+      if not _valid_password(password):
+        return None
+      try:
+        promoted = replace(profile, password=password, path="", persistent=True)
+        return self._write(promoted, render_tethering_profile(promoted))
+      except (OSError, subprocess.SubprocessError):
+        return None
     if any(item.ssid == ssid for item in self._profiles.values()) or not _valid_password(password):
       return None
     profile = TetheringProfile(str(uuid.uuid4()), ssid, password)
@@ -213,7 +236,11 @@ class TetheringStore:
 
   def set_password(self, ssid: str, password: str) -> TetheringProfile | None:
     profile = self.get(ssid)
-    if profile is None or not self.can_mutate(profile) or not _valid_password(password):
+    if profile is None or not _valid_password(password):
+      return None
+    if not profile.persistent:
+      return self.ensure(ssid, password)
+    if not self.can_mutate(profile):
       return None
 
     cp = configparser.ConfigParser(interpolation=None)
@@ -237,7 +264,7 @@ class TetheringStore:
       os.unlink(temp_path)
 
   def _write(self, profile: TetheringProfile, raw: str) -> TetheringProfile:
-    path = profile.path or os.path.join(self._directory, f"{profile.uuid}-Hotspot.nmconnection")
+    path = self._persistent_path(profile)
     subprocess.run(["sudo", "install", "-d", "-m", "700", self._directory], check=True)
     with tempfile.NamedTemporaryFile("w", delete=False) as f:
       f.write(raw)
@@ -251,4 +278,5 @@ class TetheringStore:
       subprocess.run(["sudo", "rm", "-f", stage_path], check=False)
     stored = replace(profile, path=path, persistent=True, raw=raw)
     self._profiles[stored.uuid] = stored
+    self._clear_runtime_shadow(stored.uuid)
     return stored

@@ -186,6 +186,22 @@ method=ignore
     assert reparsed.psk == password
 
 
+def run_sudo(command, **kwargs):
+  if command[:2] == ["sudo", "install"]:
+    if "-d" in command:
+      Path(command[-1]).mkdir(parents=True, exist_ok=True)
+    else:
+      Path(command[-1]).parent.mkdir(parents=True, exist_ok=True)
+      Path(command[-1]).write_bytes(Path(command[-2]).read_bytes())
+  elif command[:3] == ["sudo", "mv", "-f"]:
+    os.replace(command[3], command[4])
+  elif command[:3] == ["sudo", "rm", "-f"]:
+    Path(command[3]).unlink(missing_ok=True)
+  elif command[:2] == ["sudo", "touch"]:
+    Path(command[-1]).touch()
+  return type("Result", (), {"returncode": 0})()
+
+
 class TestNetworkStore(TestCase):
   def test_persistent_profile_wins_same_uuid_runtime_copy(self):
     with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
@@ -194,34 +210,44 @@ class TestNetworkStore(TestCase):
       persistent_path.write_text(profile_text(metered=1))
       runtime_path.write_text(profile_text(metered=2))
 
-      with patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=lambda path: Path(path).read_text()):
+      with (
+        patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=lambda path: Path(path).read_text()),
+        patch("openpilot.system.ui.lib.wifi_network_store.subprocess.run", side_effect=run_sudo),
+      ):
         store = NetworkStore(persistent, runtime)
 
-      assert store.metered(PROFILE_UUID) == MeteredType.YES
-      assert store.get(PROFILE_UUID).persistent
-      assert not store.can_mutate(PROFILE_UUID)
-      assert store.set_metered(PROFILE_UUID, MeteredType.NO) is None
-      assert not store.remove_ssid("TestNet")
-      assert persistent_path.exists()
-      assert runtime_path.exists()
+        assert store.metered(PROFILE_UUID) == MeteredType.YES
+        assert store.get(PROFILE_UUID).persistent
+        assert store.can_mutate(PROFILE_UUID)
+        updated = store.set_metered(PROFILE_UUID, MeteredType.NO)
+        assert updated is not None
+        assert updated.metered == MeteredType.NO
+        assert parse_profile(persistent_path.read_text()).metered == MeteredType.NO
+        assert not runtime_path.exists()
+        assert store.remove_ssid("TestNet")
+        assert not persistent_path.exists()
 
-  def test_unsupported_runtime_shadow_still_blocks_mutation(self):
+  def test_unsupported_runtime_shadow_does_not_block_mutation(self):
     with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
       persistent_path = Path(persistent) / "persistent.nmconnection"
       runtime_path = Path(runtime) / "runtime.nmconnection"
       persistent_path.write_text(profile_text())
       runtime_path.write_text(profile_text().replace("type=wifi\n", "type=wifi\npermissions=user:test:;\n"))
 
-      with patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=lambda path: Path(path).read_text()):
+      with (
+        patch("openpilot.system.ui.lib.wifi_network_store.sudo_read", side_effect=lambda path: Path(path).read_text()),
+        patch("openpilot.system.ui.lib.wifi_network_store.subprocess.run", side_effect=run_sudo),
+      ):
         store = NetworkStore(persistent, runtime)
 
-      assert store.get(PROFILE_UUID) is not None
-      assert store.get(PROFILE_UUID).persistent
-      assert not store.can_mutate(PROFILE_UUID)
-      assert store.set_metered(PROFILE_UUID, MeteredType.YES) is None
-      assert not store.remove_ssid("TestNet")
-      assert persistent_path.exists()
-      assert runtime_path.exists()
+        assert store.get(PROFILE_UUID) is not None
+        assert store.get(PROFILE_UUID).persistent
+        assert store.can_mutate(PROFILE_UUID)
+        assert store.set_metered(PROFILE_UUID, MeteredType.YES) is not None
+        assert parse_profile(persistent_path.read_text()).metered == MeteredType.YES
+        assert not runtime_path.exists()
+        assert store.remove_ssid("TestNet")
+        assert not persistent_path.exists()
 
   def test_persistent_profile_without_runtime_shadow_can_be_mutated(self):
     with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:

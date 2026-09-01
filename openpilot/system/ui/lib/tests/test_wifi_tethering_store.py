@@ -70,13 +70,74 @@ class TestTetheringProfile(TestCase):
     assert parse_tethering_profile(master_profile("password\\n123")) is None
 
 
+def run_sudo(command, **kwargs):
+  if command[:2] == ["sudo", "install"]:
+    if "-d" in command:
+      Path(command[-1]).mkdir(parents=True, exist_ok=True)
+    else:
+      Path(command[-1]).parent.mkdir(parents=True, exist_ok=True)
+      Path(command[-1]).write_bytes(Path(command[-2]).read_bytes())
+  elif command[:3] == ["sudo", "mv", "-f"]:
+    os.replace(command[3], command[4])
+  elif command[:3] == ["sudo", "rm", "-f"]:
+    Path(command[3]).unlink(missing_ok=True)
+  return type("Result", (), {"returncode": 0})()
+
+
 class TestTetheringStore(TestCase):
-  def test_runtime_shadow_makes_persistent_profile_read_only(self):
+  def test_runtime_shadow_does_not_block_password_update(self):
     with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
       persistent_path = Path(persistent) / "Hotspot.nmconnection"
       runtime_path = Path(runtime) / "Hotspot.nmconnection"
       persistent_path.write_text(master_profile())
       runtime_path.write_text(master_profile())
+
+      with (
+        patch("openpilot.system.ui.lib.wifi_tethering_store.sudo_read", side_effect=lambda path: Path(path).read_text()),
+        patch("openpilot.system.ui.lib.wifi_tethering_store.subprocess.run", side_effect=run_sudo),
+      ):
+        store = TetheringStore(persistent, runtime)
+        profile = store.get("weedle")
+        assert profile is not None
+        assert profile.persistent
+        assert store.can_mutate(profile)
+        updated = store.set_password("weedle", "new-password")
+
+      assert updated is not None
+      assert updated.password == "new-password"
+      assert parse_tethering_profile(persistent_path.read_text()).password == "new-password"
+      assert not runtime_path.exists()
+
+  def test_runtime_only_profile_is_promoted_on_ensure(self):
+    with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
+      runtime_path = Path(runtime) / "Hotspot.nmconnection"
+      runtime_path.write_text(master_profile())
+
+      with (
+        patch("openpilot.system.ui.lib.wifi_tethering_store.sudo_read", side_effect=lambda path: Path(path).read_text()),
+        patch("openpilot.system.ui.lib.wifi_tethering_store.subprocess.run", side_effect=run_sudo),
+      ):
+        store = TetheringStore(persistent, runtime)
+        profile = store.ensure("weedle", "different-password")
+        updated = store.set_password("weedle", "newer-password")
+
+      assert profile is not None
+      assert profile.persistent
+      assert profile.password == "different-password"
+      persistent_files = list(Path(persistent).glob("*.nmconnection"))
+      assert len(persistent_files) == 1
+      assert parse_tethering_profile(persistent_files[0].read_text()).password == "newer-password"
+      assert not runtime_path.exists()
+      assert updated is not None
+      assert updated.password == "newer-password"
+
+  def test_get_prefers_persistent_when_ssid_has_runtime_copy(self):
+    with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
+      other_uuid = "22222222-2222-4222-8222-222222222222"
+      persistent_path = Path(persistent) / "Hotspot.nmconnection"
+      runtime_path = Path(runtime) / "runtime.nmconnection"
+      persistent_path.write_text(master_profile())
+      runtime_path.write_text(master_profile().replace(PROFILE_UUID, other_uuid))
 
       with patch("openpilot.system.ui.lib.wifi_tethering_store.sudo_read", side_effect=lambda path: Path(path).read_text()):
         store = TetheringStore(persistent, runtime)
@@ -84,23 +145,7 @@ class TestTetheringStore(TestCase):
       profile = store.get("weedle")
       assert profile is not None
       assert profile.persistent
-      assert not store.can_mutate(profile)
-      assert store.set_password("weedle", "new-password") is None
-      assert persistent_path.read_text() == master_profile()
-
-  def test_runtime_only_profile_is_reused_without_duplicate(self):
-    with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
-      runtime_path = Path(runtime) / "Hotspot.nmconnection"
-      runtime_path.write_text(master_profile())
-
-      with patch("openpilot.system.ui.lib.wifi_tethering_store.sudo_read", side_effect=lambda path: Path(path).read_text()):
-        store = TetheringStore(persistent, runtime)
-        profile = store.ensure("weedle", "different-password")
-
-      assert profile is not None
-      assert not profile.persistent
-      assert profile.password == "swagswagcomma"
-      assert list(Path(persistent).glob("*.nmconnection")) == []
+      assert profile.uuid == PROFILE_UUID
 
   def test_ensure_creates_rollback_profile_when_missing(self):
     with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:

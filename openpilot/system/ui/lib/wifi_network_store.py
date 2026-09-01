@@ -261,7 +261,7 @@ class NetworkStore:
     self._directory = directory
     self._runtime_directory = RUNTIME_CONNECTIONS_DIR if runtime_directory is None and directory == NM_CONNECTIONS_DIR else runtime_directory
     self._profiles: dict[str, NetworkProfile] = {}
-    self._runtime_uuids: set[str] = set()
+    self._runtime_paths: dict[str, str] = {}
     self.reload()
 
   def recover(self) -> None:
@@ -304,7 +304,7 @@ class NetworkStore:
 
   def reload(self) -> None:
     profiles: dict[str, NetworkProfile] = {}
-    runtime_uuids: set[str] = set()
+    runtime_paths: dict[str, str] = {}
     for directory, persistent in ((self._directory, True), (self._runtime_directory, False)):
       if directory is None:
         continue
@@ -327,14 +327,14 @@ class NetworkStore:
             if cp.has_section("connection"):
               profile_uuid = _parse_uuid(cp.get("connection", "uuid", fallback=""))
               if profile_uuid is not None:
-                runtime_uuids.add(profile_uuid)
+                runtime_paths[profile_uuid] = path
         profile = parse_profile(raw, path, persistent) if raw else None
         if profile is None:
           continue
         if profile.uuid not in profiles or persistent:
           profiles[profile.uuid] = profile
     self._profiles = profiles
-    self._runtime_uuids = runtime_uuids
+    self._runtime_paths = runtime_paths
 
   def profiles(self) -> list[NetworkProfile]:
     return list(self._profiles.values())
@@ -356,16 +356,16 @@ class NetworkStore:
       profile is not None
       and not profile.read_only
       and profile.persistent
-      and profile.uuid not in self._runtime_uuids
       and profile.path.startswith(self._directory + os.sep)
     )
 
   def _can_remove(self, profile: NetworkProfile) -> bool:
-    return (
-      profile.persistent
-      and profile.uuid not in self._runtime_uuids
-      and profile.path.startswith(self._directory + os.sep)
-    )
+    return profile.persistent and profile.path.startswith(self._directory + os.sep)
+
+  def _clear_runtime_shadow(self, profile_uuid: str) -> None:
+    path = self._runtime_paths.pop(profile_uuid, None)
+    if path is not None:
+      subprocess.run(["sudo", "rm", "-f", path], check=False)
 
   def _path(self, profile: NetworkProfile) -> str:
     safe_ssid = profile.ssid.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace").replace("/", "_").replace("\x00", "_")
@@ -390,6 +390,7 @@ class NetworkStore:
       subprocess.run(["sudo", "rm", "-f", stage_path], check=False)
     stored = replace(profile, path=path, persistent=True)
     self._profiles[stored.uuid] = stored
+    self._clear_runtime_shadow(stored.uuid)
     return stored
 
   def set_metered(self, profile_uuid: str, metered: MeteredType) -> NetworkProfile | None:
@@ -432,4 +433,5 @@ class NetworkStore:
       subprocess.run(["sudo", "rm", "-f", marker], check=False)
     for profile in profiles:
       self._profiles.pop(profile.uuid, None)
+      self._clear_runtime_shadow(profile.uuid)
     return True
