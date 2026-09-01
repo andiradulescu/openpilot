@@ -26,15 +26,40 @@ REPLAY = "REPLAY" in os.environ
 
 EventName = log.OnroadEvent.EventName
 
+VW_HCA_TX = 0x126
+VW_HCA_BUS = 0
+VW_HCA_STOCK_MAX = 300
+VW_HCA_TEST_MAX = 320
+VW_HCA_TEST_RATE_UP = 4
+VW_HCA_TEST_MIN_SPEED = 1.0
+VW_HCA_TEST_MAX_SPEED = 10.0
+VW_HCA_TEST_MAX_FRAMES = 10  # 200 ms at the 50 Hz HCA_01 send rate
+VW_HCA_TEST_ARM_FILE = "/tmp/hca_limiter_test_arm"
+
+VW_EPS_STATUS_RX = 0x09F
+VW_EPS_STATUS_BUS = 0
 VW_EPS_DIAG_TX = 0x712
 VW_EPS_DIAG_RX = 0x77C
 VW_EPS_DIAG_BUS = 1
 VW_EPS_DIAG_DIDS = (0x180B, 0x1823)
-VW_EPS_DIAG_PERIOD_FRAMES = 10  # 10 Hz total, 5 Hz per DID
-VW_EPS_DIAG_LOG = "/data/hca_eps_dids.csv"
+VW_EPS_DIAG_PERIOD_FRAMES = 5  # 20 Hz total, 10 Hz per DID
+VW_EPS_DIAG_LOG = "/data/hca_eps_trace.csv"
 
 # forward
 carlog.addHandler(ForwardingHandler(cloudlog))
+
+
+def vw_hca_torque(dat: bytes) -> int:
+  magnitude = dat[2] | ((dat[3] & 0x01) << 8)
+  return -magnitude if dat[3] & 0x80 else magnitude
+
+
+def vw_hca_with_torque(dat: bytes, torque: int) -> bytes:
+  magnitude = abs(torque)
+  ret = bytearray(dat)
+  ret[2] = magnitude & 0xFF
+  ret[3] = (ret[3] & 0x7E) | ((magnitude >> 8) & 0x01) | (0x80 if torque < 0 else 0)
+  return bytes(ret)
 
 
 def obd_callback(params: Params) -> ObdCallback:
@@ -162,45 +187,130 @@ class Car:
     self.is_metric = self.params.get_bool("IsMetric")
     self.experimental_mode = self.params.get_bool("ExperimentalMode")
 
+    # SafetyModel.volkswagen is MQB specifically; PQ/MLB/MEB use separate safety models.
     self.eps_diag_enabled = (not REPLAY and self.CP.brand == "volkswagen" and
                              any(c.safetyModel == structs.CarParams.SafetyModel.volkswagen for c in self.CP.safetyConfigs))
     self.eps_diag_index = 0
     self.eps_diag_last_did = 0
-    self.eps_diag_samples = deque(maxlen=1000)
+    self.eps_diag_samples = deque(maxlen=5000)
+
+    self.hca_test_armed = False
+    self.hca_test_lockout = False
+    self.hca_test_active = False
+    self.hca_test_frames = 0
+    self.hca_last_sent = 0
+    self.eps_hca_status = -1
+    self.eps_hca_status_prev = -1
+    self.trace_v_ego = 0.0
+    self.trace_fault_temp = False
+    self.trace_fault_perm = False
+
+    # Never carry an arm across a card process restart.
+    if self.eps_diag_enabled:
+      try:
+        os.unlink(VW_HCA_TEST_ARM_FILE)
+      except FileNotFoundError:
+        pass
+      except OSError:
+        cloudlog.exception(f"Failed to clear {VW_HCA_TEST_ARM_FILE}")
 
     # card is driven by can recv, expected at 100Hz
     self.rk = Ratekeeper(100, print_delay_threshold=None)
+
+  def queue_eps_trace(self, mono_time: int, event: str, did: str = "", value: str | int = "", data: str = "") -> None:
+    if not self.eps_diag_enabled:
+      return
+    self.eps_diag_samples.append((time.time_ns(), mono_time, event, did, value, self.eps_hca_status,
+                                  int(self.hca_test_armed), self.trace_v_ego, int(self.trace_fault_temp),
+                                  int(self.trace_fault_perm), data))
 
   def capture_eps_diag(self, can_list) -> None:
     if not self.eps_diag_enabled:
       return
 
+    eps_status_mono = None
+    eps_status_raw = None
     for mono_time, frames in can_list:
       for addr, dat, src in frames:
+        if addr == VW_EPS_STATUS_RX and src == VW_EPS_STATUS_BUS and len(dat) == 8:
+          eps_status_mono = mono_time
+          eps_status_raw = dat.hex()
+
         if addr != VW_EPS_DIAG_RX or src != VW_EPS_DIAG_BUS or len(dat) != 8 or (dat[0] >> 4) != 0:
           continue
 
-        did = 0
         if dat[1] == 0x62 and dat[2] == 0x18:
           did = (dat[2] << 8) | dat[3]
-          if did not in VW_EPS_DIAG_DIDS:
-            continue
+          if did in VW_EPS_DIAG_DIDS:
+            self.queue_eps_trace(mono_time, "did", f"{did:04X}", data=dat.hex())
         elif dat[1] == 0x7F and dat[2] == 0x22:
-          did = self.eps_diag_last_did
-        else:
-          continue
+          self.queue_eps_trace(mono_time, "nrc", f"{self.eps_diag_last_did:04X}", f"{dat[3]:02X}", dat.hex())
 
-        self.eps_diag_samples.append((time.time_ns(), mono_time, did, dat.hex()))
+    if self.eps_hca_status != self.eps_hca_status_prev and eps_status_mono is not None:
+      self.queue_eps_trace(eps_status_mono, "eps_status", value=self.eps_hca_status, data=eps_status_raw or "")
+      self.eps_hca_status_prev = self.eps_hca_status
+
+  def apply_hca_probe(self, can_sends: list[CanData], CS: car.CarState, CC: car.CarControl, now_nanos: int) -> list[CanData]:
+    if not self.eps_diag_enabled:
+      return can_sends
+
+    ret = []
+    for msg in can_sends:
+      if msg.address == VW_HCA_TX and msg.src == VW_HCA_BUS and len(msg.dat) == 8:
+        stock_torque = vw_hca_torque(msg.dat)
+        steer_req = bool(msg.dat[3] & 0x40)
+        controller_saturated = abs(stock_torque) == VW_HCA_STOCK_MAX and abs(float(CC.actuators.torque)) >= 0.999
+        probe_allowed = (self.hca_test_armed and not self.hca_test_lockout and CC.enabled and CC.latActive and steer_req and
+                         VW_HCA_TEST_MIN_SPEED <= CS.vEgo <= VW_HCA_TEST_MAX_SPEED and not CS.steeringPressed and
+                         not CS.steerFaultTemporary and not CS.steerFaultPermanent and controller_saturated and
+                         self.hca_test_frames < VW_HCA_TEST_MAX_FRAMES)
+
+        send_torque = stock_torque
+        same_direction = self.hca_last_sent == 0 or (self.hca_last_sent > 0) == (stock_torque > 0)
+        if probe_allowed and same_direction:
+          if stock_torque > 0:
+            send_torque = min(VW_HCA_TEST_MAX, max(stock_torque, self.hca_last_sent + VW_HCA_TEST_RATE_UP))
+          else:
+            send_torque = max(-VW_HCA_TEST_MAX, min(stock_torque, self.hca_last_sent - VW_HCA_TEST_RATE_UP))
+
+        was_active = self.hca_test_active
+        self.hca_test_active = abs(send_torque) > VW_HCA_STOCK_MAX
+        if self.hca_test_active:
+          self.hca_test_frames += 1
+          if not was_active:
+            self.queue_eps_trace(now_nanos, "probe_start", value=send_torque)
+        elif was_active:
+          self.hca_test_frames = 0
+          self.hca_test_lockout = True
+          self.queue_eps_trace(now_nanos, "probe_end", value=stock_torque)
+
+        if send_torque != stock_torque:
+          msg = CanData(msg.address, vw_hca_with_torque(msg.dat, send_torque), msg.src)
+
+        self.hca_last_sent = send_torque
+        self.queue_eps_trace(now_nanos, "hca_tx", value=send_torque, data=msg.dat.hex())
+
+      ret.append(msg)
+
+    return ret
 
   def state_update(self) -> tuple[car.CarState, structs.RadarDataT | None]:
     """carState update loop, driven by can"""
 
     can_strs = messaging.drain_sock_raw(self.can_sock, wait_for_one=True)
     can_list = can_capnp_to_list(can_strs)
-    self.capture_eps_diag(can_list)
 
     # Update carState from CAN
     CS = self.CI.update(can_list)
+
+    if self.eps_diag_enabled:
+      self.trace_v_ego = float(CS.vEgo)
+      self.trace_fault_temp = bool(CS.steerFaultTemporary)
+      self.trace_fault_perm = bool(CS.steerFaultPermanent)
+      eps_stock_values = self.CI.CS.eps_stock_values
+      if hasattr(eps_stock_values, "get"):
+        self.eps_hca_status = int(eps_stock_values.get("EPS_HCA_Status", -1))
+      self.capture_eps_diag(can_list)
 
     # Update radar tracks from CAN
     RD: structs.RadarDataT | None = self.RI.update(can_list)
@@ -271,6 +381,7 @@ class Car:
       # send car controls over can
       now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
       self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos)
+      can_sends = self.apply_hca_probe(can_sends, CS, CC, now_nanos)
 
       if self.eps_diag_enabled and self.sm.frame % VW_EPS_DIAG_PERIOD_FRAMES == 0:
         did = VW_EPS_DIAG_DIDS[self.eps_diag_index]
@@ -302,7 +413,7 @@ class Car:
       try:
         eps_log = open(VW_EPS_DIAG_LOG, "a", buffering=1)
         if eps_log.tell() == 0:
-          eps_log.write("wall_time_ns,mono_time_ns,did,response\n")
+          eps_log.write("wall_time_ns,mono_time_ns,event,did,value,eps_hca_status,armed,v_ego,steer_fault_temp,steer_fault_perm,data\n")
       except OSError:
         cloudlog.exception(f"Failed to open {VW_EPS_DIAG_LOG}")
 
@@ -311,10 +422,31 @@ class Car:
         self.is_metric = self.params.get_bool("IsMetric")
         self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
 
+        if self.eps_diag_enabled:
+          previous_armed = self.hca_test_armed
+          if self.hca_test_lockout:
+            try:
+              os.unlink(VW_HCA_TEST_ARM_FILE)
+            except FileNotFoundError:
+              pass
+            except OSError:
+              cloudlog.exception(f"Failed to remove {VW_HCA_TEST_ARM_FILE}")
+            self.hca_test_armed = False
+            self.hca_test_lockout = False
+          else:
+            try:
+              with open(VW_HCA_TEST_ARM_FILE) as f:
+                self.hca_test_armed = f.read().strip() == str(VW_HCA_TEST_MAX)
+            except OSError:
+              self.hca_test_armed = False
+
+          if self.hca_test_armed != previous_armed:
+            self.queue_eps_trace(time.monotonic_ns(), "arm", value=int(self.hca_test_armed))
+
         if eps_log is not None:
           while self.eps_diag_samples:
-            wall_time, mono_time, did, response = self.eps_diag_samples.popleft()
-            eps_log.write(f"{wall_time},{mono_time},{did:04X},{response}\n")
+            wall_time, mono_time, event, did, value, eps_hca_status, armed, v_ego, fault_temp, fault_perm, data = self.eps_diag_samples.popleft()
+            eps_log.write(f"{wall_time},{mono_time},{event},{did},{value},{eps_hca_status},{armed},{v_ego:.3f},{fault_temp},{fault_perm},{data}\n")
         else:
           self.eps_diag_samples.clear()
 
