@@ -987,6 +987,7 @@ class WifiController:
         self._restore_network_enablement()
       except (OSError, RuntimeError):
         pass
+      self._callbacks.put(("disconnected", None))
       raise RuntimeError("failed to stop Wi-Fi DHCP") from None
     self._state = WifiState()
     try:
