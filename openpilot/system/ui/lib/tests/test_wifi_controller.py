@@ -147,27 +147,39 @@ class TestWifiController(TestCase):
 
     assert events == ["store", "tethering_store", "snapshot", "tethering_profile", "station"]
 
-  def test_controller_failure_with_owned_station_falls_back(self):
+  def test_controller_failure_with_owned_station_does_not_teardown(self):
     controller, _, _ = make_controller()
     controller._initialize_station = MagicMock(side_effect=RuntimeError)
     controller._shutdown = MagicMock()
     controller._close_ctrl = MagicMock()
+
+    def stop_after_backoff(_):
+      controller._exit = True
+
     with (
-      patch.object(wifi_controller.wpa_supplicant, "is_running", side_effect=[False, True]),
+      patch.object(wifi_controller.wpa_supplicant, "is_running", side_effect=lambda conf: conf == wifi_controller.wpa_supplicant.WPA_SUPPLICANT_CONF),
+      patch.object(wifi_controller.wpa_supplicant, "restore_networkmanager") as restore_networkmanager,
       patch.object(wifi_controller.wifi_tethering.TetheringSession, "cleanup_stale", return_value=True),
+      patch.object(wifi_controller.time, "sleep", side_effect=stop_after_backoff),
     ):
       controller._run()
 
-    controller._shutdown.assert_called_once_with()
+    controller._shutdown.assert_not_called()
+    restore_networkmanager.assert_not_called()
 
   def test_controller_failure_before_acquisition_does_not_touch_networkmanager(self):
     controller, _, _ = make_controller()
     controller._initialize_station = MagicMock(side_effect=RuntimeError)
     controller._shutdown = MagicMock()
     controller._close_ctrl = MagicMock()
+
+    def stop_after_backoff(_):
+      controller._exit = True
+
     with (
-      patch.object(wifi_controller.wpa_supplicant, "is_running", side_effect=[False, False, False]),
+      patch.object(wifi_controller.wpa_supplicant, "is_running", return_value=False),
       patch.object(wifi_controller.wifi_tethering.TetheringSession, "cleanup_stale", return_value=True),
+      patch.object(wifi_controller.time, "sleep", side_effect=stop_after_backoff),
     ):
       controller._run()
 

@@ -221,53 +221,49 @@ class WifiController:
   def _run(self):
     self._owner_ident = threading.get_ident()
     try:
-      self._store.recover()
-      self._tethering_store.recover()
-      self._refresh_saved_ssids()
-      self._initialize_tethering_profile()
-      stale_ap_running = wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)
-      if not (stale_ap_running and self._adopt_live_tethering()):
-        self._ownership_touched = True
-        if stale_ap_running and not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
-          raise RuntimeError("failed to stop stale tethering wpa_supplicant")
-        if not wifi_tethering.TetheringSession.cleanup_stale():
-          raise RuntimeError("failed to clean up stale tethering resources")
-        if not stale_ap_running:
-          self._ownership_touched = False
-        self._initialize_station()
       while not self._exit:
-        self._drain_commands()
-        if self._exit:
-          break
+        try:
+          self._store.recover()
+          self._tethering_store.recover()
+          self._refresh_saved_ssids()
+          self._initialize_tethering_profile()
+          stale_ap_running = wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)
+          if not (stale_ap_running and self._adopt_live_tethering()):
+            self._ownership_touched = True
+            if stale_ap_running and not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
+              raise RuntimeError("failed to stop stale tethering wpa_supplicant")
+            if not wifi_tethering.TetheringSession.cleanup_stale():
+              raise RuntimeError("failed to clean up stale tethering resources")
+            if not stale_ap_running:
+              self._ownership_touched = False
+            self._initialize_station()
+          while not self._exit:
+            self._drain_commands()
+            if self._exit:
+              break
 
-        if self._tethering_active:
-          time.sleep(0.05)
-        elif self._monitor is not None:
-          event = self._monitor.recv(timeout=0.05)
-          if event is not None:
-            self._handle_wpa_event(event)
+            if self._tethering_active:
+              time.sleep(0.05)
+            elif self._monitor is not None:
+              event = self._monitor.recv(timeout=0.05)
+              if event is not None:
+                self._handle_wpa_event(event)
 
-        now = time.monotonic()
-        if not self._tethering_active and self._active and now - self._last_scan >= SCAN_PERIOD_SECONDS:
-          self._scan()
-          self._last_scan = now
-        if now - self._last_reconcile >= RECONCILE_PERIOD_SECONDS:
-          if self._tethering_active:
-            self._reconcile_tethering()
-          else:
-            self._reconcile()
-          self._last_reconcile = now
-    except Exception:
-      cloudlog.exception("Wi-Fi controller failed")
-      try:
-        if (self._ownership_touched
-            or self._tethering_active
-            or wpa_supplicant.is_running(wpa_supplicant.WPA_SUPPLICANT_CONF)
-            or wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)):
-          while not self._shutdown():
+            now = time.monotonic()
+            if not self._tethering_active and self._active and now - self._last_scan >= SCAN_PERIOD_SECONDS:
+              self._scan()
+              self._last_scan = now
+            if now - self._last_reconcile >= RECONCILE_PERIOD_SECONDS:
+              if self._tethering_active:
+                self._reconcile_tethering()
+              else:
+                self._reconcile()
+              self._last_reconcile = now
+        except Exception:
+          cloudlog.exception("Wi-Fi controller failed")
+          self._close_ctrl()
+          if not self._exit:
             time.sleep(RECONCILE_PERIOD_SECONDS)
-      except Exception:
-        cloudlog.exception("Failed to return Wi-Fi ownership after controller failure")
     finally:
       if not self._ownership_touched:
         clear_active_profile()
