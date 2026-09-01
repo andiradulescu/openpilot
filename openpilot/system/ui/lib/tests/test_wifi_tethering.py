@@ -194,3 +194,33 @@ class TestTethering(TestCase):
 
     set_forward.assert_not_called()
     clear_interface.assert_not_called()
+
+  def test_adopt_reattaches_live_tethering_resources(self):
+    session = wifi_tethering.TetheringSession()
+    with (
+      patch.object(wifi_tethering, "_read_previous_ipv4_forward", return_value=False),
+      patch.object(wifi_tethering, "dnsmasq_running", return_value=True),
+      patch.object(wifi_tethering, "firewall_ready", return_value=True),
+      patch.object(wifi_tethering, "start_dnsmasq") as start_dnsmasq,
+      patch.object(wifi_tethering, "configure_interface") as configure_interface,
+    ):
+      assert session.adopt()
+
+    start_dnsmasq.assert_not_called()
+    configure_interface.assert_not_called()
+    assert session._previous_ipv4_forward is False
+    with (
+      patch.object(wifi_tethering, "dnsmasq_running", return_value=True),
+      patch.object(wifi_tethering, "firewall_ready", return_value=True),
+    ):
+      assert session.start(True)
+
+  def test_adopt_rejects_incomplete_tethering(self):
+    session = wifi_tethering.TetheringSession()
+    with (
+      patch.object(wifi_tethering, "_read_previous_ipv4_forward", return_value=False),
+      patch.object(wifi_tethering, "dnsmasq_running", return_value=True),
+      patch.object(wifi_tethering, "firewall_ready", return_value=False),
+    ):
+      assert not session.adopt()
+    assert session._previous_ipv4_forward is None

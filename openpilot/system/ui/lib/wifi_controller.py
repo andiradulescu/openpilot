@@ -224,16 +224,17 @@ class WifiController:
       self._store.recover()
       self._tethering_store.recover()
       self._refresh_saved_ssids()
-      stale_ap_running = wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)
-      self._ownership_touched = True
-      if stale_ap_running and not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
-        raise RuntimeError("failed to stop stale tethering wpa_supplicant")
-      if not wifi_tethering.TetheringSession.cleanup_stale():
-        raise RuntimeError("failed to clean up stale tethering resources")
-      if not stale_ap_running:
-        self._ownership_touched = False
       self._initialize_tethering_profile()
-      self._initialize_station()
+      stale_ap_running = wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)
+      if not (stale_ap_running and self._adopt_live_tethering()):
+        self._ownership_touched = True
+        if stale_ap_running and not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
+          raise RuntimeError("failed to stop stale tethering wpa_supplicant")
+        if not wifi_tethering.TetheringSession.cleanup_stale():
+          raise RuntimeError("failed to clean up stale tethering resources")
+        if not stale_ap_running:
+          self._ownership_touched = False
+        self._initialize_station()
       while not self._exit:
         self._drain_commands()
         if self._exit:
@@ -282,8 +283,7 @@ class WifiController:
         return
 
       if isinstance(command, _Stop):
-        while not self._shutdown():
-          time.sleep(RECONCILE_PERIOD_SECONDS)
+        self._close_ctrl()
         self._exit = True
         return
       if isinstance(command, _SetActive):
@@ -355,6 +355,17 @@ class WifiController:
       return
     if profile is not None:
       self._tethering_password = profile.password
+
+  def _adopt_live_tethering(self) -> bool:
+    self._assert_owner()
+    if not self._tethering.adopt():
+      return False
+    self._ownership_touched = True
+    self._tethering_active = True
+    self._ipv4_forward = wifi_tethering.get_ipv4_forward()
+    self._last_tethering_firewall_check = time.monotonic()
+    self._state = WifiState(ssid=self._tethering_ssid, status=ConnectStatus.CONNECTED, ipv4_address=wifi_tethering.TETHERING_ADDRESS)
+    return True
 
   def _close_ctrl(self):
     self._assert_owner()

@@ -259,6 +259,15 @@ class TetheringSession:
   def __init__(self):
     self._previous_ipv4_forward: bool | None = None
 
+  def adopt(self) -> bool:
+    if self._previous_ipv4_forward is not None:
+      return dnsmasq_running() and firewall_ready()
+    previous_ipv4_forward = _read_previous_ipv4_forward()
+    if previous_ipv4_forward is None or not dnsmasq_running() or not firewall_ready():
+      return False
+    self._previous_ipv4_forward = previous_ipv4_forward
+    return True
+
   def start(self, ipv4_forward: bool) -> bool:
     if self._previous_ipv4_forward is not None:
       return dnsmasq_running() and firewall_ready()

@@ -71,6 +71,47 @@ class TestWifiController(TestCase):
     thread.join.assert_called_once_with()
     assert controller._thread is None
 
+  def test_stop_command_detaches_without_releasing_wlan0(self):
+    controller, _, dhcp = make_controller()
+    controller._shutdown = MagicMock()
+    controller._close_ctrl = MagicMock()
+    controller._commands.put(wifi_controller._Stop())
+
+    with patch.object(wifi_controller.wpa_supplicant, "restore_networkmanager") as restore_networkmanager:
+      controller._drain_commands()
+
+    controller._close_ctrl.assert_called_once_with()
+    controller._shutdown.assert_not_called()
+    restore_networkmanager.assert_not_called()
+    dhcp.stop.assert_not_called()
+    assert controller._exit
+
+  def test_run_adopts_live_tethering_without_stopping_ap(self):
+    controller, _, _ = make_controller()
+    controller._ctrl = None
+    controller._monitor = None
+    controller._initialize_tethering_profile = MagicMock()
+    controller._initialize_station = MagicMock()
+    controller._drain_commands = MagicMock(side_effect=lambda: setattr(controller, "_exit", True))
+    controller._close_ctrl = MagicMock()
+    controller._tethering.adopt = MagicMock(return_value=True)
+
+    with (
+      patch.object(wifi_controller.wpa_supplicant, "is_running", side_effect=lambda conf: conf == wifi_controller.wpa_supplicant.WPA_AP_CONF),
+      patch.object(wifi_controller.wpa_supplicant, "stop") as stop_wpa,
+      patch.object(wifi_controller.wifi_tethering.TetheringSession, "cleanup_stale") as cleanup_stale,
+      patch.object(wifi_controller.wifi_tethering, "get_ipv4_forward", return_value=True),
+    ):
+      controller._run()
+
+    stop_wpa.assert_not_called()
+    cleanup_stale.assert_not_called()
+    controller._initialize_station.assert_not_called()
+    assert controller.tethering_active
+    assert controller._ipv4_forward
+    assert controller.state.ssid == "weedle"
+    assert controller.state.ipv4_address == wifi_controller.wifi_tethering.TETHERING_ADDRESS
+
   def test_public_saved_network_reads_do_not_touch_store(self):
     profile = NetworkProfile(UUID_A, "Saved", SecurityType.WPA, "password123")
     controller, store, _ = make_controller((profile,))
