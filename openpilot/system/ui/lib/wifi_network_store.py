@@ -362,10 +362,14 @@ class NetworkStore:
   def _can_remove(self, profile: NetworkProfile) -> bool:
     return profile.persistent and profile.path.startswith(self._directory + os.sep)
 
-  def _clear_runtime_shadow(self, profile_uuid: str) -> None:
-    path = self._runtime_paths.pop(profile_uuid, None)
-    if path is not None:
-      subprocess.run(["sudo", "rm", "-f", path], check=False)
+  def _clear_runtime_shadow(self, profile_uuid: str) -> bool:
+    path = self._runtime_paths.get(profile_uuid)
+    if path is None:
+      return True
+    if subprocess.run(["sudo", "rm", "-f", path], check=False).returncode != 0:
+      return False
+    self._runtime_paths.pop(profile_uuid, None)
+    return True
 
   def _path(self, profile: NetworkProfile) -> str:
     safe_ssid = profile.ssid.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace").replace("/", "_").replace("\x00", "_")
@@ -375,6 +379,8 @@ class NetworkStore:
     existing = self.get(profile.uuid)
     if existing is not None and not self.can_mutate(profile.uuid):
       raise OSError(f"profile {profile.uuid} is read-only")
+    if not self._clear_runtime_shadow(profile.uuid):
+      raise OSError(f"failed to clear runtime shadow for profile {profile.uuid}")
 
     path = existing.path if existing is not None else self._path(profile)
     subprocess.run(["sudo", "install", "-d", "-m", "700", self._directory], check=True)
@@ -390,7 +396,6 @@ class NetworkStore:
       subprocess.run(["sudo", "rm", "-f", stage_path], check=False)
     stored = replace(profile, path=path, persistent=True)
     self._profiles[stored.uuid] = stored
-    self._clear_runtime_shadow(stored.uuid)
     return stored
 
   def set_metered(self, profile_uuid: str, metered: MeteredType) -> NetworkProfile | None:
@@ -407,6 +412,8 @@ class NetworkStore:
     if not profiles:
       return True
     if any(not self._can_remove(profile) for profile in profiles):
+      return False
+    if any(not self._clear_runtime_shadow(profile.uuid) for profile in profiles):
       return False
 
     token = uuid.uuid4().hex
@@ -433,5 +440,4 @@ class NetworkStore:
       subprocess.run(["sudo", "rm", "-f", marker], check=False)
     for profile in profiles:
       self._profiles.pop(profile.uuid, None)
-      self._clear_runtime_shadow(profile.uuid)
     return True
