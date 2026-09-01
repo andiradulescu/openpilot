@@ -641,6 +641,9 @@ class WifiController:
 
   def _forget(self, ssid: str):
     self._assert_owner()
+    if self._requested_ssid is not None and self._requested_ssid != ssid:
+      self._callbacks.put(("forget_failed", ssid))
+      return
     profiles = self._store.profiles_for_ssid(ssid)
     if not profiles and self._requested_ssid == ssid:
       try:
