@@ -43,6 +43,9 @@ def write_active_profile(profile_uuid: str, metered: int) -> None:
   try:
     subprocess.run(["sudo", "install", "-m", "644", path, stage_path], check=True)
     subprocess.run(["sudo", "mv", "-f", stage_path, ACTIVE_PROFILE_PATH], check=True)
+  except (OSError, subprocess.SubprocessError):
+    clear_active_profile()
+    raise
   finally:
     os.unlink(path)
     subprocess.run(["sudo", "rm", "-f", stage_path], check=False)
