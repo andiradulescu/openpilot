@@ -334,10 +334,8 @@ class TetheringStore:
           updated = self.set_password(ssid, live_password)
           return updated if updated is not None else replace(profile, password=live_password)
         return profile
-      if not _valid_password(password):
-        return None
       try:
-        promoted = replace(profile, password=password, path="", persistent=True)
+        promoted = replace(profile, path="", persistent=True)
         return self._write(promoted, render_tethering_profile(promoted))
       except (OSError, subprocess.SubprocessError):
         return None
