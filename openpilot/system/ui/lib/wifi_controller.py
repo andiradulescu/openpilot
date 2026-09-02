@@ -228,9 +228,9 @@ class WifiController:
           self._store.recover()
           self._tethering_store.recover()
           self._refresh_saved_ssids()
-          self._initialize_tethering_profile()
+          tethering_profile_ready = self._initialize_tethering_profile()
           stale_ap_running = wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)
-          if not (stale_ap_running and self._adopt_live_tethering()):
+          if not (stale_ap_running and tethering_profile_ready and self._adopt_live_tethering()):
             self._ownership_touched = True
             if stale_ap_running and not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
               raise RuntimeError("failed to stop stale tethering wpa_supplicant")
@@ -344,15 +344,17 @@ class WifiController:
     self._assert_owner()
     self._saved_ssids = frozenset(profile.ssid for profile in self._store.profiles())
 
-  def _initialize_tethering_profile(self):
+  def _initialize_tethering_profile(self) -> bool:
     self._assert_owner()
     try:
       profile = self._tethering_store.ensure(self._tethering_ssid, self._tethering_password)
     except OSError:
       cloudlog.exception("Failed to initialize tethering profile")
-      return
-    if profile is not None:
-      self._tethering_password = profile.password
+      return False
+    if profile is None:
+      return False
+    self._tethering_password = profile.password
+    return True
 
   def _adopt_live_tethering(self) -> bool:
     self._assert_owner()
