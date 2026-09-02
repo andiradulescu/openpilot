@@ -184,6 +184,19 @@ class TetheringStore:
       if token not in restore_failed:
         subprocess.run(["sudo", "rm", "-f", path], check=False)
 
+  def _has_pending_update(self) -> bool:
+    try:
+      return any(_UPDATE_RE.fullmatch(filename) for filename in os.listdir(self._directory))
+    except OSError as e:
+      raise OSError("failed to inspect pending tethering updates") from e
+
+  def _recover_pending_update(self) -> None:
+    if not self._has_pending_update():
+      return
+    self.recover()
+    if self._has_pending_update():
+      raise OSError("tethering update recovery is still pending")
+
   def reload(self):
     profiles: dict[str, TetheringProfile] = {}
     runtime_paths: dict[str, str] = {}
@@ -311,6 +324,7 @@ class TetheringStore:
       os.unlink(temp_path)
 
   def _write(self, profile: TetheringProfile, raw: str) -> TetheringProfile:
+    self._recover_pending_update()
     path = self._persistent_path(profile)
     subprocess.run(["sudo", "install", "-d", "-m", "700", self._directory], check=True)
     with tempfile.NamedTemporaryFile("w", delete=False) as f:

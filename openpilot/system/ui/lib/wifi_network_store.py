@@ -304,6 +304,19 @@ class NetworkStore:
       if token not in restore_failed:
         subprocess.run(["sudo", "rm", "-f", path], check=False)
 
+  def _has_pending_update(self) -> bool:
+    try:
+      return any(_UPDATE_RE.fullmatch(filename) for filename in os.listdir(self._directory))
+    except OSError as e:
+      raise OSError("failed to inspect pending profile updates") from e
+
+  def _recover_pending_update(self) -> None:
+    if not self._has_pending_update():
+      return
+    self.recover()
+    if self._has_pending_update():
+      raise OSError("profile update recovery is still pending")
+
   def _recover_forgets(self) -> None:
     try:
       filenames = sorted(os.listdir(self._directory))
@@ -455,6 +468,7 @@ class NetworkStore:
     return os.path.join(self._directory, f"{profile.uuid}-{safe_ssid}.nmconnection")
 
   def write(self, profile: NetworkProfile) -> NetworkProfile:
+    self._recover_pending_update()
     existing = self.get(profile.uuid)
     if existing is not None and not self.can_mutate(profile.uuid):
       raise OSError(f"profile {profile.uuid} is read-only")
@@ -497,6 +511,10 @@ class NetworkStore:
       return None
 
   def remove_ssid(self, ssid: str) -> bool:
+    try:
+      self._recover_pending_update()
+    except OSError:
+      return False
     profiles = self.profiles_for_ssid(ssid)
     if not profiles:
       return True
