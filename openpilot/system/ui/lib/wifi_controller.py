@@ -1007,6 +1007,15 @@ class WifiController:
     self._assert_owner()
     previous = self._state
     if not self._clear_l3():
+      if self._requested_ssid is not None:
+        self._pending_profile = None
+        self._temporary_network_id = None
+        self._replacement_network_id = None
+        self._requested_ssid = None
+        self._failed_candidate_ids.clear()
+        self._connecting_since = 0.0
+        self._state = WifiState()
+        self._callbacks.put(("disconnected", None))
       raise RuntimeError("failed to stop Wi-Fi DHCP") from None
     self._connecting_since = time.monotonic()
     if self._requested_ssid is not None:
