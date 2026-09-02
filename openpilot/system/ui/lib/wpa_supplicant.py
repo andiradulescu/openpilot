@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TextIO
 
 from openpilot.common.utils import atomic_write
-from openpilot.system.ui.lib.wpa_ctrl import SecurityType
+from openpilot.system.ui.lib.wpa_ctrl import SecurityType, WpaCtrl, parse_status
 
 
 WPA_CTRL_DIR = "/run/openpilot-wpa"
@@ -85,6 +85,7 @@ def _format_psk(psk: str) -> str:
 
 
 def write_station_config(networks: list[WpaNetwork], path: str = WPA_SUPPLICANT_CONF) -> None:
+  live_profile_uuid = _active_station_profile_uuid()
   lines = [WPA_CTRL_INTERFACE, "update_config=0", "p2p_disabled=1", ""]
   for network in networks:
     lines += ["network={", f"  ssid={_format_ssid(network.ssid)}"]
@@ -98,7 +99,7 @@ def write_station_config(networks: list[WpaNetwork], path: str = WPA_SUPPLICANT_
       lines.append(f"  bssid={network.bssid}")
     if network.profile_uuid:
       lines.append(f'id_str="{network.profile_uuid}"')
-    if network.disabled:
+    if network.disabled and network.profile_uuid != live_profile_uuid:
       lines.append("  disabled=1")
     lines += [f"  priority={network.priority}", "}", ""]
 
@@ -161,6 +162,23 @@ def _owned_pid(conf: str | None = None) -> int | None:
 
 def is_running(conf: str) -> bool:
   return _owned_pid(conf) is not None
+
+
+def _active_station_profile_uuid() -> str | None:
+  if not is_running(WPA_SUPPLICANT_CONF):
+    return None
+  ctrl = WpaCtrl()
+  try:
+    ctrl.open()
+    status = parse_status(ctrl.request("STATUS"))
+  except RuntimeError as e:
+    raise OSError("failed to inspect live station profile") from e
+  finally:
+    ctrl.close()
+  if status.get("wpa_state") != "COMPLETED":
+    return None
+  profile_uuid = status.get("id_str", "").strip('"')
+  return profile_uuid or None
 
 
 def _set_networkmanager_managed(managed: bool) -> bool:
