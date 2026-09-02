@@ -349,9 +349,10 @@ class TetheringStore:
         return self._write(promoted, render_tethering_profile(promoted))
       except (OSError, subprocess.SubprocessError):
         return None
-    if any(item.ssid == ssid for item in self._profiles.values()) or not _valid_password(password):
+    seed_password = live_password if live_password is not None else password
+    if any(item.ssid == ssid for item in self._profiles.values()) or not _valid_password(seed_password):
       return None
-    profile = TetheringProfile(str(uuid.uuid4()), ssid, password)
+    profile = TetheringProfile(str(uuid.uuid4()), ssid, seed_password)
     try:
       return self._write(profile, render_tethering_profile(profile))
     except (OSError, subprocess.SubprocessError):
