@@ -204,7 +204,7 @@ class TestWifiController(TestCase):
     controller._close_ctrl = MagicMock()
     dhcp.stop.return_value = True
     with (
-      patch.object(wifi_controller.wpa_supplicant, "is_running", return_value=False),
+      patch.object(wifi_controller.wpa_supplicant, "is_running", side_effect=[False, True]),
       patch.object(wifi_controller.wpa_supplicant, "stop", return_value=False),
       patch.object(wifi_controller.wpa_supplicant, "restore_networkmanager") as restore_networkmanager,
     ):
