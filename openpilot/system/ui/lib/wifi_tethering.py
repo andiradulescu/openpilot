@@ -156,9 +156,11 @@ def _read_previous_ipv4_forward() -> bool | None:
     value = Path(TETHERING_FORWARD_STATE_FILE).read_text().strip()
   except FileNotFoundError:
     return None
-  except OSError:
+  if value == "0":
     return False
-  return value == "1" if value in ("0", "1") else False
+  if value == "1":
+    return True
+  raise ValueError("invalid tethering IPv4 forwarding state")
 
 
 def _write_previous_ipv4_forward(enabled: bool) -> None:
@@ -262,7 +264,10 @@ class TetheringSession:
   def adopt(self) -> bool:
     if self._previous_ipv4_forward is not None:
       return dnsmasq_running() and firewall_ready()
-    previous_ipv4_forward = _read_previous_ipv4_forward()
+    try:
+      previous_ipv4_forward = _read_previous_ipv4_forward()
+    except (OSError, ValueError):
+      return False
     if previous_ipv4_forward is None or not dnsmasq_running() or not firewall_ready():
       return False
     self._previous_ipv4_forward = previous_ipv4_forward
@@ -326,7 +331,10 @@ class TetheringSession:
 
   @staticmethod
   def cleanup_stale() -> bool:
-    previous_ipv4_forward = _read_previous_ipv4_forward()
+    try:
+      previous_ipv4_forward = _read_previous_ipv4_forward()
+    except (OSError, ValueError):
+      return False
     if not dnsmasq_running() and not firewall_present() and not interface_configured() and previous_ipv4_forward is None:
       return True
     if not stop_dnsmasq():
