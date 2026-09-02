@@ -98,7 +98,7 @@ def write_station_config(networks: list[WpaNetwork], path: str = WPA_SUPPLICANT_
     if network.bssid:
       lines.append(f"  bssid={network.bssid}")
     if network.profile_uuid:
-      lines.append(f'id_str="{network.profile_uuid}"')
+      lines.append(f'  id_str="{network.profile_uuid}"')
     if network.disabled and network.profile_uuid != live_profile_uuid:
       lines.append("  disabled=1")
     lines += [f"  priority={network.priority}", "}", ""]
