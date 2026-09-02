@@ -497,7 +497,6 @@ class WifiController:
       results = parse_scan_results(self._request("SCAN_RESULTS"))
     except (OSError, RuntimeError):
       return
-
     grouped: dict[str, list] = {}
     for result in results:
       if result.ssid:
@@ -538,7 +537,11 @@ class WifiController:
   def _connect(self, command: _Connect):
     self._assert_owner()
     if self._requested_ssid is not None:
-      self._cancel_selection(notify=False)
+      try:
+        self._cancel_selection(notify=False)
+      except RuntimeError:
+        self._callbacks.put(("disconnected", command.ssid))
+        return
     if not is_valid_ssid(command.ssid):
       self._callbacks.put(("need_auth", command.ssid))
       return
@@ -549,7 +552,7 @@ class WifiController:
     try:
       existing = self._store.profiles_for_ssid(command.ssid)
     except OSError:
-      self._callbacks.put(("disconnected", None))
+      self._callbacks.put(("disconnected", command.ssid))
       return
     if existing:
       if len(existing) != 1:
@@ -558,7 +561,7 @@ class WifiController:
       try:
         can_mutate = self._store.can_mutate(existing[0].uuid)
       except OSError:
-        self._callbacks.put(("disconnected", None))
+        self._callbacks.put(("disconnected", command.ssid))
         return
       if not can_mutate:
         self._callbacks.put(("profile_readonly", command.ssid))
@@ -619,22 +622,26 @@ class WifiController:
   def _activate(self, ssid: str):
     self._assert_owner()
     if self._requested_ssid is not None:
-      self._cancel_selection(notify=False)
+      try:
+        self._cancel_selection(notify=False)
+      except RuntimeError:
+        self._callbacks.put(("disconnected", ssid))
+        return
     try:
       profiles = self._store.profiles_for_ssid(ssid)
     except OSError:
-      self._callbacks.put(("disconnected", None))
+      self._callbacks.put(("disconnected", ssid))
       return
     runtime_ids = [self._runtime_profiles[profile.uuid] for profile in profiles if profile.uuid in self._runtime_profiles]
     if len(runtime_ids) < len(profiles):
       try:
         self._sync_runtime_profiles()
       except (OSError, RuntimeError):
-        self._callbacks.put(("disconnected", None))
+        self._callbacks.put(("disconnected", ssid))
         return
       runtime_ids = [self._runtime_profiles[profile.uuid] for profile in profiles if profile.uuid in self._runtime_profiles]
     if not runtime_ids or len(runtime_ids) < len(profiles):
-      self._callbacks.put(("disconnected", None))
+      self._callbacks.put(("disconnected", ssid))
       return
 
     if not self._begin_selection(ssid):
@@ -998,6 +1005,7 @@ class WifiController:
 
   def _cancel_selection(self, notify: bool = True):
     self._assert_owner()
+    selection_ssid = self._requested_ssid
     pending_uuid = self._pending_profile.uuid if self._pending_profile is not None else None
     self._remove_temporary_network()
     if pending_uuid is not None:
@@ -1015,7 +1023,7 @@ class WifiController:
         self._restore_network_enablement()
       except (OSError, RuntimeError):
         pass
-      self._callbacks.put(("disconnected", None))
+      self._callbacks.put(("disconnected", selection_ssid))
       raise RuntimeError("failed to stop Wi-Fi DHCP") from None
     self._state = WifiState()
     try:
@@ -1023,13 +1031,14 @@ class WifiController:
     except (OSError, RuntimeError):
       pass
     if notify:
-      self._callbacks.put(("disconnected", None))
+      self._callbacks.put(("disconnected", selection_ssid))
 
   def _link_lost(self):
     self._assert_owner()
     previous = self._state
+    selection_ssid = self._requested_ssid
     if not self._clear_l3():
-      if self._requested_ssid is not None:
+      if selection_ssid is not None:
         self._pending_profile = None
         self._temporary_network_id = None
         self._replacement_network_id = None
@@ -1037,7 +1046,7 @@ class WifiController:
         self._failed_candidate_ids.clear()
         self._connecting_since = 0.0
         self._state = WifiState()
-        self._callbacks.put(("disconnected", None))
+        self._callbacks.put(("disconnected", selection_ssid))
       raise RuntimeError("failed to stop Wi-Fi DHCP") from None
     self._connecting_since = time.monotonic()
     if self._requested_ssid is not None:
@@ -1178,7 +1187,7 @@ class WifiController:
 
   def _recover_station_control(self):
     self._assert_owner()
-    selection_pending = self._requested_ssid is not None
+    selection_ssid = self._requested_ssid
     self._close_ctrl()
     if not self._clear_l3():
       raise RuntimeError("failed to stop Wi-Fi DHCP") from None
@@ -1194,8 +1203,8 @@ class WifiController:
     self._control_failures = 0
     if not self._start_station():
       raise RuntimeError("failed to recover station wpa_supplicant") from None
-    if selection_pending:
-      self._callbacks.put(("disconnected", None))
+    if selection_ssid is not None:
+      self._callbacks.put(("disconnected", selection_ssid))
 
   def _reconcile(self):
     self._assert_owner()
@@ -1208,7 +1217,7 @@ class WifiController:
           return
         self._recover_station_control()
         return
-      selection_pending = self._requested_ssid is not None
+      selection_ssid = self._requested_ssid
       self._control_failures = 0
       self._close_ctrl()
       if not self._clear_l3():
@@ -1222,8 +1231,8 @@ class WifiController:
       self._state = WifiState()
       if not self._start_station():
         raise RuntimeError("failed to recover station wpa_supplicant") from None
-      if selection_pending:
-        self._callbacks.put(("disconnected", None))
+      if selection_ssid is not None:
+        self._callbacks.put(("disconnected", selection_ssid))
       return
     self._control_failures = 0
 
