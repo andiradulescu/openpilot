@@ -361,7 +361,7 @@ class TetheringStore:
         return profile
       try:
         promoted = replace(profile, path="", persistent=True)
-        return self._write(promoted, render_tethering_profile(promoted))
+        return self._write(promoted, profile.raw)
       except (OSError, subprocess.SubprocessError):
         return None
     seed_password = live_password if live_password is not None else password
@@ -378,13 +378,7 @@ class TetheringStore:
     profile = self.get(ssid)
     if profile is None or not _valid_password(password):
       return None
-    if not profile.persistent:
-      try:
-        promoted = replace(profile, password=password, path="", persistent=True)
-        return self._write(promoted, render_tethering_profile(promoted))
-      except (OSError, subprocess.SubprocessError):
-        return None
-    if not self.can_mutate(profile):
+    if profile.persistent and not self.can_mutate(profile):
       return None
 
     cp = configparser.ConfigParser(interpolation=None)
@@ -400,8 +394,9 @@ class TetheringStore:
     try:
       with open(temp_path) as f:
         raw = f.read()
+      promoted = replace(profile, password=password, path="", persistent=True) if not profile.persistent else replace(profile, password=password)
       try:
-        return self._write(replace(profile, password=password), raw)
+        return self._write(promoted, raw)
       except (OSError, subprocess.SubprocessError):
         return None
     finally:
