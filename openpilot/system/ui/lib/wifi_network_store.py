@@ -285,6 +285,15 @@ class NetworkStore:
       for filename in filenames
       if (match := _UPDATE_RE.fullmatch(filename)) is not None
     }
+    forget_tokens = {
+      match.group("token")
+      for filename in filenames
+      if (match := _FORGET_RE.fullmatch(filename)) is not None
+    } | {
+      match.group("token")
+      for filename in filenames
+      if (match := _FORGET_MARKER_RE.fullmatch(filename)) is not None
+    }
 
     restore_failed: set[str] = set()
     if self._runtime_directory is not None:
@@ -296,7 +305,7 @@ class NetworkStore:
         return
       for filename in runtime_filenames:
         match = _RUNTIME_SHADOW_RE.fullmatch(filename)
-        if match is None:
+        if match is None or match.group("token") in forget_tokens:
           continue
         token = match.group("token")
         staged = os.path.join(self._runtime_directory, filename)
