@@ -411,7 +411,10 @@ class NetworkStore:
         continue
       try:
         filenames = sorted(os.listdir(directory))
+      except FileNotFoundError:
+        continue
       except OSError:
+        load_failed = True
         continue
       for filename in filenames:
         if not filename.endswith(".nmconnection"):
