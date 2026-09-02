@@ -741,7 +741,13 @@ class WifiController:
     except OSError:
       self._callbacks.put(("tethering_failed", None))
       return
-    if not self._clear_l3():
+    if self._requested_ssid is not None:
+      try:
+        self._cancel_selection()
+      except RuntimeError:
+        self._callbacks.put(("tethering_failed", None))
+        return
+    elif not self._clear_l3():
       self._callbacks.put(("tethering_failed", None))
       return
     self._close_ctrl()
