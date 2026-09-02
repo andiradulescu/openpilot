@@ -97,7 +97,7 @@ def write_station_config(networks: list[WpaNetwork], path: str = WPA_SUPPLICANT_
     if network.bssid:
       lines.append(f"  bssid={network.bssid}")
     if network.profile_uuid:
-      lines.append(f'  id_str="{network.profile_uuid}"')
+      lines.append(f'id_str="{network.profile_uuid}"')
     if network.disabled:
       lines.append("  disabled=1")
     lines += [f"  priority={network.priority}", "}", ""]
@@ -129,9 +129,16 @@ def write_ap_config(ssid: str, password: str, path: str = WPA_AP_CONF) -> None:
 
 def _owned_pid(conf: str | None = None) -> int | None:
   try:
-    pid = int(Path(WPA_PID_FILE).read_text().strip())
+    pid_text = Path(WPA_PID_FILE).read_text().strip()
+  except FileNotFoundError:
+    return None
+  try:
+    pid = int(pid_text)
+  except ValueError as e:
+    raise OSError("invalid wpa_supplicant ownership PID file") from e
+  try:
     args = [os.fsdecode(arg) for arg in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0") if arg]
-  except (OSError, ValueError):
+  except FileNotFoundError:
     return None
 
   def arg_after(flag: str) -> str | None:
@@ -184,7 +191,10 @@ def release_networkmanager() -> bool:
 
 
 def restore_networkmanager() -> bool:
-  if _owned_pid() is not None:
+  try:
+    if _owned_pid() is not None:
+      return False
+  except OSError:
     return False
   for attempt in range(_NETWORKMANAGER_RESTORE_ATTEMPTS):
     if _reload_networkmanager_connections() and _set_networkmanager_managed(True):
@@ -199,9 +209,12 @@ def prepare_runtime() -> None:
 
 
 def start(conf: str) -> bool:
-  if is_running(conf):
-    return True
-  if _owned_pid() is not None:
+  try:
+    if is_running(conf):
+      return True
+    if _owned_pid() is not None:
+      return False
+  except OSError:
     return False
 
   try:
@@ -221,12 +234,20 @@ def start(conf: str) -> bool:
     restore_networkmanager()
     return False
 
-  if result.returncode == 0 and is_running(conf):
+  try:
+    running = is_running(conf)
+  except OSError:
+    return False
+  if result.returncode == 0 and running:
     return True
 
-  if is_running(conf) and not stop(conf):
+  if running and not stop(conf):
     return False
-  if _owned_pid() is None:
+  try:
+    owner = _owned_pid()
+  except OSError:
+    return False
+  if owner is None:
     restore_networkmanager()
   return False
 
@@ -274,7 +295,10 @@ def _terminate_station_acquisition(proc: subprocess.Popen[str], timeout: float =
 
 
 def begin_station() -> _StationAcquisition | None:
-  was_running = is_running(WPA_SUPPLICANT_CONF)
+  try:
+    was_running = is_running(WPA_SUPPLICANT_CONF)
+  except OSError:
+    return None
   try:
     proc = subprocess.Popen(
       [sys.executable, "-m", __name__, "--station-acquisition"],
@@ -312,9 +336,16 @@ def _rollback_station() -> bool:
 
 
 def _run_station_acquisition(input_stream: TextIO, output_stream: TextIO) -> int:
-  was_running = is_running(WPA_SUPPLICANT_CONF)
+  try:
+    was_running = is_running(WPA_SUPPLICANT_CONF)
+  except OSError:
+    return 1
   if not start(WPA_SUPPLICANT_CONF):
-    if not was_running and is_running(WPA_SUPPLICANT_CONF):
+    try:
+      running = is_running(WPA_SUPPLICANT_CONF)
+    except OSError:
+      return 1
+    if not was_running and running:
       _rollback_station()
     return 1
 
@@ -332,19 +363,30 @@ def _run_station_acquisition(input_stream: TextIO, output_stream: TextIO) -> int
 
 
 def stop(conf: str, timeout: float = 2.0) -> bool:
-  pid = _owned_pid(conf)
+  try:
+    pid = _owned_pid(conf)
+  except OSError:
+    return False
   if pid is None:
     return True
 
   if subprocess.run(["sudo", "kill", str(pid)], check=False).returncode != 0:
-    if _owned_pid(conf) is not None:
+    try:
+      remaining_pid = _owned_pid(conf)
+    except OSError:
+      return False
+    if remaining_pid is not None:
       return False
     subprocess.run(["sudo", "rm", "-f", WPA_PID_FILE, WPA_CTRL_PATH], check=False)
     return True
 
   deadline = time.monotonic() + timeout
   while time.monotonic() < deadline:
-    if _owned_pid(conf) != pid:
+    try:
+      remaining_pid = _owned_pid(conf)
+    except OSError:
+      return False
+    if remaining_pid != pid:
       subprocess.run(["sudo", "rm", "-f", WPA_PID_FILE, WPA_CTRL_PATH], check=False)
       return True
     time.sleep(0.05)
