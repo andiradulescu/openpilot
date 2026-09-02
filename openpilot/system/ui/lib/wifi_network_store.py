@@ -263,6 +263,7 @@ class NetworkStore:
     self._runtime_directory = RUNTIME_CONNECTIONS_DIR if runtime_directory is None and directory == NM_CONNECTIONS_DIR else runtime_directory
     self._profiles: dict[str, NetworkProfile] = {}
     self._runtime_paths: dict[str, str] = {}
+    self._reload_failed = False
     self.reload()
 
   def _ensure_directory_access(self) -> None:
@@ -274,6 +275,13 @@ class NetworkStore:
     self._recover_forgets()
     self._recover_updates()
     self.reload()
+
+  def _require_complete_reload(self) -> None:
+    if not self._reload_failed:
+      return
+    self.reload()
+    if self._reload_failed:
+      raise OSError("Wi-Fi profile reload is incomplete")
 
   def _recover_updates(self) -> None:
     try:
@@ -397,6 +405,7 @@ class NetworkStore:
   def reload(self) -> None:
     profiles: dict[str, NetworkProfile] = {}
     runtime_paths: dict[str, str] = {}
+    load_failed = False
     for directory, persistent in ((self._directory, True), (self._runtime_directory, False)):
       if directory is None:
         continue
@@ -409,7 +418,10 @@ class NetworkStore:
           continue
         path = os.path.join(directory, filename)
         raw = sudo_read(path)
-        if raw and not persistent:
+        if not raw:
+          load_failed = True
+          continue
+        if not persistent:
           cp = configparser.ConfigParser(interpolation=None)
           try:
             cp.read_string(raw)
@@ -420,21 +432,26 @@ class NetworkStore:
               profile_uuid = _parse_uuid(cp.get("connection", "uuid", fallback=""))
               if profile_uuid is not None:
                 runtime_paths[profile_uuid] = path
-        profile = parse_profile(raw, path, persistent) if raw else None
+        profile = parse_profile(raw, path, persistent)
         if profile is None:
           continue
         if profile.uuid not in profiles or persistent:
           profiles[profile.uuid] = profile
-    self._profiles = profiles
-    self._runtime_paths = runtime_paths
+    self._reload_failed = load_failed
+    if not load_failed:
+      self._profiles = profiles
+      self._runtime_paths = runtime_paths
 
   def profiles(self) -> list[NetworkProfile]:
+    self._require_complete_reload()
     return list(self._profiles.values())
 
   def profiles_for_ssid(self, ssid: str) -> list[NetworkProfile]:
+    self._require_complete_reload()
     return [profile for profile in self._profiles.values() if profile.ssid == ssid]
 
   def get(self, profile_uuid: str) -> NetworkProfile | None:
+    self._require_complete_reload()
     parsed_uuid = _parse_uuid(profile_uuid)
     return self._profiles.get(parsed_uuid) if parsed_uuid is not None else None
 
@@ -538,6 +555,7 @@ class NetworkStore:
     try:
       self._ensure_directory_access()
       self._recover_pending_transactions()
+      self._require_complete_reload()
     except (OSError, subprocess.SubprocessError):
       return False
     profiles = self.profiles_for_ssid(ssid)
