@@ -379,7 +379,7 @@ class TetheringStore:
   def _write(self, profile: TetheringProfile, raw: str) -> TetheringProfile:
     self._recover_pending_update()
     path = self._persistent_path(profile)
-    subprocess.run(["sudo", "install", "-d", "-m", "700", self._directory], check=True)
+    subprocess.run(["sudo", "install", "-d", "-m", "755", self._directory], check=True)
     with tempfile.NamedTemporaryFile("w", delete=False) as f:
       f.write(raw)
       temp_path = f.name
