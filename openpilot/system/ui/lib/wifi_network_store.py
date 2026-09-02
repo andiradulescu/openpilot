@@ -315,16 +315,43 @@ class NetworkStore:
       for filename in filenames
       if (match := _FORGET_MARKER_RE.fullmatch(filename)) is not None
     }
-    cleanup_failed: set[str] = set()
+    forget_tokens = {
+      match.group("token")
+      for filename in filenames
+      if (match := _FORGET_RE.fullmatch(filename)) is not None
+    } | set(markers)
+
+    runtime_failed: set[str] = set()
+    if self._runtime_directory is not None:
+      try:
+        runtime_filenames = sorted(os.listdir(self._runtime_directory))
+      except FileNotFoundError:
+        runtime_filenames = []
+      except OSError:
+        return
+      for filename in runtime_filenames:
+        match = _RUNTIME_SHADOW_RE.fullmatch(filename)
+        if match is None or match.group("token") not in forget_tokens:
+          continue
+        token = match.group("token")
+        staged = os.path.join(self._runtime_directory, filename)
+        original = os.path.join(self._runtime_directory, match.group("name"))
+        command = ["sudo", "rm", "-f", staged] if token in markers else ["sudo", "mv", "-f", staged, original]
+        if subprocess.run(command, check=False).returncode != 0:
+          runtime_failed.add(token)
+
+    cleanup_failed = set(runtime_failed)
     for filename in filenames:
       match = _FORGET_RE.fullmatch(filename)
       if match is None:
         continue
       token = match.group("token")
+      if token not in markers and token in runtime_failed:
+        continue
       staged = os.path.join(self._directory, filename)
       original = os.path.join(self._directory, match.group("name"))
       command = ["sudo", "rm", "-f", staged] if token in markers else ["sudo", "mv", "-f", staged, original]
-      if subprocess.run(command, check=False).returncode != 0 and token in markers:
+      if subprocess.run(command, check=False).returncode != 0:
         cleanup_failed.add(token)
 
     for token, marker in markers.items():
@@ -475,8 +502,6 @@ class NetworkStore:
       return True
     if any(not self._can_remove(profile) for profile in profiles):
       return False
-    if any(not self._clear_runtime_shadow(profile.uuid) for profile in profiles):
-      return False
 
     token = uuid.uuid4().hex
     staged: list[tuple[str, str]] = []
@@ -489,13 +514,30 @@ class NetworkStore:
         return False
       staged.append((profile.path, staged_path))
 
+    runtime_shadows: list[tuple[str, tuple[str, str]]] = []
+    try:
+      for profile in profiles:
+        runtime_shadow = self._stage_runtime_shadow(profile.uuid, token)
+        if runtime_shadow is not None:
+          runtime_shadows.append((profile.uuid, runtime_shadow))
+    except (OSError, subprocess.SubprocessError):
+      shadows_restored = all(self._restore_runtime_shadow(profile_uuid, runtime_shadow) for profile_uuid, runtime_shadow in reversed(runtime_shadows))
+      if shadows_restored:
+        for original, staged_file in reversed(staged):
+          subprocess.run(["sudo", "mv", "-f", staged_file, original], check=False)
+      return False
+
     marker = os.path.join(self._directory, f".openpilot-forget-committed-{token}")
     if subprocess.run(["sudo", "touch", marker], check=False).returncode != 0:
-      for original, staged_file in reversed(staged):
-        subprocess.run(["sudo", "mv", "-f", staged_file, original], check=False)
+      shadows_restored = all(self._restore_runtime_shadow(profile_uuid, runtime_shadow) for profile_uuid, runtime_shadow in reversed(runtime_shadows))
+      if shadows_restored:
+        for original, staged_file in reversed(staged):
+          subprocess.run(["sudo", "mv", "-f", staged_file, original], check=False)
       return False
 
     cleanup_failed = False
+    for _, runtime_shadow in runtime_shadows:
+      cleanup_failed |= subprocess.run(["sudo", "rm", "-f", runtime_shadow[1]], check=False).returncode != 0
     for _, staged_file in staged:
       cleanup_failed |= subprocess.run(["sudo", "rm", "-f", staged_file], check=False).returncode != 0
     if not cleanup_failed:
