@@ -166,6 +166,27 @@ class TestTetheringStore(TestCase):
       assert profile is not None
       assert profile.ssid == "weedle-1234"
 
+  def test_ensure_missing_profile_uses_live_ap_password(self):
+    with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
+      with (
+        patch("openpilot.system.ui.lib.wifi_tethering_store.subprocess.run", side_effect=run_sudo),
+        patch("openpilot.system.ui.lib.wifi_tethering_store.wpa_supplicant.is_running", return_value=True),
+        patch("openpilot.system.ui.lib.wifi_tethering_store._live_ap_password", return_value="live-password"),
+        patch("openpilot.system.ui.lib.wifi_tethering_store.wpa_supplicant.stop") as stop,
+      ):
+        store = TetheringStore(persistent, runtime)
+        profile = store.ensure("weedle", "fallback-password")
+
+      stop.assert_not_called()
+      assert profile is not None
+      assert profile.persistent
+      assert profile.password == "live-password"
+      persistent_files = list(Path(persistent).glob("*.nmconnection"))
+      assert len(persistent_files) == 1
+      persisted = parse_tethering_profile(persistent_files[0].read_text())
+      assert persisted is not None
+      assert persisted.password == "live-password"
+
   def test_ensure_retries_when_mismatched_live_ap_cannot_stop(self):
     with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
       with (
