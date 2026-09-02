@@ -357,7 +357,11 @@ class TetheringStore:
     if profile is None or not _valid_password(password):
       return None
     if not profile.persistent:
-      return self.ensure(ssid, password)
+      try:
+        promoted = replace(profile, password=password, path="", persistent=True)
+        return self._write(promoted, render_tethering_profile(promoted))
+      except (OSError, subprocess.SubprocessError):
+        return None
     if not self.can_mutate(profile):
       return None
 
