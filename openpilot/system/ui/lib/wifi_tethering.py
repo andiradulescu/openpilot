@@ -28,9 +28,16 @@ def _iptables() -> str:
 
 def _owned_dnsmasq_pid() -> int | None:
   try:
-    pid = int(Path(DNSMASQ_PID_FILE).read_text().strip())
+    pid_text = Path(DNSMASQ_PID_FILE).read_text().strip()
+  except FileNotFoundError:
+    return None
+  try:
+    pid = int(pid_text)
+  except ValueError as e:
+    raise OSError("invalid dnsmasq ownership PID file") from e
+  try:
     args = [os.fsdecode(arg) for arg in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0") if arg]
-  except (OSError, ValueError):
+  except FileNotFoundError:
     return None
 
   if pid <= 1 or not args or os.path.basename(args[0]) != "dnsmasq":
@@ -66,17 +73,28 @@ def start_dnsmasq() -> bool:
 
 
 def stop_dnsmasq(timeout: float = 2.0) -> bool:
-  pid = _owned_dnsmasq_pid()
+  try:
+    pid = _owned_dnsmasq_pid()
+  except OSError:
+    return False
   if pid is None:
     return True
   if subprocess.run(["sudo", "kill", str(pid)], check=False).returncode != 0:
-    if _owned_dnsmasq_pid() is not None:
+    try:
+      remaining_pid = _owned_dnsmasq_pid()
+    except OSError:
+      return False
+    if remaining_pid is not None:
       return False
     subprocess.run(["sudo", "rm", "-f", DNSMASQ_PID_FILE], check=False)
     return True
   deadline = time.monotonic() + timeout
   while time.monotonic() < deadline:
-    if _owned_dnsmasq_pid() != pid:
+    try:
+      remaining_pid = _owned_dnsmasq_pid()
+    except OSError:
+      return False
+    if remaining_pid != pid:
       subprocess.run(["sudo", "rm", "-f", DNSMASQ_PID_FILE], check=False)
       return True
     time.sleep(0.05)
@@ -264,20 +282,27 @@ class TetheringSession:
     self._previous_ipv4_forward: bool | None = None
 
   def adopt(self) -> bool:
+    try:
+      dnsmasq_is_running = dnsmasq_running()
+    except OSError:
+      return False
     if self._previous_ipv4_forward is not None:
-      return dnsmasq_running() and firewall_ready()
+      return dnsmasq_is_running and firewall_ready()
     try:
       previous_ipv4_forward = _read_previous_ipv4_forward()
     except (OSError, ValueError):
       return False
-    if previous_ipv4_forward is None or not dnsmasq_running() or not firewall_ready():
+    if previous_ipv4_forward is None or not dnsmasq_is_running or not firewall_ready():
       return False
     self._previous_ipv4_forward = previous_ipv4_forward
     return True
 
   def start(self, ipv4_forward: bool) -> bool:
     if self._previous_ipv4_forward is not None:
-      return dnsmasq_running() and firewall_ready()
+      try:
+        return dnsmasq_running() and firewall_ready()
+      except OSError:
+        return False
 
     try:
       previous_ipv4_forward = get_ipv4_forward()
@@ -297,7 +322,11 @@ class TetheringSession:
       return False
 
   def _rollback_start(self) -> None:
-    if dnsmasq_running() and not stop_dnsmasq():
+    try:
+      dnsmasq_is_running = dnsmasq_running()
+    except OSError:
+      return
+    if dnsmasq_is_running and not stop_dnsmasq():
       return
     if not remove_firewall():
       return
@@ -335,9 +364,10 @@ class TetheringSession:
   def cleanup_stale() -> bool:
     try:
       previous_ipv4_forward = _read_previous_ipv4_forward()
+      dnsmasq_is_running = dnsmasq_running()
     except (OSError, ValueError):
       return False
-    if not dnsmasq_running() and not firewall_present() and not interface_configured() and previous_ipv4_forward is None:
+    if not dnsmasq_is_running and not firewall_present() and not interface_configured() and previous_ipv4_forward is None:
       return True
     if not stop_dnsmasq():
       return False
