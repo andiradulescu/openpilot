@@ -201,6 +201,8 @@ class WifiManager:
         self._emit_networks_updated()
         emitted_network_update = True
       elif name == "profile_readonly":
+        if self._pending_selection != value:
+          continue
         self._pending_selection = None
         cloudlog.warning(f"Wi-Fi profile is read-only: {value!r}")
         for callback in self._disconnected:
