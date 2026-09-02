@@ -1090,7 +1090,7 @@ class WifiController:
           matches_network_id = candidate_ids <= self._failed_candidate_ids
       if self._requested_ssid is not None and matches_ssid and matches_network_id:
         ssid = self._requested_ssid
-        self._cancel_selection()
+        self._cancel_selection(notify=False)
         self._callbacks.put(("need_auth", ssid))
 
   def _persist_pending_profile(self) -> NetworkProfile | None:
