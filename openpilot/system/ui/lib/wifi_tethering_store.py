@@ -331,10 +331,15 @@ class TetheringStore:
     return os.path.join(self._directory, f"{profile.uuid}-Hotspot.nmconnection")
 
   def ensure(self, ssid: str, password: str) -> TetheringProfile | None:
+    live_ap_running = wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)
+    live_password = _live_ap_password(ssid) if live_ap_running else None
+    if live_ap_running and live_password is None:
+      if not wpa_supplicant.stop(wpa_supplicant.WPA_AP_CONF):
+        raise RuntimeError("failed to stop mismatched tethering wpa_supplicant")
+
     profile = self.get(ssid)
     if profile is not None:
       if profile.persistent:
-        live_password = _live_ap_password(ssid)
         if live_password is not None and live_password != profile.password:
           updated = self.set_password(ssid, live_password)
           return updated if updated is not None else replace(profile, password=live_password)
