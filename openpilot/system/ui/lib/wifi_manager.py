@@ -179,6 +179,8 @@ class WifiManager:
         for callback in self._need_auth:
           callback(str(value))
       elif name == "activated":
+        if self._pending_selection is not None and self.connected_ssid != self._pending_selection:
+          continue
         self._pending_selection = None
         for callback in self._activated:
           callback()
