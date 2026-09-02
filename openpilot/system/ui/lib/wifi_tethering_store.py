@@ -197,7 +197,12 @@ class TetheringStore:
     self._runtime_paths: dict[str, str] = {}
     self.reload()
 
+  def _ensure_directory_access(self) -> None:
+    if self._directory == NM_CONNECTIONS_DIR:
+      subprocess.run(["sudo", "install", "-d", "-m", "755", self._directory], check=True)
+
   def recover(self):
+    self._ensure_directory_access()
     self._recover_updates()
     self.reload()
 
@@ -377,6 +382,7 @@ class TetheringStore:
       os.unlink(temp_path)
 
   def _write(self, profile: TetheringProfile, raw: str) -> TetheringProfile:
+    self._ensure_directory_access()
     self._recover_pending_update()
     path = self._persistent_path(profile)
     subprocess.run(["sudo", "install", "-d", "-m", "755", self._directory], check=True)
