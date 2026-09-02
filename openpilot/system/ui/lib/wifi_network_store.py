@@ -402,6 +402,9 @@ class NetworkStore:
       if token not in cleanup_failed:
         subprocess.run(["sudo", "rm", "-f", marker], check=False)
 
+    if any(token not in markers for token in cleanup_failed):
+      raise OSError("profile forget recovery is still pending")
+
   def reload(self) -> None:
     profiles: dict[str, NetworkProfile] = {}
     runtime_paths: dict[str, str] = {}
