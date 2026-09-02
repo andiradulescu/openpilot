@@ -546,9 +546,21 @@ class WifiController:
       self._callbacks.put(("need_auth", command.ssid))
       return
 
-    existing = self._store.profiles_for_ssid(command.ssid)
+    try:
+      existing = self._store.profiles_for_ssid(command.ssid)
+    except OSError:
+      self._callbacks.put(("disconnected", None))
+      return
     if existing:
-      if len(existing) != 1 or not self._store.can_mutate(existing[0].uuid):
+      if len(existing) != 1:
+        self._callbacks.put(("profile_readonly", command.ssid))
+        return
+      try:
+        can_mutate = self._store.can_mutate(existing[0].uuid)
+      except OSError:
+        self._callbacks.put(("disconnected", None))
+        return
+      if not can_mutate:
         self._callbacks.put(("profile_readonly", command.ssid))
         return
       old = existing[0]
@@ -608,7 +620,11 @@ class WifiController:
     self._assert_owner()
     if self._requested_ssid is not None:
       self._cancel_selection(notify=False)
-    profiles = self._store.profiles_for_ssid(ssid)
+    try:
+      profiles = self._store.profiles_for_ssid(ssid)
+    except OSError:
+      self._callbacks.put(("disconnected", None))
+      return
     runtime_ids = [self._runtime_profiles[profile.uuid] for profile in profiles if profile.uuid in self._runtime_profiles]
     if len(runtime_ids) < len(profiles):
       try:
