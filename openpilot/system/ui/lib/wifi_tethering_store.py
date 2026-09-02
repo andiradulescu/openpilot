@@ -195,6 +195,7 @@ class TetheringStore:
     self._runtime_directory = RUNTIME_CONNECTIONS_DIR if runtime_directory is None and directory == NM_CONNECTIONS_DIR else runtime_directory
     self._profiles: dict[str, TetheringProfile] = {}
     self._runtime_paths: dict[str, str] = {}
+    self._reload_failed = False
     self.reload()
 
   def _ensure_directory_access(self) -> None:
@@ -253,9 +254,17 @@ class TetheringStore:
     if self._has_pending_update():
       raise OSError("tethering update recovery is still pending")
 
+  def _require_complete_reload(self) -> None:
+    if not self._reload_failed:
+      return
+    self.reload()
+    if self._reload_failed:
+      raise OSError("tethering profile reload is incomplete")
+
   def reload(self):
     profiles: dict[str, TetheringProfile] = {}
     runtime_paths: dict[str, str] = {}
+    load_failed = False
     for directory, persistent in ((self._directory, True), (self._runtime_directory, False)):
       if directory is None:
         continue
@@ -268,7 +277,10 @@ class TetheringStore:
           continue
         path = os.path.join(directory, filename)
         raw = sudo_read(path)
-        if raw and not persistent:
+        if not raw:
+          load_failed = True
+          continue
+        if not persistent:
           cp = configparser.ConfigParser(interpolation=None)
           try:
             cp.read_string(raw)
@@ -282,13 +294,15 @@ class TetheringStore:
                 pass
               else:
                 runtime_paths[profile_uuid] = path
-        profile = parse_tethering_profile(raw, path, persistent) if raw else None
+        profile = parse_tethering_profile(raw, path, persistent)
         if profile is None:
           continue
         if profile.uuid not in profiles or persistent:
           profiles[profile.uuid] = profile
-    self._profiles = profiles
-    self._runtime_paths = runtime_paths
+    self._reload_failed = load_failed
+    if not load_failed:
+      self._profiles = profiles
+      self._runtime_paths = runtime_paths
 
   def get(self, ssid: str) -> TetheringProfile | None:
     matches = [profile for profile in self._profiles.values() if profile.ssid == ssid]
@@ -331,6 +345,7 @@ class TetheringStore:
     return os.path.join(self._directory, f"{profile.uuid}-Hotspot.nmconnection")
 
   def ensure(self, ssid: str, password: str) -> TetheringProfile | None:
+    self._require_complete_reload()
     live_ap_running = wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF)
     live_password = _live_ap_password(ssid) if live_ap_running else None
     if live_ap_running and live_password is None:
@@ -359,6 +374,7 @@ class TetheringStore:
       return None
 
   def set_password(self, ssid: str, password: str) -> TetheringProfile | None:
+    self._require_complete_reload()
     profile = self.get(ssid)
     if profile is None or not _valid_password(password):
       return None
