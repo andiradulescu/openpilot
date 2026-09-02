@@ -19,9 +19,16 @@ class DhcpClient:
 
   def _owned_pid(self) -> int | None:
     try:
-      pid = int(Path(self._pid_file).read_text().strip())
+      pid_text = Path(self._pid_file).read_text().strip()
+    except FileNotFoundError:
+      return None
+    try:
+      pid = int(pid_text)
+    except ValueError as e:
+      raise OSError("invalid DHCP ownership PID file") from e
+    try:
       args = [os.fsdecode(arg) for arg in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0") if arg]
-    except (OSError, ValueError):
+    except FileNotFoundError:
       return None
 
     def arg_after(flag: str) -> str | None:
@@ -43,8 +50,11 @@ class DhcpClient:
     return self._owned_pid() is not None
 
   def start(self) -> bool:
-    if self.running:
-      return True
+    try:
+      if self.running:
+        return True
+    except OSError:
+      return False
     self._was_ready = False
     self._route_missing_since = 0.0
     try:
@@ -66,7 +76,10 @@ class DhcpClient:
     return True
 
   def stop(self, timeout: float = 3.0) -> bool:
-    pid = self._owned_pid()
+    try:
+      pid = self._owned_pid()
+    except OSError:
+      return False
     if pid is not None:
       try:
         pgid = os.getpgid(pid)
@@ -75,14 +88,17 @@ class DhcpClient:
       if pgid is not None and pgid > 1 and pgid != os.getpgrp():
         subprocess.run(["sudo", "kill", "-TERM", "--", f"-{pgid}"], check=False)
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline and self._owned_pid() == pid:
-          time.sleep(0.05)
-        if self._owned_pid() == pid:
-          subprocess.run(["sudo", "kill", "-KILL", "--", f"-{pgid}"], check=False)
-          deadline = time.monotonic() + timeout
+        try:
           while time.monotonic() < deadline and self._owned_pid() == pid:
             time.sleep(0.05)
-        if self._owned_pid() == pid:
+          if self._owned_pid() == pid:
+            subprocess.run(["sudo", "kill", "-KILL", "--", f"-{pgid}"], check=False)
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline and self._owned_pid() == pid:
+              time.sleep(0.05)
+          if self._owned_pid() == pid:
+            return False
+        except OSError:
           return False
     elif self._proc is not None and self._proc.poll() is None:
       pgid = self._proc.pid
