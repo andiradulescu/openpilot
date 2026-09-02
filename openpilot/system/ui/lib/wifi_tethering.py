@@ -136,10 +136,12 @@ def interface_ready() -> bool:
 
 
 def get_ipv4_forward() -> bool:
-  try:
-    return Path("/proc/sys/net/ipv4/ip_forward").read_text().strip() == "1"
-  except OSError:
+  value = Path("/proc/sys/net/ipv4/ip_forward").read_text().strip()
+  if value == "0":
     return False
+  if value == "1":
+    return True
+  raise RuntimeError("invalid IPv4 forwarding state")
 
 
 def set_ipv4_forward(enabled: bool) -> None:
@@ -277,10 +279,10 @@ class TetheringSession:
     if self._previous_ipv4_forward is not None:
       return dnsmasq_running() and firewall_ready()
 
-    previous_ipv4_forward = get_ipv4_forward()
     try:
+      previous_ipv4_forward = get_ipv4_forward()
       _write_previous_ipv4_forward(previous_ipv4_forward)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, RuntimeError):
       return False
     self._previous_ipv4_forward = previous_ipv4_forward
     try:
