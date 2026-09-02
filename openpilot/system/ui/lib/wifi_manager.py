@@ -173,6 +173,8 @@ class WifiManager:
     while (event := self._controller.get_callback()) is not None:
       name, value = event
       if name == "need_auth":
+        if self._pending_selection != value:
+          continue
         self._pending_selection = None
         for callback in self._need_auth:
           callback(str(value))
