@@ -1095,19 +1095,6 @@ class WifiController:
       return None
     try:
       stored = self._store.write(self._pending_profile)
-      self._refresh_saved_ssids()
-      new_network_id = self._temporary_network_id
-      if self._replacement_network_id is not None and self._replacement_network_id != new_network_id:
-        try:
-          self._request(f"REMOVE_NETWORK {self._replacement_network_id}")
-        except (OSError, RuntimeError):
-          pass
-      if new_network_id is not None:
-        self._runtime_profiles[stored.uuid] = new_network_id
-      self._pending_profile = None
-      self._temporary_network_id = None
-      self._replacement_network_id = None
-      wpa_supplicant.write_station_config([profile.as_wpa_network() for profile in self._store.profiles()])
     except (OSError, subprocess.SubprocessError):
       self._cancel_selection()
       try:
@@ -1116,6 +1103,23 @@ class WifiController:
       except (OSError, RuntimeError):
         pass
       return None
+
+    self._refresh_saved_ssids()
+    new_network_id = self._temporary_network_id
+    if self._replacement_network_id is not None and self._replacement_network_id != new_network_id:
+      try:
+        self._request(f"REMOVE_NETWORK {self._replacement_network_id}")
+      except (OSError, RuntimeError):
+        pass
+    if new_network_id is not None:
+      self._runtime_profiles[stored.uuid] = new_network_id
+    self._pending_profile = None
+    self._temporary_network_id = None
+    self._replacement_network_id = None
+    try:
+      wpa_supplicant.write_station_config([profile.as_wpa_network() for profile in self._store.profiles()])
+    except OSError:
+      cloudlog.exception("Failed to rewrite station wpa_supplicant configuration after profile commit")
     try:
       self._restore_network_enablement()
     except (OSError, RuntimeError):
