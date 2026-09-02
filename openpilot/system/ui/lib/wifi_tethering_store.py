@@ -6,8 +6,10 @@ import tempfile
 import unicodedata
 import uuid
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 from openpilot.common.utils import sudo_read
+from openpilot.system.ui.lib import wpa_supplicant
 
 
 NM_CONNECTIONS_DIR = "/data/etc/NetworkManager/system-connections"
@@ -70,6 +72,55 @@ def _valid_password(password: str) -> bool:
   except UnicodeEncodeError:
     return False
   return 8 <= size <= 63 or len(password) == 64 and all(char in "0123456789abcdefABCDEF" for char in password)
+
+
+def _decode_wpa_psk(value: str) -> str | None:
+  if len(value) == 64 and all(char in "0123456789abcdefABCDEF" for char in value):
+    return value
+  if len(value) < 2 or value[0] != '"' or value[-1] != '"':
+    return None
+
+  out = []
+  i = 1
+  end = len(value) - 1
+  while i < end:
+    char = value[i]
+    if char == "\\":
+      i += 1
+      if i >= end or value[i] not in ('\\', '"'):
+        return None
+      char = value[i]
+    out.append(char)
+    i += 1
+  return "".join(out)
+
+
+def _live_ap_password(ssid: str) -> str | None:
+  if not wpa_supplicant.is_running(wpa_supplicant.WPA_AP_CONF):
+    return None
+  try:
+    raw = Path(wpa_supplicant.WPA_AP_CONF).read_text()
+  except OSError:
+    return None
+
+  values: dict[str, str] = {}
+  in_network = False
+  for raw_line in raw.splitlines():
+    line = raw_line.strip()
+    if not in_network:
+      if line == "network={":
+        in_network = True
+      continue
+    if line == "}":
+      break
+    key, separator, value = line.partition("=")
+    if separator:
+      values[key] = value
+
+  if values.get("ssid") != ssid.encode("utf-8", errors="surrogateescape").hex():
+    return None
+  password = _decode_wpa_psk(values.get("psk", ""))
+  return password if password is not None and _valid_password(password) else None
 
 
 def parse_tethering_profile(raw: str, path: str = "", persistent: bool = True) -> TetheringProfile | None:
@@ -278,6 +329,10 @@ class TetheringStore:
     profile = self.get(ssid)
     if profile is not None:
       if profile.persistent:
+        live_password = _live_ap_password(ssid)
+        if live_password is not None and live_password != profile.password:
+          updated = self.set_password(ssid, live_password)
+          return updated if updated is not None else replace(profile, password=live_password)
         return profile
       if not _valid_password(password):
         return None
