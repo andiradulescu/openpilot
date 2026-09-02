@@ -123,13 +123,33 @@ class TestTetheringStore(TestCase):
 
       assert profile is not None
       assert profile.persistent
-      assert profile.password == "different-password"
+      assert profile.password == "swagswagcomma"
       persistent_files = list(Path(persistent).glob("*.nmconnection"))
       assert len(persistent_files) == 1
       assert parse_tethering_profile(persistent_files[0].read_text()).password == "newer-password"
       assert not runtime_path.exists()
       assert updated is not None
       assert updated.password == "newer-password"
+
+  def test_runtime_only_profile_applies_explicit_password_update(self):
+    with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
+      runtime_path = Path(runtime) / "Hotspot.nmconnection"
+      runtime_path.write_text(master_profile())
+
+      with (
+        patch("openpilot.system.ui.lib.wifi_tethering_store.sudo_read", side_effect=lambda path: Path(path).read_text()),
+        patch("openpilot.system.ui.lib.wifi_tethering_store.subprocess.run", side_effect=run_sudo),
+      ):
+        store = TetheringStore(persistent, runtime)
+        updated = store.set_password("weedle", "new-password")
+
+      assert updated is not None
+      assert updated.persistent
+      assert updated.password == "new-password"
+      persistent_files = list(Path(persistent).glob("*.nmconnection"))
+      assert len(persistent_files) == 1
+      assert parse_tethering_profile(persistent_files[0].read_text()).password == "new-password"
+      assert not runtime_path.exists()
 
   def test_get_prefers_persistent_when_ssid_has_runtime_copy(self):
     with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
