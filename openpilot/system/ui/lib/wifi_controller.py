@@ -497,6 +497,7 @@ class WifiController:
       results = parse_scan_results(self._request("SCAN_RESULTS"))
     except (OSError, RuntimeError):
       return
+
     grouped: dict[str, list] = {}
     for result in results:
       if result.ssid:
