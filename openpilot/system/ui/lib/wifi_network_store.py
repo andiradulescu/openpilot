@@ -474,7 +474,7 @@ class NetworkStore:
       raise OSError(f"profile {profile.uuid} is read-only")
 
     path = existing.path if existing is not None else self._path(profile)
-    subprocess.run(["sudo", "install", "-d", "-m", "700", self._directory], check=True)
+    subprocess.run(["sudo", "install", "-d", "-m", "755", self._directory], check=True)
     with tempfile.NamedTemporaryFile("w", delete=False) as f:
       f.write(render_profile(profile))
       temp_path = f.name
