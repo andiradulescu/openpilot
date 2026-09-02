@@ -1112,7 +1112,6 @@ class WifiController:
 
     if not profile.ipv6_enabled and not self._dhcp.clear_ipv6():
       return
-    self._requested_ssid = None
     self._connecting_since = time.monotonic()
     if not self._dhcp.running:
       self._dhcp.start()
@@ -1223,6 +1222,7 @@ class WifiController:
             profile = self._store.get(profile_uuid)
           if profile is None:
             return
+          self._requested_ssid = None
           self._state = WifiState(
             ssid=ssid,
             status=ConnectStatus.CONNECTED,
