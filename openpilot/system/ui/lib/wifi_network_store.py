@@ -265,7 +265,12 @@ class NetworkStore:
     self._runtime_paths: dict[str, str] = {}
     self.reload()
 
+  def _ensure_directory_access(self) -> None:
+    if self._directory == NM_CONNECTIONS_DIR:
+      subprocess.run(["sudo", "install", "-d", "-m", "755", self._directory], check=True)
+
   def recover(self) -> None:
+    self._ensure_directory_access()
     self._recover_forgets()
     self._recover_updates()
     self.reload()
@@ -468,6 +473,7 @@ class NetworkStore:
     return os.path.join(self._directory, f"{profile.uuid}-{safe_ssid}.nmconnection")
 
   def write(self, profile: NetworkProfile) -> NetworkProfile:
+    self._ensure_directory_access()
     self._recover_pending_update()
     existing = self.get(profile.uuid)
     if existing is not None and not self.can_mutate(profile.uuid):
@@ -512,8 +518,9 @@ class NetworkStore:
 
   def remove_ssid(self, ssid: str) -> bool:
     try:
+      self._ensure_directory_access()
       self._recover_pending_update()
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
       return False
     profiles = self.profiles_for_ssid(ssid)
     if not profiles:
