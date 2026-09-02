@@ -151,6 +151,32 @@ class TestTetheringStore(TestCase):
       assert parse_tethering_profile(persistent_files[0].read_text()).password == "new-password"
       assert not runtime_path.exists()
 
+  def test_ensure_stops_live_ap_with_different_identity(self):
+    with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
+      with (
+        patch("openpilot.system.ui.lib.wifi_tethering_store.subprocess.run", side_effect=run_sudo),
+        patch("openpilot.system.ui.lib.wifi_tethering_store.wpa_supplicant.is_running", return_value=True),
+        patch("openpilot.system.ui.lib.wifi_tethering_store._live_ap_password", return_value=None),
+        patch("openpilot.system.ui.lib.wifi_tethering_store.wpa_supplicant.stop", return_value=True) as stop,
+      ):
+        store = TetheringStore(persistent, runtime)
+        profile = store.ensure("weedle-1234", "password123")
+
+      stop.assert_called_once()
+      assert profile is not None
+      assert profile.ssid == "weedle-1234"
+
+  def test_ensure_retries_when_mismatched_live_ap_cannot_stop(self):
+    with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
+      with (
+        patch("openpilot.system.ui.lib.wifi_tethering_store.wpa_supplicant.is_running", return_value=True),
+        patch("openpilot.system.ui.lib.wifi_tethering_store._live_ap_password", return_value=None),
+        patch("openpilot.system.ui.lib.wifi_tethering_store.wpa_supplicant.stop", return_value=False),
+      ):
+        store = TetheringStore(persistent, runtime)
+        with self.assertRaises(RuntimeError):
+          store.ensure("weedle-1234", "password123")
+
   def test_get_prefers_persistent_when_ssid_has_runtime_copy(self):
     with tempfile.TemporaryDirectory() as persistent, tempfile.TemporaryDirectory() as runtime:
       other_uuid = "22222222-2222-4222-8222-222222222222"
