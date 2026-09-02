@@ -12,7 +12,8 @@ from openpilot.common.utils import sudo_read
 
 NM_CONNECTIONS_DIR = "/data/etc/NetworkManager/system-connections"
 RUNTIME_CONNECTIONS_DIR = "/run/NetworkManager/system-connections"
-_UPDATE_RE = re.compile(r"^.+\.nmconnection\.openpilot-update-[0-9a-f]{32}$")
+_UPDATE_RE = re.compile(r"^(?P<name>.+\.nmconnection)\.openpilot-update-(?P<token>[0-9a-f]{32})$")
+_RUNTIME_SHADOW_RE = re.compile(r"^(?P<name>.+\.nmconnection)\.openpilot-shadow-(?P<token>[0-9a-f]{32})$")
 
 
 @dataclass(frozen=True)
@@ -146,14 +147,42 @@ class TetheringStore:
     self.reload()
 
   def recover(self):
+    self._recover_updates()
+    self.reload()
+
+  def _recover_updates(self):
     try:
       filenames = sorted(os.listdir(self._directory))
     except OSError:
-      filenames = []
-    for filename in filenames:
-      if _UPDATE_RE.fullmatch(filename):
-        subprocess.run(["sudo", "rm", "-f", os.path.join(self._directory, filename)], check=False)
-    self.reload()
+      return
+    updates = {
+      match.group("token"): os.path.join(self._directory, filename)
+      for filename in filenames
+      if (match := _UPDATE_RE.fullmatch(filename)) is not None
+    }
+
+    restore_failed: set[str] = set()
+    if self._runtime_directory is not None:
+      try:
+        runtime_filenames = sorted(os.listdir(self._runtime_directory))
+      except FileNotFoundError:
+        runtime_filenames = []
+      except OSError:
+        return
+      for filename in runtime_filenames:
+        match = _RUNTIME_SHADOW_RE.fullmatch(filename)
+        if match is None:
+          continue
+        token = match.group("token")
+        staged = os.path.join(self._runtime_directory, filename)
+        original = os.path.join(self._runtime_directory, match.group("name"))
+        command = ["sudo", "mv", "-f", staged, original] if token in updates else ["sudo", "rm", "-f", staged]
+        if subprocess.run(command, check=False).returncode != 0 and token in updates:
+          restore_failed.add(token)
+
+    for token, path in updates.items():
+      if token not in restore_failed:
+        subprocess.run(["sudo", "rm", "-f", path], check=False)
 
   def reload(self):
     profiles: dict[str, TetheringProfile] = {}
@@ -204,13 +233,27 @@ class TetheringStore:
   def can_mutate(self, profile: TetheringProfile) -> bool:
     return profile.persistent and profile.path.startswith(self._directory + os.sep)
 
-  def _clear_runtime_shadow(self, profile_uuid: str) -> bool:
+  def _stage_runtime_shadow(self, profile_uuid: str, token: str) -> tuple[str, str] | None:
     path = self._runtime_paths.get(profile_uuid)
     if path is None:
-      return True
-    if subprocess.run(["sudo", "rm", "-f", path], check=False).returncode != 0:
-      return False
+      return None
+    staged_path = f"{path}.openpilot-shadow-{token}"
+    if subprocess.run(["sudo", "mv", "-f", path, staged_path], check=False).returncode != 0:
+      raise OSError(f"failed to stage runtime shadow for tethering profile {profile_uuid}")
     self._runtime_paths.pop(profile_uuid, None)
+    return path, staged_path
+
+  def _restore_runtime_shadow(self, profile_uuid: str, staged: tuple[str, str] | None) -> bool:
+    if staged is None:
+      return True
+    path, staged_path = staged
+    try:
+      result = subprocess.run(["sudo", "mv", "-f", staged_path, path], check=False)
+    except OSError:
+      return False
+    if result.returncode != 0:
+      return False
+    self._runtime_paths[profile_uuid] = path
     return True
 
   def _persistent_path(self, profile: TetheringProfile) -> str:
@@ -268,20 +311,30 @@ class TetheringStore:
       os.unlink(temp_path)
 
   def _write(self, profile: TetheringProfile, raw: str) -> TetheringProfile:
-    if not self._clear_runtime_shadow(profile.uuid):
-      raise OSError(f"failed to clear runtime shadow for tethering profile {profile.uuid}")
     path = self._persistent_path(profile)
     subprocess.run(["sudo", "install", "-d", "-m", "700", self._directory], check=True)
     with tempfile.NamedTemporaryFile("w", delete=False) as f:
       f.write(raw)
       temp_path = f.name
-    stage_path = f"{path}.openpilot-update-{uuid.uuid4().hex}"
+    token = uuid.uuid4().hex
+    stage_path = f"{path}.openpilot-update-{token}"
+    runtime_shadow: tuple[str, str] | None = None
+    keep_stage = False
     try:
       subprocess.run(["sudo", "install", "-m", "600", temp_path, stage_path], check=True)
-      subprocess.run(["sudo", "mv", "-f", stage_path, path], check=True)
+      runtime_shadow = self._stage_runtime_shadow(profile.uuid, token)
+      try:
+        subprocess.run(["sudo", "mv", "-f", stage_path, path], check=True)
+      except (OSError, subprocess.SubprocessError):
+        if not self._restore_runtime_shadow(profile.uuid, runtime_shadow):
+          keep_stage = True
+        raise
+      if runtime_shadow is not None:
+        subprocess.run(["sudo", "rm", "-f", runtime_shadow[1]], check=False)
     finally:
       os.unlink(temp_path)
-      subprocess.run(["sudo", "rm", "-f", stage_path], check=False)
+      if not keep_stage:
+        subprocess.run(["sudo", "rm", "-f", stage_path], check=False)
     stored = replace(profile, path=path, persistent=True, raw=raw)
     self._profiles[stored.uuid] = stored
     return stored
