@@ -6,6 +6,7 @@ from pathlib import Path
 
 DHCP_SCRIPT = os.path.join(os.path.dirname(__file__), "udhcpc.script")
 DHCP_RUNTIME_DIR = "/run/openpilot-wifi"
+DHCP_ROUTE_GRACE_SECONDS = 1.0
 
 
 class DhcpClient:
@@ -13,6 +14,8 @@ class DhcpClient:
     self._iface = iface
     self._pid_file = os.path.join(DHCP_RUNTIME_DIR, f"udhcpc-{iface}.pid")
     self._proc: subprocess.Popen | None = None
+    self._was_ready = False
+    self._route_missing_since = 0.0
 
   def _owned_pid(self) -> int | None:
     try:
@@ -42,6 +45,8 @@ class DhcpClient:
   def start(self) -> bool:
     if self.running:
       return True
+    self._was_ready = False
+    self._route_missing_since = 0.0
     try:
       subprocess.run(["sudo", "install", "-d", "-o", "root", "-g", "root", "-m", "755", DHCP_RUNTIME_DIR], check=True)
       subprocess.run(["sudo", "rm", "-f", self._pid_file], check=False)
@@ -101,6 +106,8 @@ class DhcpClient:
           return False
 
     self._proc = None
+    self._was_ready = False
+    self._route_missing_since = 0.0
     subprocess.run(["sudo", "rm", "-f", self._pid_file], check=False)
     ipv4_cleared = self.clear_ipv4()
     ipv6_cleared = self.clear_ipv6()
@@ -135,6 +142,19 @@ class DhcpClient:
 
   def ready(self) -> bool:
     if not self.ipv4_address():
+      self._route_missing_since = 0.0
       return False
     result = subprocess.run(["ip", "-4", "route", "show", "default", "dev", self._iface], capture_output=True, text=True, check=False)
-    return result.returncode == 0 and any("metric 600" in line for line in result.stdout.splitlines())
+    route_ready = result.returncode == 0 and any("metric 600" in line for line in result.stdout.splitlines())
+    if route_ready:
+      self._was_ready = True
+      self._route_missing_since = 0.0
+      return True
+    if not self._was_ready or not self.running:
+      self._route_missing_since = 0.0
+      return False
+    now = time.monotonic()
+    if self._route_missing_since == 0.0:
+      self._route_missing_since = now
+      return True
+    return now - self._route_missing_since < DHCP_ROUTE_GRACE_SECONDS
