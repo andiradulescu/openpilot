@@ -551,10 +551,10 @@ class NetworkStore:
     return stored
 
   def set_metered(self, profile_uuid: str, metered: MeteredType) -> NetworkProfile | None:
-    profile = self.get(profile_uuid)
-    if profile is None or not self.can_mutate(profile_uuid):
-      return None
     try:
+      profile = self.get(profile_uuid)
+      if profile is None or not self.can_mutate(profile_uuid):
+        return None
       return self.write(replace(profile, metered=metered))
     except (OSError, subprocess.SubprocessError):
       return None
