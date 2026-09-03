@@ -263,6 +263,17 @@ class WifiController:
               self._last_reconcile = now
         except Exception:
           cloudlog.exception("Wi-Fi controller failed")
+          selection_ssid = self._requested_ssid
+          if selection_ssid is not None:
+            self._runtime_profiles = {}
+            self._pending_profile = None
+            self._temporary_network_id = None
+            self._replacement_network_id = None
+            self._requested_ssid = None
+            self._failed_candidate_ids.clear()
+            self._connecting_since = 0.0
+            self._state = WifiState()
+            self._callbacks.put(("disconnected", selection_ssid))
           self._close_ctrl()
           if not self._exit and not self._stop_requested.is_set():
             time.sleep(RECONCILE_PERIOD_SECONDS)
