@@ -274,6 +274,8 @@ class NetworkStore:
     self._ensure_directory_access()
     self._recover_forgets()
     self._recover_updates()
+    if self._has_pending_update():
+      raise OSError("profile update recovery is still pending")
     self.reload()
 
   def _require_complete_reload(self) -> None:
