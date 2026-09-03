@@ -205,6 +205,8 @@ class TetheringStore:
   def recover(self):
     self._ensure_directory_access()
     self._recover_updates()
+    if self._has_pending_update():
+      raise OSError("tethering update recovery is still pending")
     self.reload()
 
   def _recover_updates(self):
