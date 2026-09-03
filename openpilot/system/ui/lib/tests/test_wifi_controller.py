@@ -305,7 +305,7 @@ class TestWifiController(TestCase):
 
     assert controller._pending_profile is None
     dhcp.stop.assert_called_once_with()
-    assert controller.get_callback() == ("disconnected", None)
+    assert controller.get_callback() == ("disconnected", "Test")
 
   def test_duplicate_profiles_prompt_after_all_wrong_keys(self):
     profiles = (
@@ -323,8 +323,8 @@ class TestWifiController(TestCase):
     assert controller.get_callback() is None
     controller._handle_wpa_event('CTRL-EVENT-SSID-TEMP-DISABLED id=7 ssid="Test" reason=WRONG_KEY')
 
-    assert controller.get_callback() == ("disconnected", None)
     assert controller.get_callback() == ("need_auth", "Test")
+    assert controller.get_callback() is None
 
   def test_connected_status_uses_exact_profile_metering(self):
     profiles = (
