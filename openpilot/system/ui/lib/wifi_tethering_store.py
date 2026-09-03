@@ -100,8 +100,8 @@ def _live_ap_password(ssid: str) -> str | None:
     return None
   try:
     raw = Path(wpa_supplicant.WPA_AP_CONF).read_text()
-  except OSError:
-    return None
+  except OSError as e:
+    raise RuntimeError("failed to inspect live AP configuration") from e
 
   values: dict[str, str] = {}
   in_network = False
