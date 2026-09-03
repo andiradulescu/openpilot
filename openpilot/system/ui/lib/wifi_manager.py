@@ -188,7 +188,10 @@ class WifiManager:
         for callback in self._forgotten:
           callback(value if isinstance(value, str) else None)
       elif name == "disconnected":
-        if isinstance(value, str) and self._pending_selection != value:
+        if value is None:
+          if self._pending_selection is not None:
+            continue
+        elif self._pending_selection != value:
           continue
         self._pending_selection = None
         for callback in self._disconnected:
