@@ -314,7 +314,9 @@ class WifiController:
         if not self._tethering_active:
           self._set_metered(command.metered)
       elif isinstance(command, _Forget):
-        if not self._tethering_active:
+        if self._tethering_active:
+          self._callbacks.put(("forget_failed", command.ssid))
+        else:
           self._forget(command.ssid)
       elif isinstance(command, _SetTetheringActive):
         self._set_tethering_active(command.active)
