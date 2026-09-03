@@ -351,8 +351,10 @@ class NetworkStore:
   def _recover_forgets(self) -> None:
     try:
       filenames = sorted(os.listdir(self._directory))
-    except OSError:
+    except FileNotFoundError:
       return
+    except OSError as e:
+      raise OSError("failed to inspect profile forget recovery") from e
 
     markers = {
       match.group("token"): os.path.join(self._directory, filename)
@@ -371,8 +373,8 @@ class NetworkStore:
         runtime_filenames = sorted(os.listdir(self._runtime_directory))
       except FileNotFoundError:
         runtime_filenames = []
-      except OSError:
-        return
+      except OSError as e:
+        raise OSError("failed to inspect runtime profile forget recovery") from e
       for filename in runtime_filenames:
         match = _RUNTIME_SHADOW_RE.fullmatch(filename)
         if match is None or match.group("token") not in forget_tokens:
