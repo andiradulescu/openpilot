@@ -290,10 +290,14 @@ class WifiController:
           self._scan()
           self._last_scan = time.monotonic()
       elif isinstance(command, _Connect):
-        if not self._tethering_active:
+        if self._tethering_active:
+          self._callbacks.put(("disconnected", command.ssid))
+        else:
           self._connect(command)
       elif isinstance(command, _Activate):
-        if not self._tethering_active:
+        if self._tethering_active:
+          self._callbacks.put(("disconnected", command.ssid))
+        else:
           self._activate(command.ssid)
       elif isinstance(command, _SetMetered):
         if not self._tethering_active:
