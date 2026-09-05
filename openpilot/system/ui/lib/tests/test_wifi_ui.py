@@ -54,7 +54,7 @@ class TestWifiForgetUI(TestCase):
       button._forget_network()
       buttons.append(button)
     widget = wifi_ui.WifiUIMici.__new__(wifi_ui.WifiUIMici)
-    widget._scroller = SimpleNamespace(items=buttons)
+    self.enterContext(patch.object(widget, "_scroller", SimpleNamespace(items=buttons), create=True))
     manager.add_callbacks(forget_failed=widget._on_forget_failed)
     controller.get_callback.side_effect = [("forget_failed", "Test"), None]
 

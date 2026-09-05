@@ -7,12 +7,14 @@ import uuid
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest import TestCase
 from unittest.mock import patch
 
 from openpilot.common import wifi
 from openpilot.system.ui.lib import wifi_controller, wifi_manager, wifi_network_store, wifi_tethering_store, wpa_supplicant
 from openpilot.system.ui.lib.wifi_controller import WifiController
+from openpilot.system.ui.lib.dhcp_client import DhcpClient
 from openpilot.system.ui.lib.wifi_network_store import NetworkStore
 from openpilot.system.ui.lib.wifi_tethering_store import TetheringStore
 
@@ -160,7 +162,7 @@ class TestWifiFlows(TestCase):
     self.enterContext(patch.object(wifi_manager, "Params", None))
     self.enterContext(patch.object(wifi_manager.atexit, "register"))
     self.enterContext(patch.object(wifi_manager, "WifiController", side_effect=lambda **kwargs: WifiController(
-      store=NetworkStore(str(self.saved), str(self.runtime)), dhcp=self.lease,
+      store=NetworkStore(str(self.saved), str(self.runtime)), dhcp=cast(DhcpClient, self.lease),
       tethering_store=TetheringStore(str(self.saved), str(self.runtime)), **kwargs)))
     self.addCleanup(lambda: self.manager.stop() if self.manager is not None else None)
 
