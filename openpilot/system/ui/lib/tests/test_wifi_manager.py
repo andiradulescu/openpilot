@@ -104,3 +104,29 @@ class TestWifiManager(TestCase):
     manager.set_current_network_metered(wifi_manager.MeteredType.YES)
 
     controller.set_metered.assert_called_once_with(StoreMeteredType.YES)
+
+  def test_failed_forget_has_its_own_callback(self):
+    manager, controller = self.make_manager()
+    controller.is_connection_saved.return_value = True
+    controller.get_callback.side_effect = [("forget_failed", "Test"), None]
+    forgotten, failed, updates = [], [], []
+    manager.add_callbacks(forgotten=forgotten.append, forget_failed=failed.append, networks_updated=updates.append)
+
+    manager.forget_connection("Test")
+    manager.process_callbacks()
+
+    assert manager.is_connection_saved("Test")
+    assert forgotten == []
+    assert failed == ["Test"]
+    assert updates == [[]]
+
+  def test_successful_forget_does_not_emit_failure(self):
+    manager, controller = self.make_manager()
+    controller.get_callback.side_effect = [("forgotten", "Test"), None]
+    forgotten, failed = [], []
+    manager.add_callbacks(forgotten=forgotten.append, forget_failed=failed.append)
+
+    manager.process_callbacks()
+
+    assert forgotten == ["Test"]
+    assert failed == []

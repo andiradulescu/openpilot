@@ -222,6 +222,7 @@ method=ignore
     self.manager = wifi_manager.WifiManager()
     self.manager.add_callbacks(
       forgotten=lambda ssid: self.events.append(("forgotten", ssid)),
+      forget_failed=lambda ssid: self.events.append(("forget_failed", ssid)),
       need_auth=lambda ssid: self.events.append(("need_auth", ssid)),
       networks_updated=lambda _: self.events.append(("updated", None)),
     )
@@ -311,6 +312,42 @@ method=ignore
     assert self.manager.connecting_to_ssid is None
     assert not self.ctrl.networks
     assert not NetworkStore(str(self.saved), str(self.runtime)).profiles_for_ssid("Missing")
+
+  def check_failed_forget(self, failure):
+    path = self.seed()
+    before = path.read_bytes()
+    self.start()
+    self.wait(lambda: self.manager.is_connection_saved("Test"))
+    self.fail_file = failure
+    self.manager.forget_connection("Test")
+    self.wait(lambda: ("forget_failed", "Test") in self.events)
+    assert ("forgotten", "Test") not in self.events
+    assert self.manager.is_connection_saved("Test")
+    assert path.read_bytes() == before
+    assert NetworkStore(str(self.saved), str(self.runtime)).profiles_for_ssid("Test")
+    self.fail_file = lambda command: False
+    self.events.clear()
+    self.manager.forget_connection("Test")
+    self.wait(lambda: ("forgotten", "Test") in self.events)
+    assert not path.exists()
+
+  def test_failed_forget_stage_preserves_profile_and_allows_retry(self):
+    self.check_failed_forget(lambda command: command[1] == "mv" and ".openpilot-forget-" in command[-1])
+
+  def test_failed_forget_commit_preserves_profile_and_allows_retry(self):
+    self.check_failed_forget(lambda command: command[1] == "touch")
+
+  def test_runtime_only_profile_reports_failure_without_deleting_source(self):
+    path = self.seed(runtime=True)
+    self.start()
+    self.connect(saved=True)
+    address = self.manager.ipv4_address
+    self.manager.forget_connection("Test")
+    self.wait(lambda: ("forget_failed", "Test") in self.events)
+    assert ("forgotten", "Test") not in self.events
+    assert path.exists() and self.manager.is_connection_saved("Test")
+    assert self.ctrl.current is not None
+    assert self.lease.running and self.lease.address == address
 
   def test_tethering_password_and_forwarding_then_return_to_station(self):
     self.start()

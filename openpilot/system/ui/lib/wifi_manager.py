@@ -70,6 +70,7 @@ class WifiManager:
     self._need_auth: list[Callable[[str], None]] = []
     self._activated: list[Callable[[], None]] = []
     self._forgotten: list[Callable[[str | None], None]] = []
+    self._forget_failed: list[Callable[[str], None]] = []
     self._networks_updated: list[Callable[[list[Network]], None]] = []
     self._disconnected: list[Callable[[], None]] = []
     self._pending_selection: str | None = None
@@ -80,13 +81,16 @@ class WifiManager:
                     activated: Callable[[], None] | None = None,
                     forgotten: Callable[[str | None], None] | None = None,
                     networks_updated: Callable[[list[Network]], None] | None = None,
-                    disconnected: Callable[[], None] | None = None):
+                    disconnected: Callable[[], None] | None = None,
+                    forget_failed: Callable[[str], None] | None = None):
     if need_auth is not None:
       self._need_auth.append(need_auth)
     if activated is not None:
       self._activated.append(activated)
     if forgotten is not None:
       self._forgotten.append(forgotten)
+    if forget_failed is not None:
+      self._forget_failed.append(forget_failed)
     if networks_updated is not None:
       self._networks_updated.append(networks_updated)
     if disconnected is not None:
@@ -201,8 +205,8 @@ class WifiManager:
         emitted_network_update = True
       elif name == "forget_failed":
         cloudlog.warning(f"Failed to forget Wi-Fi network {value!r}")
-        for callback in self._forgotten:
-          callback(value if isinstance(value, str) else None)
+        for callback in self._forget_failed:
+          callback(str(value))
         self._emit_networks_updated()
         emitted_network_update = True
       elif name == "profile_readonly":

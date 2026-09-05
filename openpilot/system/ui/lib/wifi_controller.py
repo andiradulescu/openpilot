@@ -701,6 +701,9 @@ class WifiController:
     except OSError:
       self._callbacks.put(("forget_failed", ssid))
       return
+    if any(not profile.persistent for profile in profiles):
+      self._callbacks.put(("forget_failed", ssid))
+      return
     if not profiles and self._requested_ssid == ssid:
       try:
         self._cancel_selection(notify=False)

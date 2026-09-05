@@ -9,7 +9,7 @@ from openpilot.system.ui.lib.scroll_panel import GuiScrollPanel
 from openpilot.system.ui.lib.wifi_manager import WifiManager, SecurityType, Network, MeteredType, normalize_ssid
 from openpilot.system.ui.widgets import DialogResult, Widget
 from openpilot.system.ui.widgets.button import ButtonStyle, Button
-from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
+from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog, alert_dialog
 from openpilot.system.ui.widgets.keyboard import Keyboard
 from openpilot.system.ui.widgets.label import gui_label
 from openpilot.system.ui.widgets.scroller_tici import Scroller
@@ -278,6 +278,7 @@ class WifiManagerUI(Widget):
     self._wifi_manager.add_callbacks(need_auth=self._on_need_auth,
                                      activated=self._on_activated,
                                      forgotten=self._on_forgotten,
+                                     forget_failed=self._on_forget_failed,
                                      networks_updated=self._on_network_updated,
                                      disconnected=self._on_disconnected)
 
@@ -459,6 +460,12 @@ class WifiManagerUI(Widget):
   def _on_forgotten(self, _):
     if self.state == UIState.FORGETTING:
       self.state = UIState.IDLE
+
+  def _on_forget_failed(self, ssid: str):
+    if self.state != UIState.FORGETTING or self._state_network is None or self._state_network.ssid != ssid:
+      return
+    self.state = UIState.IDLE
+    gui_app.push_widget(alert_dialog(tr("Failed to forget Wi-Fi network \"{}\". Please try again.").format(normalize_ssid(ssid))))
 
   def _on_disconnected(self):
     if self.state == UIState.CONNECTING:
