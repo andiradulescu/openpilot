@@ -78,9 +78,9 @@ class TestEpsDiagnostics(unittest.TestCase):
     self.assertEqual(self.diag.requests(10_000_000_000, True), [])
 
   def test_late_response_expires_without_a_transmit_tick(self):
-    self.diag.requests(100, True)
-    self.receive(99, response(0x180B, b"\0\0"))
-    self.assertIsNotNone(self.diag.pending)
+    self.diag.requests(0, True)
+    self.receive(TIMEOUT_NS + 1, response(0x180B, b"\0\0"))
+    self.assertFalse(self.diag.polling)
     self.assertEqual(self.writer.rows[-1][1], "unsolicited_response")
 
   def test_pending_has_an_absolute_deadline(self):
@@ -149,7 +149,7 @@ class TestEpsDiagnostics(unittest.TestCase):
     req = self.diag.requests(0, True)[0]
     self.diag.observe_can([(1, [(req[0], req[1], 129)])])
     self.assertEqual(self.writer.rows[-1][1:4], ("diag_tx_echo", 1, "180B"))
-    self.diag.observe_can([(2, [(req[0], req[1], 193]])])
+    self.diag.observe_can([(2, [(req[0], req[1], 193)])])
     self.assertEqual(self.writer.rows[-1][1], "diag_tx_rejected")
     self.assertFalse(self.diag.polling)
 
@@ -310,7 +310,6 @@ class TestProbeReadiness(unittest.TestCase):
     self.diag.observe_probe(3, True, False, 1, True)
     rows = [r for r in self.writer.rows if r[1] == "probe_state"]
     self.assertEqual(2, len(rows))
-
 
 
 class TestCardInstrumentationIsolation(unittest.TestCase):
