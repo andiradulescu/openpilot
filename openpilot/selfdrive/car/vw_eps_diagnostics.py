@@ -151,7 +151,7 @@ class EpsDiagnostics:
 
   def _emit(self, *args, **kwargs):
     if not self.writer.emit(*args, **kwargs):
-      self.disable("trace_unavailble")
+      self.disable("trace_unavailable")
 
   def _stop(self, now_ns, reason):
     self._emit(now_ns, "diagnostics_stopped", value=reason)
@@ -202,7 +202,7 @@ class EpsDiagnostics:
         elif addr == 0x126 and src in (0, 128, 192) and len(data) == 8:
           event = {0: "hca_rx", 128: "hca_tx_echo", 192: "hca_tx_rejected"}[src]
           self._emit(mono_ns, event, address="126", bus=src, value=hca_torque(data), data=data.hex())
-        elif addr == EPS_TX. and src == DIAG_BUS + 128:
+        elif addr == EPS_TX and src == DIAG_BUS + 128:
           p = self.pending
           matched = p is not None and data == p.data and mono_ns >= p.requested_ns
           self._emit(mono_ns, "diag_tx_echo", p.request_id if matched else "", f"{p.did:04X}" if matched else "",
