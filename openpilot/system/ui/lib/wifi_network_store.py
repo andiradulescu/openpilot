@@ -1,4 +1,5 @@
 import configparser
+import json
 import os
 import re
 import subprocess
@@ -7,6 +8,7 @@ import unicodedata
 import uuid
 from dataclasses import dataclass, replace
 from enum import IntEnum
+from pathlib import Path
 
 from openpilot.common.utils import sudo_read
 from openpilot.system.ui.lib.wpa_ctrl import SecurityType, is_valid_ssid
@@ -15,8 +17,10 @@ from openpilot.system.ui.lib.wpa_supplicant import WpaNetwork
 
 NM_CONNECTIONS_DIR = "/data/etc/NetworkManager/system-connections"
 RUNTIME_CONNECTIONS_DIR = "/run/NetworkManager/system-connections"
-_FORGET_RE = re.compile(r"^(?P<name>.+\.nmconnection)\.openpilot-forget-(?P<token>[0-9a-f]{32})$")
+NETPLAN_DIR = "/data/etc/netplan"
+_FORGET_RE = re.compile(r"^(?P<name>.+\.(?:nmconnection|yaml))\.openpilot-forget-(?P<token>[0-9a-f]{32})$")
 _FORGET_MARKER_RE = re.compile(r"^\.openpilot-forget-committed-(?P<token>[0-9a-f]{32})$")
+_NETPLAN_UPDATE_RE = re.compile(r"^.+\.yaml\.openpilot-netplan-update-(?P<token>[0-9a-f]{32})$")
 _UPDATE_RE = re.compile(r"^(?P<name>.+\.nmconnection)\.openpilot-update-(?P<token>[0-9a-f]{32})$")
 _RUNTIME_SHADOW_RE = re.compile(r"^(?P<name>.+\.nmconnection)\.openpilot-shadow-(?P<token>[0-9a-f]{32})$")
 
@@ -258,9 +262,10 @@ def render_profile(profile: NetworkProfile) -> str:
 
 
 class NetworkStore:
-  def __init__(self, directory: str = NM_CONNECTIONS_DIR, runtime_directory: str | None = None):
+  def __init__(self, directory: str = NM_CONNECTIONS_DIR, runtime_directory: str | None = None, netplan_directory: str | None = None):
     self._directory = directory
     self._runtime_directory = RUNTIME_CONNECTIONS_DIR if runtime_directory is None and directory == NM_CONNECTIONS_DIR else runtime_directory
+    self._netplan_directory = NETPLAN_DIR if netplan_directory is None and directory == NM_CONNECTIONS_DIR else netplan_directory
     self._profiles: dict[str, NetworkProfile] = {}
     self._runtime_paths: dict[str, str] = {}
     self._reload_failed = False
@@ -335,13 +340,24 @@ class NetworkStore:
       raise OSError("failed to inspect pending profile updates") from e
 
   def _has_pending_forget(self) -> bool:
+    return bool(self._forget_paths())
+
+  def _forget_paths(self) -> list[str]:
+    paths = []
     try:
-      return any(
-        _FORGET_RE.fullmatch(filename) or _FORGET_MARKER_RE.fullmatch(filename)
-        for filename in os.listdir(self._directory)
-      )
+      for directory in (self._directory, self._netplan_directory):
+        if directory is None:
+          continue
+        try:
+          filenames = os.listdir(directory)
+        except FileNotFoundError:
+          continue
+        paths.extend(os.path.join(directory, filename) for filename in sorted(filenames)
+                     if (_FORGET_RE.fullmatch(filename) or _FORGET_MARKER_RE.fullmatch(filename)
+                         or _NETPLAN_UPDATE_RE.fullmatch(filename) or _RUNTIME_SHADOW_RE.fullmatch(filename)))
     except OSError as e:
       raise OSError("failed to inspect pending profile forgets") from e
+    return paths
 
   def _recover_pending_transactions(self) -> None:
     if not self._has_pending_update() and not self._has_pending_forget():
@@ -351,25 +367,36 @@ class NetworkStore:
       raise OSError("profile transaction recovery is still pending")
 
   def _recover_forgets(self) -> None:
-    try:
-      filenames = sorted(os.listdir(self._directory))
-    except FileNotFoundError:
-      return
-    except OSError as e:
-      raise OSError("failed to inspect profile forget recovery") from e
-
+    paths = self._forget_paths()
     markers = {
-      match.group("token"): os.path.join(self._directory, filename)
-      for filename in filenames
-      if (match := _FORGET_MARKER_RE.fullmatch(filename)) is not None
+      match.group("token"): path
+      for path in paths
+      if (match := _FORGET_MARKER_RE.fullmatch(os.path.basename(path))) is not None
+    }
+    runtime_backups = {
+      path: (match.group("name"), match.group("token"))
+      for path in paths
+      if (match := _RUNTIME_SHADOW_RE.fullmatch(os.path.basename(path))) is not None
     }
     forget_tokens = {
       match.group("token")
-      for filename in filenames
-      if (match := _FORGET_RE.fullmatch(filename)) is not None
-    } | set(markers)
+      for path in paths
+      if (match := _FORGET_RE.fullmatch(path)) is not None
+    } | set(markers) | {token for _, token in runtime_backups.values()}
 
     runtime_failed: set[str] = set()
+    for backup, (name, token) in runtime_backups.items():
+      if token in markers:
+        continue
+      if self._runtime_directory is None:
+        runtime_failed.add(token)
+        continue
+      staged = os.path.join(self._runtime_directory, f"{name}.openpilot-shadow-{token}")
+      try:
+        subprocess.run(["sudo", "install", "-d", "-m", "755", self._runtime_directory], check=True)
+        subprocess.run(["sudo", "install", "-m", "600", backup, staged], check=True)
+      except (OSError, subprocess.SubprocessError):
+        runtime_failed.add(token)
     if self._runtime_directory is not None:
       try:
         runtime_filenames = sorted(os.listdir(self._runtime_directory))
@@ -379,7 +406,7 @@ class NetworkStore:
         raise OSError("failed to inspect runtime profile forget recovery") from e
       for filename in runtime_filenames:
         match = _RUNTIME_SHADOW_RE.fullmatch(filename)
-        if match is None or match.group("token") not in forget_tokens:
+        if match is None or match.group("token") not in forget_tokens or match.group("token") in runtime_failed:
           continue
         token = match.group("token")
         staged = os.path.join(self._runtime_directory, filename)
@@ -389,17 +416,25 @@ class NetworkStore:
           runtime_failed.add(token)
 
     cleanup_failed = set(runtime_failed)
-    for filename in filenames:
-      match = _FORGET_RE.fullmatch(filename)
+    for staged in paths:
+      if match := _NETPLAN_UPDATE_RE.fullmatch(staged):
+        if subprocess.run(["sudo", "rm", "-f", staged], check=False).returncode != 0:
+          cleanup_failed.add(match.group("token"))
+        continue
+      match = _FORGET_RE.fullmatch(staged)
       if match is None:
         continue
       token = match.group("token")
-      if token not in markers and token in runtime_failed:
+      if token not in markers and token in cleanup_failed:
         continue
-      staged = os.path.join(self._directory, filename)
-      original = os.path.join(self._directory, match.group("name"))
-      command = ["sudo", "rm", "-f", staged] if token in markers else ["sudo", "mv", "-f", staged, original]
+      original = match.group("name")
+      unchanged = os.path.exists(original) and os.path.samefile(staged, original)
+      command = ["sudo", "rm", "-f", staged] if token in markers or unchanged else ["sudo", "mv", "-f", staged, original]
       if subprocess.run(command, check=False).returncode != 0:
+        cleanup_failed.add(token)
+
+    for backup, (_, token) in runtime_backups.items():
+      if token not in cleanup_failed and subprocess.run(["sudo", "rm", "-f", backup], check=False).returncode != 0:
         cleanup_failed.add(token)
 
     for token, marker in markers.items():
@@ -480,6 +515,110 @@ class NetworkStore:
 
   def _can_remove(self, profile: NetworkProfile) -> bool:
     return profile.persistent and profile.path.startswith(self._directory + os.sep)
+
+  def _netplan_removals(self, ssid: str) -> tuple[set[str], dict[str, tuple[str, str | None]]]:
+    if self._netplan_directory is None:
+      return set(), {}
+    try:
+      paths = [Path(self._netplan_directory) / name for name in sorted(os.listdir(self._netplan_directory)) if name.endswith(".yaml")]
+    except FileNotFoundError:
+      return set(), {}
+    if not paths:
+      return set(), {}
+    raw = [subprocess.run(["sudo", "cat", "--", str(path)], capture_output=True, text=True, check=True).stdout for path in paths]
+    # Netplan's YAML dependency belongs to the system Python, outside the openpilot venv.
+    parser = "import json, sys, yaml; json.dump([yaml.load(s, Loader=yaml.BaseLoader) for s in json.load(sys.stdin)], sys.stdout)"
+    try:
+      with tempfile.TemporaryDirectory(prefix="openpilot-netplan-") as root:
+        def get_config():
+          result = subprocess.run(["netplan", "get", "--root-dir", root], capture_output=True, text=True, check=True)
+          # Netplan can report validation errors with exit status 0.
+          if not result.stdout.strip() and result.stderr:
+            raise OSError("failed to read Netplan configuration")
+          return result.stdout
+
+        directory = Path(root) / "etc/netplan"
+        directory.mkdir(parents=True)
+        for path, content in zip(paths, raw, strict=True):
+          target = directory / path.name
+          target.touch(mode=0o600)
+          target.write_text(content)
+        merged = get_config()
+        result = subprocess.run(["/usr/bin/python3", "-c", parser], input=json.dumps([*raw, merged]), capture_output=True, text=True, check=True)
+        configs = json.loads(result.stdout)
+        config = configs.pop()
+        remaining_aps = {}
+        profile_uuids = set()
+        for name, definition in (config or {}).get("network", {}).get("wifis", {}).items():
+          aps = definition.get("access-points", {})
+          if ssid in aps:
+            nm = aps[ssid].get("networkmanager", {})
+            profile_uuid = _parse_uuid(nm.get("uuid", definition.get("networkmanager", {}).get("uuid", "")))
+            if profile_uuid is not None:
+              profile_uuids.add(profile_uuid)
+            remaining_aps[name] = next((ap for ap in aps if ap != ssid), None)
+        if not remaining_aps:
+          return set(), {}
+
+        seen = set()
+
+        def remove(config):
+          if config is None:
+            return False
+          network = config.get("network", {})
+          wifis = network.get("wifis", {})
+          changed = False
+          for name, remaining_ap in remaining_aps.items():
+            if name not in wifis:
+              continue
+            if remaining_ap is None:
+              del wifis[name]
+              changed = True
+            elif ssid in wifis[name].get("access-points", {}):
+              aps = wifis[name]["access-points"]
+              del aps[ssid]
+              # The first definition needs an AP before Netplan loads the later files.
+              if not aps and name not in seen:
+                aps[remaining_ap] = {}
+              changed = True
+            seen.add(name)
+          if not wifis:
+            network.pop("wifis", None)
+          return changed
+
+        pending = {}
+        for path, before, source in zip(paths, raw, configs, strict=True):
+          if remove(source):
+            after = json.dumps(source, indent=2) + "\n" if set(source["network"]) - {"version"} else None
+            pending[str(path)] = (before, after)
+        remove(config)
+        if set(config["network"]) == {"version"}:
+          config = None
+        removals: dict[str, tuple[str, str | None]] = {}
+        # Remove later overrides first; recovery restores the files in load order.
+        for path, (before, after) in reversed(pending.items()):
+          target = directory / Path(path).name
+          if after is None:
+            target.unlink()
+          else:
+            target.write_text(after)
+          merged = get_config()
+          removals[path] = (before, after)
+        result = subprocess.run(["/usr/bin/python3", "-c", parser], input=json.dumps([merged]), capture_output=True, text=True, check=True)
+        if json.loads(result.stdout)[0] != config:
+          raise OSError("Netplan removal changed unrelated settings")
+        return profile_uuids, removals
+    except (subprocess.SubprocessError, ValueError, TypeError, AttributeError) as e:
+      raise OSError("failed to prepare Netplan profile removal") from e
+
+  def can_remove_ssid(self, ssid: str) -> bool:
+    try:
+      self._recover_pending_transactions()
+      profiles = self.profiles_for_ssid(ssid)
+      netplan_uuids, _ = self._netplan_removals(ssid)
+      return all(self._can_remove(profile) or not profile.persistent and profile.uuid in netplan_uuids for profile in profiles)
+    except (OSError, subprocess.SubprocessError):
+      return False
 
   def _clear_runtime_shadow(self, profile_uuid: str) -> bool:
     path = self._runtime_paths.get(profile_uuid)
@@ -566,44 +705,64 @@ class NetworkStore:
       self._ensure_directory_access()
       self._recover_pending_transactions()
       self._require_complete_reload()
+      netplan_uuids, netplan = self._netplan_removals(ssid)
     except (OSError, subprocess.SubprocessError):
       return False
     profiles = self.profiles_for_ssid(ssid)
     if not profiles:
       return True
-    if any(not self._can_remove(profile) for profile in profiles):
+    if any(not (self._can_remove(profile) or not profile.persistent and profile.uuid in netplan_uuids) for profile in profiles):
       return False
 
     token = uuid.uuid4().hex
     staged: list[tuple[str, str]] = []
-    for profile in profiles:
-      staged_path = f"{profile.path}.openpilot-forget-{token}"
-      result = subprocess.run(["sudo", "mv", "-f", profile.path, staged_path], check=False)
-      if result.returncode != 0:
-        for original, staged_file in reversed(staged):
-          subprocess.run(["sudo", "mv", "-f", staged_file, original], check=False)
-        return False
-      staged.append((profile.path, staged_path))
-
     runtime_shadows: list[tuple[str, tuple[str, str]]] = []
+    marker = os.path.join(self._directory, f".openpilot-forget-committed-{token}")
     try:
+      # Runtime profiles must survive a reboot until the forget transaction commits.
+      for profile in profiles:
+        if not profile.persistent:
+          path = os.path.join(self._directory, os.path.basename(profile.path))
+          temporary = f"{path}.openpilot-update-{token}"
+          backup = f"{path}.openpilot-shadow-{token}"
+          subprocess.run(["sudo", "install", "-m", "600", profile.path, temporary], check=True)
+          subprocess.run(["sudo", "mv", "-f", temporary, backup], check=True)
+          staged.append((profile.path, backup))
+      for path, (before, after) in netplan.items():
+        if subprocess.run(["sudo", "cat", "--", path], capture_output=True, text=True, check=True).stdout != before:
+          raise OSError("Netplan profile changed during forget")
+        staged_path = f"{path}.openpilot-forget-{token}"
+        if subprocess.run(["sudo", "ln", path, staged_path], check=False).returncode != 0:
+          raise OSError("failed to stage Netplan profile")
+        staged.append((path, staged_path))
+        if after is None:
+          command = ["sudo", "rm", "-f", path]
+        else:
+          replacement = f"{path}.openpilot-netplan-update-{token}"
+          with tempfile.NamedTemporaryFile("w") as f:
+            f.write(after)
+            f.flush()
+            subprocess.run(["sudo", "install", "-m", "600", f.name, replacement], check=True)
+          command = ["sudo", "mv", "-f", replacement, path]
+        if subprocess.run(command, check=False).returncode != 0:
+          raise OSError("failed to remove Netplan profile")
+      for profile in profiles:
+        if profile.persistent:
+          staged_path = f"{profile.path}.openpilot-forget-{token}"
+          if subprocess.run(["sudo", "mv", "-f", profile.path, staged_path], check=False).returncode != 0:
+            raise OSError("failed to stage saved profile")
+          staged.append((profile.path, staged_path))
       for profile in profiles:
         runtime_shadow = self._stage_runtime_shadow(profile.uuid, token)
         if runtime_shadow is not None:
           runtime_shadows.append((profile.uuid, runtime_shadow))
+      if subprocess.run(["sudo", "touch", marker], check=False).returncode != 0:
+        raise OSError("failed to commit profile forget")
     except (OSError, subprocess.SubprocessError):
-      shadows_restored = all(self._restore_runtime_shadow(profile_uuid, runtime_shadow) for profile_uuid, runtime_shadow in reversed(runtime_shadows))
-      if shadows_restored:
-        for original, staged_file in reversed(staged):
-          subprocess.run(["sudo", "mv", "-f", staged_file, original], check=False)
-      return False
-
-    marker = os.path.join(self._directory, f".openpilot-forget-committed-{token}")
-    if subprocess.run(["sudo", "touch", marker], check=False).returncode != 0:
-      shadows_restored = all(self._restore_runtime_shadow(profile_uuid, runtime_shadow) for profile_uuid, runtime_shadow in reversed(runtime_shadows))
-      if shadows_restored:
-        for original, staged_file in reversed(staged):
-          subprocess.run(["sudo", "mv", "-f", staged_file, original], check=False)
+      try:
+        self.recover()
+      except (OSError, subprocess.SubprocessError):
+        pass
       return False
 
     cleanup_failed = False

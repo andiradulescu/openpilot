@@ -701,7 +701,7 @@ class WifiController:
     except OSError:
       self._callbacks.put(("forget_failed", ssid))
       return
-    if any(not profile.persistent for profile in profiles):
+    if not self._store.can_remove_ssid(ssid):
       self._callbacks.put(("forget_failed", ssid))
       return
     if not profiles and self._requested_ssid == ssid:
