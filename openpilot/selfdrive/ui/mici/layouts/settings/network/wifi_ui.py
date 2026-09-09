@@ -4,7 +4,7 @@ import pyray as rl
 from collections.abc import Callable
 
 from openpilot.common.swaglog import cloudlog
-from openpilot.selfdrive.ui.mici.widgets.dialog import BigInputDialog, BigConfirmationDialog
+from openpilot.selfdrive.ui.mici.widgets.dialog import BigDialog, BigInputDialog, BigConfirmationDialog
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton, LABEL_COLOR
 from openpilot.system.ui.lib.application import gui_app, MousePos, FontWeight
 from openpilot.system.ui.widgets import Widget
@@ -286,6 +286,7 @@ class WifiUIMici(NavScroller):
     self._wifi_manager.add_callbacks(
       need_auth=self._on_need_auth,
       forgotten=self._on_forgotten,
+      forget_failed=self._on_forget_failed,
       networks_updated=self._on_network_updated,
     )
 
@@ -371,6 +372,13 @@ class WifiUIMici(NavScroller):
     for btn in self._scroller.items:
       if isinstance(btn, WifiButton) and btn.network.ssid == ssid:
         btn.on_forgotten()
+
+  def _on_forget_failed(self, ssid: str):
+    for btn in self._scroller.items:
+      if isinstance(btn, WifiButton) and btn.network.ssid == ssid and btn.network_forgetting:
+        btn.on_forgotten()
+        gui_app.push_widget(BigDialog("failed to forget network", "please try again"))
+        break
 
   def _move_network_to_front(self, ssid: str | None, scroll: bool = False):
     # Move connecting/connected network to the front with animation
