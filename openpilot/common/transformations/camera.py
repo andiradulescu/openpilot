@@ -1,4 +1,5 @@
 import itertools
+import os
 import numpy as np
 from dataclasses import dataclass
 
@@ -51,6 +52,7 @@ _os_fisheye = CameraConfig(2688 // 2, 1520 // 2, 567.0 / 4 * 3)
 _ar_ox_config = DeviceCameraConfig(CameraConfig(1928, 1208, 2648.0), _ar_ox_fisheye, _ar_ox_fisheye)
 _os_config = DeviceCameraConfig(CameraConfig(2688 // 2, 1520 // 2, 1522.0 * 3 / 4), _os_fisheye, _os_fisheye)
 _neo_config = DeviceCameraConfig(CameraConfig(1164, 874, 910.0), CameraConfig(816, 612, 650.0), _NoneCameraConfig())
+_webcam_config = DeviceCameraConfig(CameraConfig(1280, 720, 1477.0), CameraConfig(1280, 720, 1477.0), _NoneCameraConfig())
 
 DEVICE_CAMERAS: dict[tuple[str, str], DeviceCameraConfig] = {
   # A "device camera" is defined by a device type and sensor
@@ -65,7 +67,7 @@ DEVICE_CAMERAS: dict[tuple[str, str], DeviceCameraConfig] = {
   ("unknown", "ox03c10"): _ar_ox_config,
 
   # simulator (emulates a tici)
-  ("pc", "unknown"): _ar_ox_config,
+  ("pc", "unknown"): _webcam_config if os.getenv("USE_WEBCAM") is not None else _ar_ox_config,
 }
 prods = itertools.product(('tici', 'tizi', 'mici'), (('ar0231', _ar_ox_config), ('ox03c10', _ar_ox_config), ('os04c10', _os_config)))
 DEVICE_CAMERAS.update({(d, c[0]): c[1] for d, c in prods})
