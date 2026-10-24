@@ -13,8 +13,14 @@
 const bool PANDAD_MAXOUT = getenv("PANDAD_MAXOUT") != nullptr;
 
 Panda::Panda(std::string serial) {
+#ifdef __APPLE__
+  handle = std::make_unique<PandaUsbHandle>(serial);
+  LOGW("connected to %s over USB", serial.c_str());
+#else
+  // Linux PC USB support belongs here and in list()/SConscript; keep device SPI.
   handle = std::make_unique<PandaSpiHandle>(serial);
   LOGW("connected to %s over SPI", serial.c_str());
+#endif
 
   hw_type = get_hw_type();
   can_reset_communications();
@@ -33,7 +39,11 @@ std::string Panda::hw_serial() {
 }
 
 std::vector<std::string> Panda::list() {
+#ifdef __APPLE__
+  return PandaUsbHandle::list();
+#else
   return PandaSpiHandle::list();
+#endif
 }
 
 void Panda::set_safety_model(cereal::CarParams::SafetyModel safety_model, uint16_t safety_param) {
@@ -49,7 +59,7 @@ std::string Panda::serial_read(int port_number) {
   char buffer[USBPACKET_MAX_SIZE] = {};
 
   while (true) {
-    int bytes_read = handle->control_read(0xe0, port_number, 0, (unsigned char *)buffer, USBPACKET_MAX_SIZE);
+    int bytes_read = handle->control_read(0xb6, port_number, 0, (unsigned char *)buffer, USBPACKET_MAX_SIZE);
     if (bytes_read <= 0) {
       break;
     }

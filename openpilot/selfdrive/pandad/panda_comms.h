@@ -6,17 +6,66 @@
 #include <string>
 #include <vector>
 
+#ifdef __APPLE__
+#include <libusb-1.0/libusb.h>
+#else
+#include <linux/spi/spidev.h>
+#endif
+
 
 #define TIMEOUT 0
-#define SPI_BUF_SIZE 4096
 
+#ifdef __APPLE__
+constexpr unsigned int PANDA_COMMS_TIMEOUT = 15000;
+constexpr unsigned int PANDA_COMMS_RECV_TIMEOUT = 10;
+#else
+constexpr unsigned int PANDA_COMMS_TIMEOUT = TIMEOUT;
+constexpr unsigned int PANDA_COMMS_RECV_TIMEOUT = TIMEOUT;
+#endif
 
-class PandaSpiHandle {
+class PandaCommsHandle {
 public:
+  PandaCommsHandle(std::string = "") {}
+  virtual ~PandaCommsHandle() {}
+  virtual void cleanup() = 0;
+
   std::string hw_serial;
   std::atomic<bool> connected = true;
   std::atomic<bool> comms_healthy = true;
 
+  virtual int control_write(uint8_t request, uint16_t param1, uint16_t param2, unsigned int timeout=PANDA_COMMS_TIMEOUT) = 0;
+  virtual int control_read(uint8_t request, uint16_t param1, uint16_t param2, unsigned char *data, uint16_t length,
+                           unsigned int timeout=PANDA_COMMS_TIMEOUT) = 0;
+  virtual int bulk_write(unsigned char endpoint, unsigned char* data, int length, unsigned int timeout=PANDA_COMMS_TIMEOUT) = 0;
+  virtual int bulk_read(unsigned char endpoint, unsigned char* data, int length, unsigned int timeout=PANDA_COMMS_RECV_TIMEOUT) = 0;
+};
+
+#ifdef __APPLE__
+class PandaUsbHandle : public PandaCommsHandle {
+public:
+  PandaUsbHandle(std::string serial);
+  ~PandaUsbHandle();
+  int control_write(uint8_t request, uint16_t param1, uint16_t param2, unsigned int timeout=PANDA_COMMS_TIMEOUT);
+  int control_read(uint8_t request, uint16_t param1, uint16_t param2, unsigned char *data, uint16_t length, unsigned int timeout=PANDA_COMMS_TIMEOUT);
+  int bulk_write(unsigned char endpoint, unsigned char* data, int length, unsigned int timeout=PANDA_COMMS_TIMEOUT);
+  int bulk_read(unsigned char endpoint, unsigned char* data, int length, unsigned int timeout=PANDA_COMMS_RECV_TIMEOUT);
+  void cleanup();
+
+  static std::vector<std::string> list();
+
+private:
+  libusb_context *ctx = nullptr;
+  libusb_device_handle *dev_handle = nullptr;
+  std::recursive_mutex hw_lock;
+  void handle_usb_issue(int err, const char func[]);
+};
+#else
+
+#define SPI_BUF_SIZE 4096
+
+
+class PandaSpiHandle : public PandaCommsHandle {
+public:
   PandaSpiHandle(std::string serial);
   ~PandaSpiHandle();
 
@@ -53,3 +102,4 @@ private:
   spi_header header;
   uint32_t xfer_count = 0;
 };
+#endif

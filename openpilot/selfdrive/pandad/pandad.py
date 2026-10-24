@@ -3,11 +3,12 @@
 import os
 import signal
 import subprocess
+import time
 
 from panda import Panda, PandaDFU
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.params import Params
-from openpilot.common.hardware import HARDWARE
+from openpilot.common.hardware import HARDWARE, PC
 from openpilot.common.swaglog import cloudlog
 
 
@@ -59,16 +60,17 @@ def main() -> None:
   do_exit = False
   signal.signal(signal.SIGINT, signal_handler)
 
-  # check health for lost heartbeat
-  try:
-    for s in Panda.list():
-      with Panda(s) as p:
-        health = p.health()
-        if p.is_internal() and health["heartbeat_lost"]:
-          Params().put_bool("PandaHeartbeatLost", True, block=True)
-          cloudlog.event("heartbeat lost", deviceState=health)
-  except Exception:
-    cloudlog.exception("pandad.uncaught_exception")
+  if not PC:
+    # check health for lost heartbeat
+    try:
+      for s in Panda.list():
+        with Panda(s) as p:
+          health = p.health()
+          if p.is_internal() and health["heartbeat_lost"]:
+            Params().put_bool("PandaHeartbeatLost", True, block=True)
+            cloudlog.event("heartbeat lost", deviceState=health)
+    except Exception:
+      cloudlog.exception("pandad.uncaught_exception")
 
   count = 0
   while not do_exit:
@@ -76,15 +78,18 @@ def main() -> None:
       cloudlog.event("pandad.flash_and_connect", count=count)
       count += 1
 
-      HARDWARE.reset_internal_panda()
-      if not panda_ready():
-        flash_panda()
-        assert panda_ready(), "panda not ready after flashing"
+      if not PC:
+        HARDWARE.reset_internal_panda()
+        if not panda_ready():
+          flash_panda()
+          assert panda_ready(), "panda not ready after flashing"
 
       # run real pandad
       os.environ['MANAGER_DAEMON'] = 'pandad'
       process = subprocess.Popen(["./pandad"], cwd=os.path.join(BASEDIR, "openpilot/selfdrive/pandad"))
       process.wait()
+      if PC and not do_exit:
+        time.sleep(1)
     except Exception:
       cloudlog.exception("pandad.uncaught_exception")
 
