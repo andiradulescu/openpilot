@@ -32,6 +32,7 @@ dependencies = [
   "comma-deps-zstd",
   "comma-deps-zeromq",
   "comma-deps-json11",
+  "comma-deps-libusb",
   "comma-deps-git-lfs",
   "comma-deps-gcc-arm-none-eabi",
 
@@ -53,6 +54,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+webcam = [
+  "opencv-python",
+]
+
 testing = [
   "coverage",   # line coverage
   "ty",         # type checking
@@ -65,7 +70,6 @@ tools = [
 
   "comma-deps-imgui",
   "comma-deps-bootstrap-icons",
-  "comma-deps-libusb",
   "comma-deps-ncurses",
 
   # this can be added back once it's stripped down some more
